@@ -36,7 +36,7 @@ const int HISTORY_SIZE = 60;               // 60초 분량 히스토리
 
 // 임계값 (방식 3: 이중 조건)
 float RMS_THRESHOLD = 20.0;     // RMS slope +20% 이상
-float MDF_THRESHOLD = -10.0;    // MDF slope -10% 이하
+float MDF_THRESHOLD = -3.0;     // MDF slope -3% 이하 (완화: MDF 노이즈 감안)
 const int CONSECUTIVE_TRIGGER = 5;
 const int DC_OFFSET = 1900;     // 측정 후 본인 베이스라인으로 조정
 
@@ -130,10 +130,10 @@ void setup() {
   Serial.println("WebSocket 서버 시작 (포트 81)");
   
   // 1ms 타이머 시작 (1kHz 샘플링)
-  sampleTimer = timerBegin(0, 80, true);
-  timerAttachInterrupt(sampleTimer, &onSampleTimer, true);
-  timerAlarmWrite(sampleTimer, 1000, true);   // 1000us = 1ms
-  timerAlarmEnable(sampleTimer);
+// 1ms 타이머 시작 (1kHz 샘플링)
+  sampleTimer = timerBegin(1000000);                    // 1MHz tick rate
+  timerAttachInterrupt(sampleTimer, &onSampleTimer);    // ISR 등록
+  timerAlarm(sampleTimer, 1000, true, 0);               // 1000 tick = 1ms = 1kHz
   
   digitalWrite(PIN_STATUS_LED, HIGH);
   Serial.println("=== 준비 완료 ===\n");
