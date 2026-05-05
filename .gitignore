@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Firmware secrets (WiFi credentials)
+firmware/**/secrets.h
+
+# macOS
+.DS_Store
