@@ -13,6 +13,7 @@
 */
 
 #include <WiFi.h>
+#include <ESPmDNS.h>
 #include <WebSocketsServer.h>
 #include <ArduinoJson.h>
 #include <arduinoFFT.h>
@@ -40,6 +41,11 @@ float MDF_THRESHOLD = -3.0;     // MDF slope -3% 이하 (완화: MDF 노이즈 �
 const int CONSECUTIVE_TRIGGER = 5;
 const int DC_OFFSET = 1900;     // 측정 후 본인 베이스라인으로 조정
 
+// 베이스라인 (FES 응답 기준)
+const int BASELINE_SAMPLES = 10;       // Start 후 10초간 베이스라인 수집
+const float MUSCLE_LOW_RATIO  = 0.7;   // 베이스라인 대비 70% 미만 → 저운동
+const float MUSCLE_HIGH_RATIO = 1.5;   // 베이스라인 대비 150% 초과 → 과운동
+
 // ===== 전역 변수 =====
 WebSocketsServer webSocket = WebSocketsServer(81);
 
@@ -64,7 +70,7 @@ bool systemRunning = false;
 bool isStimulating = false;
 int consecutiveCount = 0;
 unsigned long stimStartTime = 0;
-const unsigned long STIM_TIMEOUT_MS = 30000;
+const unsigned long STIM_TIMEOUT_MS = 180000;  // 3분 (피로 검출 시간 확보)
 
 // 타이머
 hw_timer_t* sampleTimer = nullptr;
@@ -76,6 +82,12 @@ float currentMDF = 0;
 float currentRMSSlope = 0;
 float currentMDFSlope = 0;
 bool currentFatigueDetected = false;
+
+// 베이스라인 + 상태 분류
+float baselineRMS = 0;
+bool  baselineReady = false;
+float rmsRatio = 1.0;
+String muscleState = "idle";   // idle | calibrating | low | normal | high | fatigue
 
 // 세션 마커 (CSV 저장용)
 String sessionMarker = "";
@@ -168,11 +180,11 @@ void loop() {
     if (historyCount >= 30) {
       currentRMSSlope = calculateSlopePercent(rmsHistory, historyCount, true);
       currentMDFSlope = calculateSlopePercent(mdfHistory, historyCount, true);
-      
+
       // 방식 3: 이중 조건
-      bool fatigueCondition = (currentRMSSlope > RMS_THRESHOLD) && 
+      bool fatigueCondition = (currentRMSSlope > RMS_THRESHOLD) &&
                               (currentMDFSlope < MDF_THRESHOLD);
-      
+
       if (systemRunning && fatigueCondition) {
         consecutiveCount++;
         if (consecutiveCount >= CONSECUTIVE_TRIGGER && isStimulating) {
@@ -186,7 +198,30 @@ void loop() {
         currentFatigueDetected = false;
       }
     }
-    
+
+    // 베이스라인 수집 + 상태 분류
+    if (systemRunning && !baselineReady && historyCount >= BASELINE_SAMPLES) {
+      float sum = 0;
+      for (int i = 0; i < BASELINE_SAMPLES; i++) sum += rmsHistory[i];
+      baselineRMS = sum / BASELINE_SAMPLES;
+      baselineReady = true;
+      Serial.printf("✅ Baseline RMS: %.1f\n", baselineRMS);
+    }
+
+    if (!systemRunning) {
+      muscleState = "idle";
+      rmsRatio = 1.0;
+    } else if (!baselineReady) {
+      muscleState = "calibrating";
+      rmsRatio = 1.0;
+    } else {
+      rmsRatio = (baselineRMS > 0.01) ? (currentRMS / baselineRMS) : 1.0;
+      if (currentFatigueDetected)              muscleState = "fatigue";
+      else if (rmsRatio > MUSCLE_HIGH_RATIO)   muscleState = "high";
+      else if (rmsRatio < MUSCLE_LOW_RATIO)    muscleState = "low";
+      else                                     muscleState = "normal";
+    }
+
     // 데이터 전송 (CSV 저장용 + Flutter용)
     sendDataUpdate();
   }
@@ -218,6 +253,13 @@ void setupWiFi() {
   Serial.println();
   Serial.print("✅ IP: ");
   Serial.println(WiFi.localIP());
+
+  if (MDNS.begin("emg-fes")) {
+    MDNS.addService("ws", "tcp", 81);
+    Serial.println("✅ mDNS: emg-fes.local");
+  } else {
+    Serial.println("⚠️ mDNS 시작 실패");
+  }
 }
 
 // ============================================================
@@ -251,8 +293,17 @@ void handleCommand(JsonDocument& doc) {
   if (cmd == "start") {
     systemRunning = true;
     consecutiveCount = 0;
+    historyIdx = 0;
+    historyCount = 0;
+    currentFatigueDetected = false;
+    currentRMSSlope = 0;
+    currentMDFSlope = 0;
+    baselineReady = false;           // 베이스라인 새로 수집
+    baselineRMS = 0;
+    rmsRatio = 1.0;
+    muscleState = "calibrating";
     sessionMarker = "session_start";
-    Serial.println("→ 시작");
+    Serial.println("→ 시작 (10초간 베이스라인 수집)");
     triggerStimulation(true);
   }
   else if (cmd == "stop") {
@@ -276,7 +327,11 @@ void handleCommand(JsonDocument& doc) {
     historyIdx = 0;
     historyCount = 0;
     consecutiveCount = 0;
-    Serial.println("→ 캘리브레이션");
+    baselineReady = false;
+    baselineRMS = 0;
+    rmsRatio = 1.0;
+    muscleState = systemRunning ? "calibrating" : "idle";
+    Serial.println("→ 캘리브레이션 (베이스라인 리셋)");
   }
   else if (cmd == "set_thresholds") {
     RMS_THRESHOLD = doc["rms"].as<float>();
@@ -376,10 +431,11 @@ float calculateSlopePercent(float* history, int count, bool circular) {
 void sendDataUpdate() {
   if (webSocket.connectedClients() == 0) return;
   
-  StaticJsonDocument<400> doc;
+  StaticJsonDocument<512> doc;
   doc["type"] = "data";
   doc["timestamp_ms"] = millis();
   doc["emg_raw"] = rawBuffer[RMS_WINDOW - 1] + DC_OFFSET;  // 마지막 raw 값
+  doc["emg_env"] = analogRead(PIN_EMG_ENV);                // 평활화된 envelope
   doc["rms"] = currentRMS;
   doc["mdf"] = currentMDF;
   doc["rms_slope"] = currentRMSSlope;
@@ -389,6 +445,9 @@ void sendDataUpdate() {
   doc["is_stimulating"] = isStimulating;
   doc["history_count"] = historyCount;
   doc["marker"] = sessionMarker;
+  doc["baseline_rms"] = baselineRMS;
+  doc["rms_ratio"] = rmsRatio;
+  doc["muscle_state"] = muscleState;
   
   String json;
   serializeJson(doc, json);

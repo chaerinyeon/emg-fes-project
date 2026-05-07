@@ -1,0 +1,1 @@
+wall_time,timestamp_ms,emg_raw,rms,mdf,rms_slope,mdf_slope,fatigue_detected,is_running,is_stimulating
