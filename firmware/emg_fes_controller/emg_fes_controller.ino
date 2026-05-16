@@ -42,7 +42,7 @@ const int CONSECUTIVE_TRIGGER = 5;
 const int DC_OFFSET = 1900;     // 측정 후 본인 베이스라인으로 조정
 
 // 베이스라인 (FES 응답 기준)
-const int BASELINE_SAMPLES = 10;       // Start 후 10초간 베이스라인 수집
+const int BASELINE_SAMPLES = 10;       // Start 후 10초간 베이스라인 수집 (FES OFF)
 const float MUSCLE_LOW_RATIO  = 0.7;   // 베이스라인 대비 70% 미만 → 저운동
 const float MUSCLE_HIGH_RATIO = 1.5;   // 베이스라인 대비 150% 초과 → 과운동
 
@@ -51,6 +51,7 @@ WebSocketsServer webSocket = WebSocketsServer(81);
 
 // 1초 RMS 버퍼
 volatile int rawBuffer[RMS_WINDOW];
+volatile int envBuffer[RMS_WINDOW];
 volatile int bufferIdx = 0;
 volatile bool bufferReady = false;
 
@@ -100,9 +101,11 @@ void IRAM_ATTR onSampleTimer() {
   
   if (bufferIdx < RMS_WINDOW) {
     int raw = analogRead(PIN_EMG_RAW);
+    int env = analogRead(PIN_EMG_ENV);
     rawBuffer[bufferIdx] = raw - DC_OFFSET;
+    envBuffer[bufferIdx] = env;
     bufferIdx++;
-    
+
     if (bufferIdx >= RMS_WINDOW) {
       bufferReady = true;
     }
@@ -141,11 +144,11 @@ void setup() {
   webSocket.onEvent(onWebSocketEvent);
   Serial.println("WebSocket 서버 시작 (포트 81)");
   
-  // 1ms 타이머 시작 (1kHz 샘플링)
-// 1ms 타이머 시작 (1kHz 샘플링)
-  sampleTimer = timerBegin(1000000);                    // 1MHz tick rate
-  timerAttachInterrupt(sampleTimer, &onSampleTimer);    // ISR 등록
-  timerAlarm(sampleTimer, 1000, true, 0);               // 1000 tick = 1ms = 1kHz
+  // 1ms 타이머 시작 (1kHz 샘플링) - ESP32 core 2.0.x API
+  sampleTimer = timerBegin(0, 80, true);                   // timer 0, 분주 80 → 1MHz (1us tick)
+  timerAttachInterrupt(sampleTimer, &onSampleTimer, true);  // ISR 등록 (edge)
+  timerAlarmWrite(sampleTimer, 1000, true);                // 1000us = 1ms = 1kHz, 자동 반복
+  timerAlarmEnable(sampleTimer);                           // 타이머 활성화
   
   digitalWrite(PIN_STATUS_LED, HIGH);
   Serial.println("=== 준비 완료 ===\n");
@@ -205,7 +208,7 @@ void loop() {
       for (int i = 0; i < BASELINE_SAMPLES; i++) sum += rmsHistory[i];
       baselineRMS = sum / BASELINE_SAMPLES;
       baselineReady = true;
-      Serial.printf("✅ Baseline RMS: %.1f\n", baselineRMS);
+      Serial.printf("✅ Baseline RMS: %.1f (%d s 평균)\n", baselineRMS, BASELINE_SAMPLES);
     }
 
     if (!systemRunning) {
@@ -303,8 +306,8 @@ void handleCommand(JsonDocument& doc) {
     rmsRatio = 1.0;
     muscleState = "calibrating";
     sessionMarker = "session_start";
-    Serial.println("→ 시작 (10초간 베이스라인 수집)");
-    triggerStimulation(true);
+    Serial.println("→ 시작 (10초간 베이스라인 수집, FES OFF)");
+    triggerStimulation(false);       // 베이스라인은 전류 없이 측정
   }
   else if (cmd == "stop") {
     systemRunning = false;
@@ -362,12 +365,12 @@ void triggerStimulation(bool on) {
 }
 
 // ============================================================
-// RMS 계산
+// RMS 계산 (envelope 기반)
 // ============================================================
 float calculateRMS() {
   double sumSq = 0;
   for (int i = 0; i < RMS_WINDOW; i++) {
-    sumSq += (double)rawBuffer[i] * rawBuffer[i];
+    sumSq += (double)envBuffer[i] * envBuffer[i];
   }
   return sqrt(sumSq / RMS_WINDOW);
 }

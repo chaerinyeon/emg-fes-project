@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:collection';
+import 'dart:html' as html;
 
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
@@ -40,11 +41,8 @@ class _Status {
   bool isStimulating = false;
   bool fatigueDetected = false;
   double rmsSlope = 0;
-  double mdfSlope = 0;
   int historyCount = 0;
-  String muscleState = 'idle';
   double baselineRms = 0;
-  double rmsRatio = 1.0;
 }
 
 class HomePage extends StatefulWidget {
@@ -69,9 +67,13 @@ class _HomePageState extends State<HomePage> {
 
   final Queue<_Sample> _env = Queue();
   final Queue<_Sample> _rms = Queue();
-  final Queue<_Sample> _mdf = Queue();
   double _t0 = 0;
+  double _rawLast = 0;
+  double _rmsLast = 0;
   final _Status _st = _Status();
+
+  final List<Map<String, dynamic>> _log = [];
+  String? _pendingMarker;
 
   void _push(Queue<_Sample> q, _Sample s) {
     q.add(s);
@@ -125,6 +127,11 @@ class _HomePageState extends State<HomePage> {
     _ch?.sink.close(ws_status.normalClosure);
     _sub = null;
     _ch = null;
+    _env.clear();
+    _rms.clear();
+    _t0 = 0;
+    _rawLast = 0;
+    _rmsLast = 0;
     setState(() {
       _connState = 'disconnected';
     });
@@ -136,33 +143,64 @@ class _HomePageState extends State<HomePage> {
       if (msg['type'] != 'data') return;
 
       final ts = (msg['timestamp_ms'] as num).toDouble() / 1000.0;
-      if (_env.isEmpty) _t0 = ts;
+      if (_env.isEmpty || ts < _t0) {
+        _t0 = ts;
+        _env.clear();
+        _rms.clear();
+      }
       final t = ts - _t0;
 
-      final envVal = msg['emg_env'] ?? msg['emg_raw'];
-      if (envVal != null) {
-        _push(_env, _Sample(t, (envVal as num).toDouble()));
+      _st.baselineRms =
+          (msg['baseline_rms'] as num?)?.toDouble() ?? _st.baselineRms;
+
+      final running = msg['is_running'] as bool? ?? _st.isRunning;
+      if (!running && _st.isRunning) {
+        _env.clear();
+        _rms.clear();
+        _rawLast = 0;
+        _rmsLast = 0;
       }
-      if (msg['rms'] != null) {
-        _push(_rms, _Sample(t, (msg['rms'] as num).toDouble()));
-      }
-      if (msg['mdf'] != null) {
-        _push(_mdf, _Sample(t, (msg['mdf'] as num).toDouble()));
+
+      if (running) {
+        final envVal = msg['emg_env'] ?? msg['emg_raw'];
+        if (envVal != null) {
+          final e = (envVal as num).toDouble();
+          _rawLast = e;
+          _push(_env, _Sample(t, e));
+        }
+        if (msg['rms'] != null) {
+          final r = (msg['rms'] as num).toDouble();
+          final adj = (r - _st.baselineRms).clamp(0.0, double.infinity);
+          _rmsLast = adj;
+          _push(_rms, _Sample(t, adj));
+        }
+
+        _log.add({
+          'wall_time': DateTime.now().toIso8601String(),
+          'timestamp_ms': msg['timestamp_ms'],
+          'emg_raw': msg['emg_raw'],
+          'emg_env': msg['emg_env'],
+          'rms': msg['rms'],
+          'mdf': msg['mdf'],
+          'rms_slope': msg['rms_slope'],
+          'mdf_slope': msg['mdf_slope'],
+          'fatigue_detected': msg['fatigue_detected'],
+          'is_running': msg['is_running'],
+          'is_stimulating': msg['is_stimulating'],
+          'history_count': msg['history_count'],
+          'baseline_rms': msg['baseline_rms'],
+          'marker': _pendingMarker ?? '',
+        });
+        _pendingMarker = null;
       }
 
       final wasFatigued = _st.fatigueDetected;
-      _st.isRunning = msg['is_running'] ?? _st.isRunning;
+      _st.isRunning = running;
       _st.isStimulating = msg['is_stimulating'] ?? _st.isStimulating;
       _st.fatigueDetected = msg['fatigue_detected'] ?? _st.fatigueDetected;
       _st.rmsSlope = (msg['rms_slope'] as num?)?.toDouble() ?? _st.rmsSlope;
-      _st.mdfSlope = (msg['mdf_slope'] as num?)?.toDouble() ?? _st.mdfSlope;
       _st.historyCount =
           (msg['history_count'] as num?)?.toInt() ?? _st.historyCount;
-      _st.muscleState = msg['muscle_state'] as String? ?? _st.muscleState;
-      _st.baselineRms =
-          (msg['baseline_rms'] as num?)?.toDouble() ?? _st.baselineRms;
-      _st.rmsRatio =
-          (msg['rms_ratio'] as num?)?.toDouble() ?? _st.rmsRatio;
 
       if (!wasFatigued && _st.fatigueDetected) {
         _onFatigueDetected();
@@ -178,7 +216,6 @@ class _HomePageState extends State<HomePage> {
     final ctx = context;
     if (!mounted) return;
     final rms = _st.rmsSlope.toStringAsFixed(1);
-    final mdf = _st.mdfSlope.toStringAsFixed(1);
     showDialog<void>(
       context: ctx,
       barrierDismissible: false,
@@ -198,7 +235,7 @@ class _HomePageState extends State<HomePage> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
-              'RMS slope  +$rms%\nMDF slope  $mdf%',
+              'RMS slope  +$rms%',
               textAlign: TextAlign.center,
               style: const TextStyle(color: Colors.white, fontSize: 16),
             ),
@@ -225,7 +262,7 @@ class _HomePageState extends State<HomePage> {
         backgroundColor: Colors.red.shade700,
         duration: const Duration(seconds: 4),
         content: Text(
-          '🚨 근피로 감지 — RMS +$rms%, MDF $mdf%',
+          '🚨 근피로 감지 — RMS +$rms%',
           style: const TextStyle(
               color: Colors.white, fontWeight: FontWeight.bold),
         ),
@@ -246,6 +283,67 @@ class _HomePageState extends State<HomePage> {
     } catch (e) {
       _toast('전송 실패: $e', Colors.red);
     }
+  }
+
+  void _startSession() {
+    _log.clear();
+    _pendingMarker = null;
+    _send({'cmd': 'start'});
+  }
+
+  void _stopSession() {
+    _send({'cmd': 'stop'});
+    if (_log.isEmpty) {
+      _toast('저장할 데이터 없음', Colors.orange);
+      return;
+    }
+    _downloadCsv();
+  }
+
+  void _sendMarker(String label) {
+    _pendingMarker = label;
+    _send({'cmd': 'marker', 'label': label});
+  }
+
+  void _downloadCsv() {
+    const headers = [
+      'wall_time',
+      'timestamp_ms',
+      'emg_raw',
+      'emg_env',
+      'rms',
+      'mdf',
+      'rms_slope',
+      'mdf_slope',
+      'fatigue_detected',
+      'is_running',
+      'is_stimulating',
+      'history_count',
+      'baseline_rms',
+      'marker',
+    ];
+    final sb = StringBuffer()..writeln(headers.join(','));
+    for (final row in _log) {
+      sb.writeln(headers.map((k) {
+        final v = row[k];
+        if (v == null) return '';
+        final s = v.toString();
+        return s.contains(',') ? '"$s"' : s;
+      }).join(','));
+    }
+    final csv = sb.toString();
+    final bytes = utf8.encode(csv);
+    final blob = html.Blob([bytes], 'text/csv');
+    final url = html.Url.createObjectUrlFromBlob(blob);
+    final now = DateTime.now();
+    final stamp =
+        '${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}'
+        '_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}${now.second.toString().padLeft(2, '0')}';
+    html.AnchorElement(href: url)
+      ..setAttribute('download', 'emg_$stamp.csv')
+      ..click();
+    html.Url.revokeObjectUrl(url);
+    _toast('CSV 저장: emg_$stamp.csv (${_log.length} rows)', Colors.green);
   }
 
   void _toast(String msg, Color color) {
@@ -300,7 +398,7 @@ class _HomePageState extends State<HomePage> {
                 ),
               ],
               const SizedBox(height: 8),
-              _buildStatePanel(),
+              _buildLiveReadout(),
               if (_st.fatigueDetected) ...[
                 const SizedBox(height: 8),
                 _buildFatigueBanner(),
@@ -317,11 +415,6 @@ class _HomePageState extends State<HomePage> {
                     const SizedBox(height: 8),
                     Expanded(
                       child: _buildChart('RMS', _rms, Colors.lightGreenAccent),
-                    ),
-                    const SizedBox(height: 8),
-                    Expanded(
-                      child:
-                          _buildChart('MDF (Hz)', _mdf, Colors.redAccent),
                     ),
                   ],
                 ),
@@ -369,108 +462,64 @@ class _HomePageState extends State<HomePage> {
       if (_st.fatigueDetected) _chip('FATIGUE', Colors.red),
       _chip('hist ${_st.historyCount}', Colors.blueGrey),
       _chip('rms_slope ${_st.rmsSlope.toStringAsFixed(1)}%', Colors.blueGrey),
-      _chip('mdf_slope ${_st.mdfSlope.toStringAsFixed(1)}%', Colors.blueGrey),
     ];
     return Wrap(spacing: 6, runSpacing: 6, children: chips);
   }
 
-  ({Color color, IconData icon, String label, String hint}) _stateMeta(String s) {
-    switch (s) {
-      case 'calibrating':
-        return (
-          color: Colors.amber,
-          icon: Icons.hourglass_top,
-          label: '베이스라인 수집 중',
-          hint: '10초간 일정한 수축 유지'
-        );
-      case 'low':
-        return (
-          color: Colors.lightBlueAccent,
-          icon: Icons.arrow_downward,
-          label: '저운동',
-          hint: 'FES 응답 약함 (기준 < 70%)'
-        );
-      case 'normal':
-        return (
-          color: Colors.greenAccent,
-          icon: Icons.check_circle_outline,
-          label: '정상',
-          hint: '베이스라인 대비 70~150%'
-        );
-      case 'high':
-        return (
-          color: Colors.orangeAccent,
-          icon: Icons.arrow_upward,
-          label: '과운동',
-          hint: 'FES 응답 강함 (기준 > 150%)'
-        );
-      case 'fatigue':
-        return (
-          color: Colors.redAccent,
-          icon: Icons.warning,
-          label: '근피로',
-          hint: '자극 자동 정지'
-        );
-      default:
-        return (
-          color: Colors.blueGrey,
-          icon: Icons.power_settings_new,
-          label: '대기',
-          hint: 'Start 누르면 측정 시작'
-        );
-    }
-  }
-
-  Widget _buildStatePanel() {
-    final meta = _stateMeta(_st.muscleState);
-    final ratioPct = (_st.rmsRatio * 100).toStringAsFixed(0);
-    final base = _st.baselineRms.toStringAsFixed(1);
+  Widget _buildLiveReadout() {
+    final active = _connState == 'connected' && _st.isRunning;
+    final rawTxt = active ? _rawLast.toStringAsFixed(0) : '—';
+    final rmsTxt = active ? _rmsLast.toStringAsFixed(1) : '—';
     return Container(
-      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 14),
+      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
       decoration: BoxDecoration(
-        color: meta.color.withValues(alpha: 0.15),
-        border: Border.all(color: meta.color, width: 2),
+        color: Colors.white.withValues(alpha: 0.05),
+        border: Border.all(color: Colors.white24),
         borderRadius: BorderRadius.circular(10),
       ),
       child: Row(
         children: [
-          Icon(meta.icon, color: meta.color, size: 36),
-          const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                const Text('ENV',
+                    style: TextStyle(color: Colors.white60, fontSize: 12)),
                 Text(
-                  meta.label,
-                  style: TextStyle(
-                    color: meta.color,
-                    fontSize: 20,
+                  rawTxt,
+                  style: const TextStyle(
+                    color: Colors.lightBlueAccent,
+                    fontSize: 32,
                     fontWeight: FontWeight.bold,
+                    fontFeatures: [FontFeature.tabularFigures()],
                   ),
-                ),
-                Text(
-                  meta.hint,
-                  style: const TextStyle(color: Colors.white70, fontSize: 12),
                 ),
               ],
             ),
           ),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                'baseline ${_st.baselineRms <= 0 ? '—' : base}',
-                style: const TextStyle(color: Colors.white60, fontSize: 11),
-              ),
-              Text(
-                'ratio $ratioPct%',
-                style: TextStyle(
-                  color: meta.color,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
+          Container(
+            width: 1,
+            height: 44,
+            color: Colors.white24,
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('RMS',
+                    style: TextStyle(color: Colors.white60, fontSize: 12)),
+                Text(
+                  rmsTxt,
+                  style: const TextStyle(
+                    color: Colors.lightGreenAccent,
+                    fontSize: 32,
+                    fontWeight: FontWeight.bold,
+                    fontFeatures: [FontFeature.tabularFigures()],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ],
       ),
@@ -512,8 +561,7 @@ class _HomePageState extends State<HomePage> {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  'RMS slope +${_st.rmsSlope.toStringAsFixed(1)}%   '
-                  'MDF slope ${_st.mdfSlope.toStringAsFixed(1)}%',
+                  'RMS slope +${_st.rmsSlope.toStringAsFixed(1)}%',
                   style: const TextStyle(color: Colors.white70, fontSize: 13),
                 ),
               ],
@@ -566,45 +614,53 @@ class _HomePageState extends State<HomePage> {
             Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
             const SizedBox(height: 4),
             Expanded(
-              child: LineChart(
-                LineChartData(
-                  minX: minX,
-                  maxX: maxX,
-                  minY: minY,
-                  maxY: maxY,
-                  gridData: const FlGridData(show: true),
-                  titlesData: const FlTitlesData(
-                    leftTitles: AxisTitles(
-                        sideTitles:
-                            SideTitles(showTitles: true, reservedSize: 40)),
-                    bottomTitles: AxisTitles(
-                        sideTitles:
-                            SideTitles(showTitles: true, reservedSize: 22)),
-                    topTitles: AxisTitles(
-                        sideTitles: SideTitles(showTitles: false)),
-                    rightTitles: AxisTitles(
-                        sideTitles: SideTitles(showTitles: false)),
-                  ),
-                  borderData: FlBorderData(show: true),
-                  lineBarsData: [
-                    LineChartBarData(
-                      spots: spots,
-                      isCurved: false,
-                      color: color,
-                      barWidth: 1.5,
-                      dotData: FlDotData(
-                        show: spots.length < 80,
-                        getDotPainter: (s, p, b, i) => FlDotCirclePainter(
-                          radius: 2,
-                          color: color,
-                          strokeWidth: 0,
-                        ),
+              child: spots.isEmpty
+                  ? const Center(
+                      child: Text(
+                        '대기 중',
+                        style: TextStyle(color: Colors.white38, fontSize: 12),
                       ),
+                    )
+                  : LineChart(
+                      LineChartData(
+                        minX: minX,
+                        maxX: maxX,
+                        minY: minY,
+                        maxY: maxY,
+                        gridData: const FlGridData(show: true),
+                        titlesData: const FlTitlesData(
+                          leftTitles: AxisTitles(
+                              sideTitles: SideTitles(
+                                  showTitles: true, reservedSize: 40)),
+                          bottomTitles: AxisTitles(
+                              sideTitles: SideTitles(
+                                  showTitles: true, reservedSize: 22)),
+                          topTitles: AxisTitles(
+                              sideTitles: SideTitles(showTitles: false)),
+                          rightTitles: AxisTitles(
+                              sideTitles: SideTitles(showTitles: false)),
+                        ),
+                        borderData: FlBorderData(show: true),
+                        lineBarsData: [
+                          LineChartBarData(
+                            spots: spots,
+                            isCurved: false,
+                            color: color,
+                            barWidth: 1.5,
+                            dotData: FlDotData(
+                              show: spots.length < 80,
+                              getDotPainter: (s, p, b, i) =>
+                                  FlDotCirclePainter(
+                                radius: 2,
+                                color: color,
+                                strokeWidth: 0,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      duration: Duration.zero,
                     ),
-                  ],
-                ),
-                duration: Duration.zero,
-              ),
             ),
           ],
         ),
@@ -620,12 +676,12 @@ class _HomePageState extends State<HomePage> {
       alignment: WrapAlignment.center,
       children: [
         FilledButton.icon(
-          onPressed: canSend ? () => _send({'cmd': 'start'}) : null,
+          onPressed: canSend ? _startSession : null,
           icon: const Icon(Icons.play_arrow),
           label: const Text('Start'),
         ),
         FilledButton.tonalIcon(
-          onPressed: canSend ? () => _send({'cmd': 'stop'}) : null,
+          onPressed: canSend ? _stopSession : null,
           icon: const Icon(Icons.stop),
           label: const Text('Stop'),
         ),
@@ -635,23 +691,17 @@ class _HomePageState extends State<HomePage> {
           label: const Text('Calibrate'),
         ),
         OutlinedButton.icon(
-          onPressed: canSend
-              ? () => _send({'cmd': 'marker', 'label': 'easy'})
-              : null,
+          onPressed: canSend ? () => _sendMarker('easy') : null,
           icon: const Icon(Icons.flag_outlined),
           label: const Text('Easy'),
         ),
         OutlinedButton.icon(
-          onPressed: canSend
-              ? () => _send({'cmd': 'marker', 'label': 'medium'})
-              : null,
+          onPressed: canSend ? () => _sendMarker('medium') : null,
           icon: const Icon(Icons.flag_outlined),
           label: const Text('Medium'),
         ),
         OutlinedButton.icon(
-          onPressed: canSend
-              ? () => _send({'cmd': 'marker', 'label': 'hard'})
-              : null,
+          onPressed: canSend ? () => _sendMarker('hard') : null,
           icon: const Icon(Icons.flag),
           label: const Text('Hard'),
         ),
