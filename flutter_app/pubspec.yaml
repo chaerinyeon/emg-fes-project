@@ -37,6 +37,8 @@ dependencies:
   web_socket_channel: ^3.0.3
   fl_chart: ^1.2.0
   flutter_blue_plus: ^2.3.2
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
 
 dev_dependencies:
   flutter_test:

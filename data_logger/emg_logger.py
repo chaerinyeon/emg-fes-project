@@ -22,12 +22,50 @@ from __future__ import annotations
 import argparse
 import asyncio
 import csv
+import base64
 import json
+import subprocess
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
 import websockets
+
+
+GITHUB_REPO = "chaerinyeon/emg-fes-project"
+
+
+def upload_to_github(csv_path: Path, subject: str, repo_path: str) -> None:
+    """CSV를 gh API로 GitHub에 직접 업로드. 로컬엔 안 남김."""
+    if not csv_path.exists() or csv_path.stat().st_size <= 200:
+        print(f"[gh] skip — CSV가 비어 있음: {csv_path.name}")
+        return
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    msg = f"data: subject {subject} session {csv_path.stem} ({stamp})"
+    content_b64 = base64.b64encode(csv_path.read_bytes()).decode()
+    try:
+        subprocess.run(
+            [
+                "gh", "api",
+                f"repos/{GITHUB_REPO}/contents/{repo_path}",
+                "--method", "PUT",
+                "-f", f"message={msg}",
+                "-f", f"content={content_b64}",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        print(f"[gh] ✅ uploaded to {GITHUB_REPO}:{repo_path}")
+    except subprocess.CalledProcessError as e:
+        err = e.stderr.decode() if e.stderr else str(e)
+        print(f"[gh] ⚠️ 업로드 실패: {err}", file=sys.stderr)
+    finally:
+        try:
+            csv_path.unlink()
+            print(f"[gh] 🗑️ 로컬 임시 파일 삭제: {csv_path}")
+        except OSError:
+            pass
 
 FIELDS = [
     "wall_time",
@@ -45,12 +83,14 @@ FIELDS = [
 ]
 
 
-def make_csv_path(subject: str, session: str | None) -> Path:
-    root = Path(__file__).resolve().parent.parent / "data" / f"subject_{subject}"
-    root.mkdir(parents=True, exist_ok=True)
+def make_csv_path(subject: str, session: str | None) -> tuple[Path, str]:
+    """임시 CSV 경로(/tmp)와 GitHub 리포 내 상대 경로를 반환."""
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     name = f"{stamp}_{session}.csv" if session else f"{stamp}.csv"
-    return root / name
+    tmp_dir = Path(tempfile.gettempdir())
+    local_path = tmp_dir / f"emg_{subject}_{name}"
+    repo_path = f"data/subject_{subject}/{name}"
+    return local_path, repo_path
 
 
 async def receive_loop(ws, writer, csv_file) -> None:
@@ -111,28 +151,32 @@ async def stdin_loop(ws) -> None:
 
 async def run(host: str, port: int, subject: str, session: str | None) -> None:
     uri = f"ws://{host}:{port}"
-    csv_path = make_csv_path(subject, session)
+    csv_path, repo_path = make_csv_path(subject, session)
     print(f"connecting to {uri}")
-    print(f"logging to   {csv_path}")
+    print(f"buffering to {csv_path} (임시)")
+    print(f"will upload to {GITHUB_REPO}:{repo_path}")
     print("commands: s=start  x=stop  e=emergency  c=calibrate  m <label>=marker  q=quit")
 
-    with csv_path.open("w", newline="") as csv_file:
-        writer = csv.DictWriter(csv_file, fieldnames=FIELDS)
-        writer.writeheader()
+    try:
+        with csv_path.open("w", newline="") as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=FIELDS)
+            writer.writeheader()
 
-        async with websockets.connect(uri, ping_interval=20) as ws:
-            print("✅ connected")
-            recv_task = asyncio.create_task(receive_loop(ws, writer, csv_file))
-            input_task = asyncio.create_task(stdin_loop(ws))
-            done, pending = await asyncio.wait(
-                {recv_task, input_task}, return_when=asyncio.FIRST_COMPLETED
-            )
-            for task in pending:
-                task.cancel()
-            for task in done:
-                exc = task.exception()
-                if exc:
-                    raise exc
+            async with websockets.connect(uri, ping_interval=20) as ws:
+                print("✅ connected")
+                recv_task = asyncio.create_task(receive_loop(ws, writer, csv_file))
+                input_task = asyncio.create_task(stdin_loop(ws))
+                done, pending = await asyncio.wait(
+                    {recv_task, input_task}, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in pending:
+                    task.cancel()
+                for task in done:
+                    exc = task.exception()
+                    if exc:
+                        raise exc
+    finally:
+        upload_to_github(csv_path, subject, repo_path)
 
 
 def main() -> None:
