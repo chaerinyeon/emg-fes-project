@@ -130,10 +130,12 @@ class _HomePageState extends State<HomePage> {
   final Queue<_Sample> _rmsSlope = Queue();
   final Queue<_Sample> _mdfSlope = Queue();
   double _t0 = 0;
+  bool _t0Init = false;            // _t0가 첫 메시지에서 설정됐는지
   double _envLast = 0;
   double _rmsLast = 0;
   double _mdfLast = 0;
-  bool _envDecim = false;          // ENV 데시메이션 토글 (10Hz 입력 → 5Hz 저장)
+  double _lastEnvPushT = -1.0;     // ENV push의 마지막 t (시간 기반 데시메이션)
+  static const double envPushIntervalSec = 0.2;  // 5Hz
   final _Status _st = _Status();
 
   // CSV 로깅 (web만) — 1Hz로 다운샘플 (10Hz BLE 중 초당 1번만 기록)
@@ -307,6 +309,8 @@ class _HomePageState extends State<HomePage> {
     _rmsSlope.clear();
     _mdfSlope.clear();
     _t0 = 0;
+    _t0Init = false;
+    _lastEnvPushT = -1.0;
     _envLast = 0;
     _rmsLast = 0;
     _mdfLast = 0;
@@ -329,13 +333,19 @@ class _HomePageState extends State<HomePage> {
 
       final tsMs = (msg['ts'] as num).toDouble();
       final ts = tsMs / 1000.0;
-      if (_env.isEmpty || ts < _t0) {
+      // 첫 메시지: _t0 초기화. ESP 재부팅(ts 뒤로): 모든 큐 클리어.
+      // 큐가 비어있다는 이유만으로는 클리어하지 않음 — 데시메이션 중 빈 순간을 트리거하지 않기 위함.
+      if (!_t0Init) {
+        _t0 = ts;
+        _t0Init = true;
+      } else if (ts < _t0) {
         _t0 = ts;
         _env.clear();
         _rms.clear();
         _mdf.clear();
         _rmsSlope.clear();
         _mdfSlope.clear();
+        _lastEnvPushT = -1.0;
       }
       final t = ts - _t0;
 
@@ -358,10 +368,12 @@ class _HomePageState extends State<HomePage> {
         _envLast = 0;
         _rmsLast = 0;
         _mdfLast = 0;
+        _lastEnvPushT = -1.0;
       }
-      // 세션이 새로 시작되면 로그 다운샘플 추적도 리셋
+      // 세션이 새로 시작되면 로그/데시 추적도 리셋
       if (running && !_st.isRunning) {
         _lastLoggedSec = null;
+        _lastEnvPushT = -1.0;
       }
 
       if (running) {
@@ -369,9 +381,9 @@ class _HomePageState extends State<HomePage> {
         if (envVal != null) {
           final e = (envVal as num).toDouble();
           _envLast = e;
-          _envDecim = !_envDecim;
-          if (_envDecim) {
-            // 5Hz로 데시메이션 (10Hz 들어오는 것 중 절반만 차트 큐에 push)
+          // 시간 기반 5Hz 데시메이션 — 토글보다 hot reload/누락에 강건
+          if (_lastEnvPushT < 0 || (t - _lastEnvPushT) >= envPushIntervalSec) {
+            _lastEnvPushT = t;
             _push(_env, _Sample(t, e), maxLen: maxEnvPoints);
           }
         }
