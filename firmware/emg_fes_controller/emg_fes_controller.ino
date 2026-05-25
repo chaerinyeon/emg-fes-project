@@ -33,8 +33,8 @@
 #define BLE_DEVICE_NAME  "EMG-FES-01"
 
 // ===== 핀 설정 =====
-const int PIN_EMG_RAW = 36;     // A4 - MyoWare RAW EMG
-const int PIN_EMG_ENV = 39;     // A3 - MyoWare ENV (envelope)
+const int PIN_EMG_RAW = 36;     // A4 - MyoWare SIG (RAW EMG)
+// 주: MyoWare 2.0은 SIG 한 채널만 출력. ENV는 RAW로부터 SW에서 계산.
 const int PIN_STATUS_LED = 13;
 
 const int PIN_MASSAGER_ON_OFF = 32;
@@ -68,11 +68,15 @@ NimBLECharacteristic* dataChar = nullptr;
 NimBLECharacteristic* cmdChar  = nullptr;
 volatile bool deviceConnected = false;
 
-// ===== ADC 버퍼 (ISR 채움) =====
+// ===== ADC 버퍼 (샘플링 태스크가 채움) =====
 volatile int rawBuffer[RMS_WINDOW];
-volatile int envBuffer[RMS_WINDOW];
 volatile int bufferIdx = 0;
 volatile bool bufferReady = false;
+
+// 실시간 envelope (|raw - DC| 의 1차 IIR LPF, 1kHz로 갱신)
+// alpha=0.03 → 1kHz에서 약 5Hz LPF, 힘 줄 때 100~200ms 안에 따라옴
+volatile float envLPF = 0;
+const float ENV_LPF_ALPHA = 0.03f;
 
 // ===== FFT 버퍼 =====
 double vReal[FFT_SIZE];
@@ -91,6 +95,9 @@ bool isStimulating = false;
 int consecutiveCount = 0;
 unsigned long stimStartTime = 0;
 unsigned long lastNotifyMs = 0;
+unsigned long fatigueDetectedAtMs = 0;
+const unsigned long FATIGUE_LATCH_MS = 10000;   // fd=true를 10초간 유지
+bool sendFullNext = true;   // 다음 송신을 "full"로 (1초마다 RMS/MDF 등 포함)
 
 // ===== 수축 상태머신 =====
 enum ContractionState { CS_REST = 0, CS_ONSET = 1, CS_SUSTAINED = 2 };
@@ -132,26 +139,53 @@ String sessionMarker = "";
 // ===== 타이머 =====
 hw_timer_t* sampleTimer = nullptr;
 portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
+TaskHandle_t samplingTaskHandle = nullptr;
 
 // 함수 선언
 void triggerStimulation(bool on);
 void handleCommand(JsonDocument& doc);
 void updateContractionState();
+void samplingTask(void* param);
 
 // ============================================================
-// 1ms ADC ISR (1kHz)
+// 1ms 타이머 ISR — analogRead는 IRAM-safe가 아니므로
+// ISR에서는 샘플링 태스크만 깨우고 실제 ADC는 태스크에서 수행.
 // ============================================================
 void IRAM_ATTR onSampleTimer() {
-  portENTER_CRITICAL_ISR(&timerMux);
-  if (bufferIdx < RMS_WINDOW) {
-    int raw = analogRead(PIN_EMG_RAW);
-    int env = analogRead(PIN_EMG_ENV);
-    rawBuffer[bufferIdx] = raw - DC_OFFSET;
-    envBuffer[bufferIdx] = env;
-    bufferIdx++;
-    if (bufferIdx >= RMS_WINDOW) bufferReady = true;
+  BaseType_t higherPriorityTaskWoken = pdFALSE;
+  vTaskNotifyGiveFromISR(samplingTaskHandle, &higherPriorityTaskWoken);
+  if (higherPriorityTaskWoken == pdTRUE) {
+    portYIELD_FROM_ISR();
   }
-  portEXIT_CRITICAL_ISR(&timerMux);
+}
+
+// ============================================================
+// ADC 샘플링 태스크 — 코어 1 고정, 고우선순위
+// ISR notify를 받아 RAW 채널만 read.
+// (MyoWare 2.0은 SIG 핀으로 RAW or ENV 둘 중 하나만 출력 →
+//  RAW만 받아서 RMS/MDF 모두 소프트웨어로 산출)
+// ============================================================
+void samplingTask(void* /*param*/) {
+  for (;;) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+    int raw = analogRead(PIN_EMG_RAW);
+    int centered = raw - DC_OFFSET;
+
+    // 실시간 envelope 업데이트 (정류 + IIR LPF) — 버퍼와 무관하게 항상 갱신
+    int absVal = centered < 0 ? -centered : centered;
+    envLPF = ENV_LPF_ALPHA * (float)absVal + (1.0f - ENV_LPF_ALPHA) * envLPF;
+
+    if (bufferIdx >= RMS_WINDOW) continue;
+
+    portENTER_CRITICAL(&timerMux);
+    if (bufferIdx < RMS_WINDOW) {
+      rawBuffer[bufferIdx] = centered;
+      bufferIdx++;
+      if (bufferIdx >= RMS_WINDOW) bufferReady = true;
+    }
+    portEXIT_CRITICAL(&timerMux);
+  }
 }
 
 // ============================================================
@@ -212,6 +246,17 @@ void setup() {
 
   // BLE 초기화
   setupBLE();
+
+  // ADC 샘플링 태스크 (코어 1, BLE는 코어 0에서 도므로 분리)
+  xTaskCreatePinnedToCore(
+    samplingTask,
+    "emg_sampling",
+    4096,
+    nullptr,
+    configMAX_PRIORITIES - 1,
+    &samplingTaskHandle,
+    1
+  );
 
   // 1kHz ADC 타이머 (ESP32 core 2.0.x API)
   sampleTimer = timerBegin(0, 80, true);                  // timer0, prescaler 80 → 1MHz tick
@@ -299,14 +344,26 @@ void loop() {
 
       if (systemRunning && fatigueCondition) {
         consecutiveCount++;
-        if (consecutiveCount >= CONSECUTIVE_TRIGGER && isStimulating) {
-          Serial.printf("⚠️ 근피로 감지! RMS:+%.1f%%, MDF:%.1f%%\n",
-                        currentRMSSlope, currentMDFSlope);
+        if (consecutiveCount >= CONSECUTIVE_TRIGGER && !currentFatigueDetected) {
+          Serial.printf("⚠️ 근피로 감지! RMS:+%.1f%%, MDF:%.1f%% (FES %s)\n",
+                        currentRMSSlope, currentMDFSlope,
+                        isStimulating ? "ON→OFF" : "미가동");
           currentFatigueDetected = true;
-          triggerStimulation(false);
+          fatigueDetectedAtMs = millis();
+          // 다음 BLE 송신을 즉시 full로 → Flutter에서 fd 상승 에지 놓치지 않음
+          sendFullNext = true;
+          // FES가 켜져 있을 때만 자동 정지
+          if (isStimulating) {
+            triggerStimulation(false);
+          }
         }
       } else {
         consecutiveCount = 0;
+      }
+
+      // 피로 플래그는 FATIGUE_LATCH_MS 동안 유지 (UI 다이얼로그/배너 안정용)
+      if (currentFatigueDetected &&
+          (millis() - fatigueDetectedAtMs > FATIGUE_LATCH_MS)) {
         currentFatigueDetected = false;
       }
     }
@@ -338,8 +395,13 @@ void loop() {
     // 수축 상태머신 업데이트 (RMS·MDF 계산 직후)
     updateContractionState();
 
-    sendDataUpdate();
+    // 다음 BLE 송신은 1Hz 갱신값 전부 포함하는 "full" 메시지로
+    sendFullNext = true;
   }
+
+  // BLE 송신은 100ms마다 (DATA_THROTTLE_MS 내부 체크 사용)
+  // → env(실시간 LPF)는 10Hz로, rms/mdf는 매번 같은 값(1Hz 갱신)으로 송신
+  sendDataUpdate();
 
   // FES 타임아웃 안전장치
   if (isStimulating && (millis() - stimStartTime > STIM_TIMEOUT_MS)) {
@@ -363,11 +425,13 @@ void handleCommand(JsonDocument& doc) {
     historyIdx = 0;
     historyCount = 0;
     currentFatigueDetected = false;
+    fatigueDetectedAtMs = 0;
     currentRMSSlope = 0;
     currentMDFSlope = 0;
     baselineReady = false;
     baselineRMS = 0;
     rmsRatio = 1.0;
+    envLPF = 0;
     muscleState = "calibrating";
     // 수축 상태머신 리셋
     contractState = CS_REST;
@@ -379,6 +443,7 @@ void handleCommand(JsonDocument& doc) {
     lastContractDurMs = 0;
     lastContractPeak = 0;
     sessionMarker = "session_start";
+    sendFullNext = true;   // 다음 송신은 리셋된 상태값 전부 포함
     Serial.println("→ 시작 (10초간 베이스라인 수집, FES OFF)");
     triggerStimulation(false);
   }
@@ -415,6 +480,7 @@ void handleCommand(JsonDocument& doc) {
     lastContractType = '-';
     lastContractDurMs = 0;
     lastContractPeak = 0;
+    sendFullNext = true;
     Serial.println("→ 캘리브레이션 (베이스라인 + 수축 카운터 리셋)");
   }
   else if (cmd == "set_thresholds") {
@@ -453,14 +519,33 @@ void triggerStimulation(bool on) {
 }
 
 // ============================================================
-// RMS 계산 (ENV 핀 1초치)
+// RMS 계산 (RAW 1초치, 평균 자동 제거)
+// DC_OFFSET이 정확하지 않아도 흡수되도록 윈도우 평균을 빼고 RMS.
 // ============================================================
 float calculateRMS() {
+  // 1) 윈도우 평균 (남은 DC 성분 제거용)
+  long sum = 0;
+  int rawMin = 4095, rawMax = -4095;
+  for (int i = 0; i < RMS_WINDOW; i++) {
+    int v = rawBuffer[i];
+    sum += v;
+    if (v < rawMin) rawMin = v;
+    if (v > rawMax) rawMax = v;
+  }
+  double mean = (double)sum / RMS_WINDOW;
+
+  // 2) 평균 제거 후 RMS
   double sumSq = 0;
   for (int i = 0; i < RMS_WINDOW; i++) {
-    sumSq += (double)envBuffer[i] * envBuffer[i];
+    double d = (double)rawBuffer[i] - mean;
+    sumSq += d * d;
   }
-  return sqrt(sumSq / RMS_WINDOW);
+  double rms = sqrt(sumSq / RMS_WINDOW);
+
+  Serial.printf("[DIAG] RAW min=%d max=%d mean=%.0f | RMS=%.1f env=%.1f\n",
+                rawMin + DC_OFFSET, rawMax + DC_OFFSET,
+                mean + DC_OFFSET, rms, envLPF);
+  return (float)rms;
 }
 
 // ============================================================
@@ -511,62 +596,73 @@ float calculateSlopePercent(float* history, int count, bool circular) {
 }
 
 // ============================================================
-// BLE Notify로 데이터 송신 (1Hz)
+// BLE Notify로 데이터 송신 (기본 10Hz, 그중 1Hz는 full)
+// ----------------------------------------------------------
+// 매 100ms마다 호출되지만 메시지 종류는 두 가지:
+//   - partial (9/sec): env + 빠르게 바뀔 수 있는 상태만
+//   - full    (1/sec): partial + 1Hz 갱신값(RMS/MDF/slope/state machine 등)
+// Flutter는 null 필드를 스킵하므로 partial 메시지는 큐 중복을 만들지 않음.
 // ============================================================
 void sendDataUpdate() {
-  // 연결 안 되어 있으면 스킵 (마커는 다음 연결까지 보존)
   if (!deviceConnected || dataChar == nullptr) return;
 
-  // 송신 throttle (BLE 부하 보호)
   unsigned long now = millis();
   if (now - lastNotifyMs < DATA_THROTTLE_MS) return;
   lastNotifyMs = now;
 
-  // 짧은 키 이름으로 MTU 247 한 패킷에 수납 (~220 bytes 목표)
-  // 임계값(RT/MT/CT)은 거의 안 변하니까 매 10초마다만 포함
-  bool includeThresholds = ((now / 1000) % 10 == 0);
+  bool full = sendFullNext;
+  sendFullNext = false;
+  bool hasMarker = sessionMarker.length() > 0;
 
   StaticJsonDocument<512> doc;
+
+  // ===== 항상 보내는 필드 (10Hz) =====
   doc["ts"]   = now;
-  doc["rms"]  = currentRMS;
-  doc["mdf"]  = currentMDF;
-  doc["rs"]   = currentRMSSlope;
-  doc["ms"]   = currentMDFSlope;
-  doc["fd"]   = currentFatigueDetected;
+  doc["env"]  = envLPF;
   doc["run"]  = systemRunning;
   doc["stim"] = isStimulating;
-  doc["hc"]   = historyCount;
-  doc["cc"]   = consecutiveCount;
-  doc["b"]    = baselineRMS;
-  doc["rr"]   = rmsRatio;
-  doc["st"]   = muscleState;
-  doc["mk"]   = sessionMarker;
+  doc["fd"]   = currentFatigueDetected;
+  if (hasMarker) {
+    doc["mk"] = sessionMarker;
+    sessionMarker = "";          // 마커는 1회만 전송
+  }
 
-  // 수축 상태머신 (현재 상태 + 마지막 수축 + 누적 카운터)
-  doc["cs"]   = (int)contractState;          // 0=rest, 1=onset, 2=sustained
-  doc["cd"]   = (contractState != CS_REST)
-                  ? (uint32_t)(now - contractStartMs) : 0;
-  doc["lt"]   = String((char)lastContractType);  // 'b'/'t'/'s'/'-'
-  doc["ld"]   = lastContractDurMs;
-  doc["lp"]   = lastContractPeak;
-  doc["bc"]   = burstCount;
-  doc["sc"]   = sustainedCount;
-  doc["tc"]   = transientCount;
+  // ===== full 메시지에만 (1Hz) =====
+  if (full) {
+    doc["rms"]  = currentRMS;
+    doc["mdf"]  = currentMDF;
+    doc["rs"]   = currentRMSSlope;
+    doc["ms"]   = currentMDFSlope;
+    doc["hc"]   = historyCount;
+    doc["cc"]   = consecutiveCount;
+    doc["b"]    = baselineRMS;
+    doc["rr"]   = rmsRatio;
+    doc["st"]   = muscleState;
 
-  if (includeThresholds) {
-    doc["rt"]   = RMS_THRESHOLD;
-    doc["mt"]   = MDF_THRESHOLD;
-    doc["ct"]   = CONSECUTIVE_TRIGGER;
+    // 수축 상태머신
+    doc["cs"]   = (int)contractState;
+    doc["cd"]   = (contractState != CS_REST)
+                    ? (uint32_t)(now - contractStartMs) : 0;
+    doc["lt"]   = String((char)lastContractType);
+    doc["ld"]   = lastContractDurMs;
+    doc["lp"]   = lastContractPeak;
+    doc["bc"]   = burstCount;
+    doc["sc"]   = sustainedCount;
+    doc["tc"]   = transientCount;
+
+    // 임계값은 매 10초마다만
+    if ((now / 1000) % 10 == 0) {
+      doc["rt"] = RMS_THRESHOLD;
+      doc["mt"] = MDF_THRESHOLD;
+      doc["ct"] = CONSECUTIVE_TRIGGER;
+    }
   }
 
   String json;
   serializeJson(doc, json);
 
-  // BLE notify (MTU 247이면 ~244B 한 패킷)
   dataChar->setValue((uint8_t*)json.c_str(), json.length());
   dataChar->notify();
-
-  sessionMarker = "";   // 마커는 1회만 전송
 }
 
 // ============================================================

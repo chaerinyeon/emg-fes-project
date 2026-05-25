@@ -108,7 +108,8 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   static const int windowSec = 60;
-  static const int maxPoints = windowSec;
+  static const int maxPoints = windowSec;          // 1Hz 신호용 (rms/mdf/slope)
+  static const int maxEnvPoints = windowSec * 5;   // 5Hz envelope 60초치 (UI 부하 절감)
 
   // BLE
   BluetoothDevice? _device;
@@ -132,11 +133,13 @@ class _HomePageState extends State<HomePage> {
   double _envLast = 0;
   double _rmsLast = 0;
   double _mdfLast = 0;
+  bool _envDecim = false;          // ENV 데시메이션 토글 (10Hz 입력 → 5Hz 저장)
   final _Status _st = _Status();
 
-  // CSV 로깅 (web만)
+  // CSV 로깅 (web만) — 1Hz로 다운샘플 (10Hz BLE 중 초당 1번만 기록)
   final List<Map<String, dynamic>> _log = [];
   String? _pendingMarker;
+  int? _lastLoggedSec;
 
   // ---------- 라이프사이클 ----------
   @override
@@ -356,13 +359,21 @@ class _HomePageState extends State<HomePage> {
         _rmsLast = 0;
         _mdfLast = 0;
       }
+      // 세션이 새로 시작되면 로그 다운샘플 추적도 리셋
+      if (running && !_st.isRunning) {
+        _lastLoggedSec = null;
+      }
 
       if (running) {
         final envVal = msg['env'] ?? msg['raw'];
         if (envVal != null) {
           final e = (envVal as num).toDouble();
           _envLast = e;
-          _push(_env, _Sample(t, e));
+          _envDecim = !_envDecim;
+          if (_envDecim) {
+            // 5Hz로 데시메이션 (10Hz 들어오는 것 중 절반만 차트 큐에 push)
+            _push(_env, _Sample(t, e), maxLen: maxEnvPoints);
+          }
         }
         if (msg['rms'] != null) {
           final r = (msg['rms'] as num).toDouble();
@@ -381,29 +392,37 @@ class _HomePageState extends State<HomePage> {
           _push(_mdfSlope, _Sample(t, (msg['ms'] as num).toDouble()));
         }
 
-        _log.add({
-          'wall_time': DateTime.now().toIso8601String(),
-          'timestamp_ms': msg['ts'],
-          'emg_raw': msg['raw'],
-          'emg_env': msg['env'],
-          'rms': msg['rms'],
-          'mdf': msg['mdf'],
-          'rms_slope': msg['rs'],
-          'mdf_slope': msg['ms'],
-          'fatigue_detected': msg['fd'],
-          'consecutive': msg['cc'],
-          'is_running': msg['run'],
-          'is_stimulating': msg['stim'],
-          'history_count': msg['hc'],
-          'baseline_rms': msg['b'],
-          'rms_ratio': msg['rr'],
-          'muscle_state': msg['st'],
-          'marker': _pendingMarker ?? '',
-        });
-        _pendingMarker = null;
+        // 1Hz 다운샘플: ts 초 단위가 바뀔 때만 로그 (펌웨어 BLE 10Hz → CSV 1Hz)
+        // 단, 마커는 분실 방지 위해 들어오면 즉시 별도 행으로 기록
+        final tsSec = (msg['ts'] as num).toInt() ~/ 1000;
+        final hasMarker = _pendingMarker != null && _pendingMarker!.isNotEmpty;
+        if (_lastLoggedSec != tsSec || hasMarker) {
+          _lastLoggedSec = tsSec;
+          _log.add({
+            'wall_time': DateTime.now().toIso8601String(),
+            'timestamp_ms': msg['ts'],
+            'emg_raw': msg['raw'],
+            'emg_env': msg['env'],
+            'rms': msg['rms'],
+            'mdf': msg['mdf'],
+            'rms_slope': msg['rs'],
+            'mdf_slope': msg['ms'],
+            'fatigue_detected': msg['fd'],
+            'consecutive': msg['cc'],
+            'is_running': msg['run'],
+            'is_stimulating': msg['stim'],
+            'history_count': msg['hc'],
+            'baseline_rms': msg['b'],
+            'rms_ratio': msg['rr'],
+            'muscle_state': msg['st'],
+            'marker': _pendingMarker ?? '',
+          });
+          _pendingMarker = null;
+        }
       }
 
       final wasFatigued = _st.fatigueDetected;
+      final wasStimulating = _st.isStimulating;
       _st.isRunning = running;
       _st.isStimulating = msg['stim'] ?? _st.isStimulating;
       _st.fatigueDetected = msg['fd'] ?? _st.fatigueDetected;
@@ -428,16 +447,18 @@ class _HomePageState extends State<HomePage> {
         _st.sessionMaxRms = _rmsLast;
       }
 
-      if (!wasFatigued && _st.fatigueDetected) _onFatigueDetected();
+      if (!wasFatigued && _st.fatigueDetected) {
+        _onFatigueDetected(fesWasOn: wasStimulating);
+      }
       if (mounted) setState(() {});
     } catch (_) {
       // parse 실패는 무시
     }
   }
 
-  void _push(Queue<_Sample> q, _Sample s) {
+  void _push(Queue<_Sample> q, _Sample s, {int maxLen = maxPoints}) {
     q.add(s);
-    while (q.length > maxPoints) {
+    while (q.length > maxLen) {
       q.removeFirst();
     }
   }
@@ -550,7 +571,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   // ---------- 피로 감지 다이얼로그 ----------
-  void _onFatigueDetected() {
+  void _onFatigueDetected({bool fesWasOn = false}) {
     if (!mounted) return;
     final rs = _st.rmsSlope.toStringAsFixed(1);
     final ms = _st.mdfSlope.toStringAsFixed(1);
@@ -582,10 +603,12 @@ class _HomePageState extends State<HomePage> {
               style: const TextStyle(color: Colors.white, fontSize: 14),
             ),
             const SizedBox(height: 6),
-            const Text(
-              '자극이 자동으로 정지되었습니다.',
+            Text(
+              fesWasOn
+                  ? '자극이 자동으로 정지되었습니다.'
+                  : '연속 만족 카운트 5/5 도달 (FES 미가동 — 자동 정지 없음).',
               textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.white70, fontSize: 13),
+              style: const TextStyle(color: Colors.white70, fontSize: 13),
             ),
           ],
         ),
@@ -667,8 +690,7 @@ class _HomePageState extends State<HomePage> {
                 'EMG envelope',
                 _env,
                 _cEnv,
-                hint: 'MyoWare ENV 핀 — 정류·평활된 EMG. RMS 계산 입력값.',
-                fixedRange: const [0, 4095],
+                hint: 'RAW의 |x-DC| → IIR LPF (10Hz 갱신). 힘 주면 즉시 ↑, 풀면 ↓.',
                 height: 140,
               ),
               const SizedBox(height: 6),
@@ -676,7 +698,7 @@ class _HomePageState extends State<HomePage> {
                 'RMS (근활성도 크기)',
                 _rms,
                 _cRms,
-                hint: '√(Σenv²/N). 피로 시 ↑ 또는 환자가 힘 더 줘도 ↑.',
+                hint: '√(Σ(raw-mean)²/N) — 1초 윈도우. 피로 시 ↑ 또는 환자가 힘 더 줘도 ↑.',
                 baselineY: _st.baselineRms > 0 ? _st.baselineRms : null,
                 height: 140,
               ),
@@ -975,14 +997,21 @@ class _HomePageState extends State<HomePage> {
       child: Row(
         children: [
           stage(
-            label: 'RAW EMG\n(1kHz)',
+            label: 'RAW EMG\nESP 1kHz',
+            value: running ? '✓' : '—',
+            active: running,
+            activeColor: Colors.white70,
+          ),
+          arrow(running),
+          stage(
+            label: 'ENV (LPF)\n10Hz',
             value: running ? _envLast.toStringAsFixed(0) : '—',
             active: running,
             activeColor: _cEnv,
           ),
           arrow(running),
           stage(
-            label: '1초 윈도우\n→ RMS/MDF',
+            label: '1초 윈도우\nRMS / MDF',
             value: running
                 ? '${_rmsLast.toStringAsFixed(0)} / ${_mdfLast.toStringAsFixed(0)}'
                 : '—',
@@ -1117,66 +1146,68 @@ class _HomePageState extends State<HomePage> {
                         style: TextStyle(color: Colors.white38, fontSize: 11),
                       ),
                     )
-                  : LineChart(
-                      LineChartData(
-                        minX: minX,
-                        maxX: maxX,
-                        minY: minY,
-                        maxY: maxY,
-                        gridData: const FlGridData(show: true),
-                        titlesData: const FlTitlesData(
-                          leftTitles: AxisTitles(
-                            sideTitles: SideTitles(
-                              showTitles: true,
-                              reservedSize: 38,
+                  : RepaintBoundary(
+                      child: LineChart(
+                        LineChartData(
+                          minX: minX,
+                          maxX: maxX,
+                          minY: minY,
+                          maxY: maxY,
+                          gridData: const FlGridData(show: true),
+                          titlesData: const FlTitlesData(
+                            leftTitles: AxisTitles(
+                              sideTitles: SideTitles(
+                                showTitles: true,
+                                reservedSize: 38,
+                              ),
+                            ),
+                            bottomTitles: AxisTitles(
+                              sideTitles: SideTitles(
+                                showTitles: true,
+                                reservedSize: 20,
+                              ),
+                            ),
+                            topTitles: AxisTitles(
+                              sideTitles: SideTitles(showTitles: false),
+                            ),
+                            rightTitles: AxisTitles(
+                              sideTitles: SideTitles(showTitles: false),
                             ),
                           ),
-                          bottomTitles: AxisTitles(
-                            sideTitles: SideTitles(
-                              showTitles: true,
-                              reservedSize: 20,
-                            ),
-                          ),
-                          topTitles: AxisTitles(
-                            sideTitles: SideTitles(showTitles: false),
-                          ),
-                          rightTitles: AxisTitles(
-                            sideTitles: SideTitles(showTitles: false),
-                          ),
-                        ),
-                        borderData: FlBorderData(show: true),
-                        extraLinesData: baselineY != null
-                            ? ExtraLinesData(
-                                horizontalLines: [
-                                  HorizontalLine(
-                                    y: baselineY,
-                                    color: Colors.white38,
-                                    strokeWidth: 1,
-                                    dashArray: [4, 4],
-                                    label: HorizontalLineLabel(
-                                      show: true,
-                                      alignment: Alignment.topRight,
-                                      style: const TextStyle(
-                                        color: Colors.white54,
-                                        fontSize: 9,
+                          borderData: FlBorderData(show: true),
+                          extraLinesData: baselineY != null
+                              ? ExtraLinesData(
+                                  horizontalLines: [
+                                    HorizontalLine(
+                                      y: baselineY,
+                                      color: Colors.white38,
+                                      strokeWidth: 1,
+                                      dashArray: [4, 4],
+                                      label: HorizontalLineLabel(
+                                        show: true,
+                                        alignment: Alignment.topRight,
+                                        style: const TextStyle(
+                                          color: Colors.white54,
+                                          fontSize: 9,
+                                        ),
+                                        labelResolver: (_) => 'baseline',
                                       ),
-                                      labelResolver: (_) => 'baseline',
                                     ),
-                                  ),
-                                ],
-                              )
-                            : const ExtraLinesData(),
-                        lineBarsData: [
-                          LineChartBarData(
-                            spots: spots,
-                            isCurved: false,
-                            color: color,
-                            barWidth: 1.5,
-                            dotData: FlDotData(show: spots.length < 60),
-                          ),
-                        ],
+                                  ],
+                                )
+                              : const ExtraLinesData(),
+                          lineBarsData: [
+                            LineChartBarData(
+                              spots: spots,
+                              isCurved: false,
+                              color: color,
+                              barWidth: 1.5,
+                              dotData: FlDotData(show: spots.length < 60),
+                            ),
+                          ],
+                        ),
+                        duration: Duration.zero,
                       ),
-                      duration: Duration.zero,
                     ),
             ),
           ],
@@ -1235,7 +1266,8 @@ class _HomePageState extends State<HomePage> {
                         style: TextStyle(color: Colors.white38, fontSize: 11),
                       ),
                     )
-                  : LineChart(
+                  : RepaintBoundary(
+                      child: LineChart(
                       LineChartData(
                         minX: minX,
                         maxX: maxX,
@@ -1316,6 +1348,7 @@ class _HomePageState extends State<HomePage> {
                         ],
                       ),
                       duration: Duration.zero,
+                      ),
                     ),
             ),
           ],
