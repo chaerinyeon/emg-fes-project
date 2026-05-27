@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
-import '../constants.dart';
-import '../models.dart';
+import '../../core/constants.dart';
+import '../../core/models.dart';
 
 class PipelineDiagram extends StatelessWidget {
   final AppStatus status;

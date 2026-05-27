@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../constants.dart';
+import '../../core/constants.dart';
 
 class LiveReadout extends StatelessWidget {
   final bool active;

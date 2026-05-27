@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
-import '../constants.dart';
+import '../../core/constants.dart';
 
 class BleBar extends StatelessWidget {
   final String connState;

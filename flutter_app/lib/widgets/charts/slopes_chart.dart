@@ -3,8 +3,8 @@ import 'dart:collection';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 
-import '../constants.dart';
-import '../models.dart';
+import '../../core/constants.dart';
+import '../../core/models.dart';
 
 class SlopesChart extends StatelessWidget {
   final Queue<Sample> rmsSlopeQueue;

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../models.dart';
+import '../../core/models.dart';
 
 class StatusBar extends StatelessWidget {
   final String connState;

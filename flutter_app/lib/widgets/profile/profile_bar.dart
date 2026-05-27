@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../profile_service.dart';
+import '../../services/profile_service.dart';
 
 class ProfileBar extends StatelessWidget {
   final ProfileService service;

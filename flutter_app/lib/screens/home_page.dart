@@ -6,24 +6,26 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
-import 'constants.dart';
-import 'csv_exporter.dart';
-import 'csv_save_stub.dart' if (dart.library.html) 'csv_save_web.dart';
-import 'models.dart';
-import 'profile_service.dart';
-import 'widgets/ble_bar.dart';
-import 'widgets/chart_card.dart';
-import 'widgets/contraction_panel.dart';
-import 'widgets/controls.dart';
-import 'widgets/fatigue_banner.dart';
-import 'widgets/fatigue_dialog.dart';
-import 'widgets/fatigue_trigger_panel.dart';
-import 'widgets/live_readout.dart';
-import 'widgets/pipeline_diagram.dart';
-import 'widgets/profile_bar.dart';
-import 'widgets/section_title.dart';
-import 'widgets/slopes_chart.dart';
-import 'widgets/status_bar.dart';
+import '../core/constants.dart';
+import '../core/models.dart';
+import '../services/csv_exporter.dart';
+import '../services/csv_save_stub.dart'
+    if (dart.library.html) '../services/csv_save_web.dart';
+import '../services/profile_service.dart';
+import '../widgets/ble/ble_bar.dart';
+import '../widgets/ble/status_bar.dart';
+import '../widgets/charts/chart_card.dart';
+import '../widgets/charts/slopes_chart.dart';
+import '../widgets/common/section_title.dart';
+import '../widgets/controls/controls.dart';
+import '../widgets/fatigue/fatigue_banner.dart';
+import '../widgets/fatigue/fatigue_dialog.dart';
+import '../widgets/fatigue/fatigue_trigger_panel.dart';
+import '../widgets/pipeline/contraction_panel.dart';
+import '../widgets/pipeline/pipeline_diagram.dart';
+import '../widgets/profile/profile_bar.dart';
+import '../widgets/readout/live_readout.dart';
+import 'splash_screen.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -461,6 +463,38 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  // ---------- 처음 화면으로 이동 ----------
+  Future<void> _goToSplash() async {
+    if (_st.isRunning) {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('처음 화면으로 이동'),
+          content: const Text(
+            '세션이 진행 중입니다. 이동하면 측정이 중단되고 기록이 손실될 수 있습니다. 계속하시겠습니까?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('취소'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Colors.red),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('이동'),
+            ),
+          ],
+        ),
+      );
+      if (ok != true) return;
+    }
+    if (!mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const SplashScreen()),
+      (_) => false,
+    );
+  }
+
   // ============================================================
   // 빌드
   // ============================================================
@@ -472,6 +506,11 @@ class _HomePageState extends State<HomePage> {
       appBar: AppBar(
         title: const Text('EMG-FES Monitor'),
         actions: [
+          IconButton(
+            tooltip: '처음 화면',
+            icon: const Icon(Icons.home_outlined),
+            onPressed: _goToSplash,
+          ),
           IconButton(
             tooltip: _connState == 'connected'
                 ? 'Disconnect'
