@@ -108,8 +108,8 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   static const int windowSec = 60;
-  static const int maxPoints = windowSec;          // 1Hz 신호용 (rms/mdf/slope)
-  static const int maxEnvPoints = windowSec * 5;   // 5Hz envelope 60초치 (UI 부하 절감)
+  static const int maxPoints = windowSec; // 1Hz 신호용 (rms/mdf/slope)
+  static const int maxEnvPoints = windowSec * 5; // 5Hz envelope 60초치 (UI 부하 절감)
 
   // BLE
   BluetoothDevice? _device;
@@ -130,12 +130,12 @@ class _HomePageState extends State<HomePage> {
   final Queue<_Sample> _rmsSlope = Queue();
   final Queue<_Sample> _mdfSlope = Queue();
   double _t0 = 0;
-  bool _t0Init = false;            // _t0가 첫 메시지에서 설정됐는지
+  bool _t0Init = false; // _t0가 첫 메시지에서 설정됐는지
   double _envLast = 0;
   double _rmsLast = 0;
   double _mdfLast = 0;
-  double _lastEnvPushT = -1.0;     // ENV push의 마지막 t (시간 기반 데시메이션)
-  static const double envPushIntervalSec = 0.2;  // 5Hz
+  double _lastEnvPushT = -1.0; // ENV push의 마지막 t (시간 기반 데시메이션)
+  static const double envPushIntervalSec = 0.2; // 5Hz
   final _Status _st = _Status();
 
   // CSV 로깅 (web만) — 1Hz로 다운샘플 (10Hz BLE 중 초당 1번만 기록)
@@ -1280,86 +1280,86 @@ class _HomePageState extends State<HomePage> {
                     )
                   : RepaintBoundary(
                       child: LineChart(
-                      LineChartData(
-                        minX: minX,
-                        maxX: maxX,
-                        minY: minY,
-                        maxY: maxY,
-                        gridData: const FlGridData(show: true),
-                        titlesData: const FlTitlesData(
-                          leftTitles: AxisTitles(
-                            sideTitles: SideTitles(
-                              showTitles: true,
-                              reservedSize: 38,
-                            ),
-                          ),
-                          bottomTitles: AxisTitles(
-                            sideTitles: SideTitles(
-                              showTitles: true,
-                              reservedSize: 20,
-                            ),
-                          ),
-                          topTitles: AxisTitles(
-                            sideTitles: SideTitles(showTitles: false),
-                          ),
-                          rightTitles: AxisTitles(
-                            sideTitles: SideTitles(showTitles: false),
-                          ),
-                        ),
-                        borderData: FlBorderData(show: true),
-                        extraLinesData: ExtraLinesData(
-                          horizontalLines: [
-                            HorizontalLine(
-                              y: 0,
-                              color: Colors.white24,
-                              strokeWidth: 1,
-                            ),
-                            HorizontalLine(
-                              y: _st.rmsThreshold,
-                              color: _cThr.withValues(alpha: 0.7),
-                              strokeWidth: 1.2,
-                              dashArray: [5, 4],
-                              label: HorizontalLineLabel(
-                                show: true,
-                                alignment: Alignment.topRight,
-                                style: TextStyle(color: _cThr, fontSize: 9),
-                                labelResolver: (_) =>
-                                    'RMS thr +${_st.rmsThreshold.toStringAsFixed(0)}%',
+                        LineChartData(
+                          minX: minX,
+                          maxX: maxX,
+                          minY: minY,
+                          maxY: maxY,
+                          gridData: const FlGridData(show: true),
+                          titlesData: const FlTitlesData(
+                            leftTitles: AxisTitles(
+                              sideTitles: SideTitles(
+                                showTitles: true,
+                                reservedSize: 38,
                               ),
                             ),
-                            HorizontalLine(
-                              y: _st.mdfThreshold,
-                              color: _cThr.withValues(alpha: 0.7),
-                              strokeWidth: 1.2,
-                              dashArray: [5, 4],
-                              label: HorizontalLineLabel(
-                                show: true,
-                                alignment: Alignment.bottomRight,
-                                style: TextStyle(color: _cThr, fontSize: 9),
-                                labelResolver: (_) =>
-                                    'MDF thr ${_st.mdfThreshold.toStringAsFixed(0)}%',
+                            bottomTitles: AxisTitles(
+                              sideTitles: SideTitles(
+                                showTitles: true,
+                                reservedSize: 20,
                               ),
+                            ),
+                            topTitles: AxisTitles(
+                              sideTitles: SideTitles(showTitles: false),
+                            ),
+                            rightTitles: AxisTitles(
+                              sideTitles: SideTitles(showTitles: false),
+                            ),
+                          ),
+                          borderData: FlBorderData(show: true),
+                          extraLinesData: ExtraLinesData(
+                            horizontalLines: [
+                              HorizontalLine(
+                                y: 0,
+                                color: Colors.white24,
+                                strokeWidth: 1,
+                              ),
+                              HorizontalLine(
+                                y: _st.rmsThreshold,
+                                color: _cThr.withValues(alpha: 0.7),
+                                strokeWidth: 1.2,
+                                dashArray: [5, 4],
+                                label: HorizontalLineLabel(
+                                  show: true,
+                                  alignment: Alignment.topRight,
+                                  style: TextStyle(color: _cThr, fontSize: 9),
+                                  labelResolver: (_) =>
+                                      'RMS thr +${_st.rmsThreshold.toStringAsFixed(0)}%',
+                                ),
+                              ),
+                              HorizontalLine(
+                                y: _st.mdfThreshold,
+                                color: _cThr.withValues(alpha: 0.7),
+                                strokeWidth: 1.2,
+                                dashArray: [5, 4],
+                                label: HorizontalLineLabel(
+                                  show: true,
+                                  alignment: Alignment.bottomRight,
+                                  style: TextStyle(color: _cThr, fontSize: 9),
+                                  labelResolver: (_) =>
+                                      'MDF thr ${_st.mdfThreshold.toStringAsFixed(0)}%',
+                                ),
+                              ),
+                            ],
+                          ),
+                          lineBarsData: [
+                            LineChartBarData(
+                              spots: rsSpots,
+                              isCurved: false,
+                              color: _cRmsSlope,
+                              barWidth: 1.8,
+                              dotData: const FlDotData(show: false),
+                            ),
+                            LineChartBarData(
+                              spots: msSpots,
+                              isCurved: false,
+                              color: _cMdfSlope,
+                              barWidth: 1.8,
+                              dotData: const FlDotData(show: false),
                             ),
                           ],
                         ),
-                        lineBarsData: [
-                          LineChartBarData(
-                            spots: rsSpots,
-                            isCurved: false,
-                            color: _cRmsSlope,
-                            barWidth: 1.8,
-                            dotData: const FlDotData(show: false),
-                          ),
-                          LineChartBarData(
-                            spots: msSpots,
-                            isCurved: false,
-                            color: _cMdfSlope,
-                            barWidth: 1.8,
-                            dotData: const FlDotData(show: false),
-                          ),
-                        ],
-                      ),
-                      duration: Duration.zero,
+                        duration: Duration.zero,
                       ),
                     ),
             ),
