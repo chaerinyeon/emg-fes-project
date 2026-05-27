@@ -237,3 +237,6 @@ class ProfileService {
     await save(updated);
   }
 }
+
+/// 앱 전역 ProfileService 싱글톤. main()에서 init() 호출 필요.
+final ProfileService gProfileService = ProfileService();
