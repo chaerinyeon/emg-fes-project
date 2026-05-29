@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../core/subject_category.dart';
 import '../services/profile_service.dart';
+import '../widgets/profile/profile_edit_dialog.dart';
 import 'home_page.dart';
 
 class ProfileSelectScreen extends StatefulWidget {
@@ -11,6 +13,8 @@ class ProfileSelectScreen extends StatefulWidget {
 }
 
 class _ProfileSelectScreenState extends State<ProfileSelectScreen> {
+  SubjectCategory? _filter; // null = 전체
+
   Future<void> _enter(String profileId) async {
     await gProfileService.setActive(profileId);
     if (!mounted) return;
@@ -20,36 +24,14 @@ class _ProfileSelectScreenState extends State<ProfileSelectScreen> {
   }
 
   Future<void> _createProfile() async {
-    final ctrl = TextEditingController();
-    final name = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('새 환자 프로파일'),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          decoration: const InputDecoration(
-            labelText: '환자 이름 또는 ID',
-            hintText: 'Subject A',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('취소'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
-            child: const Text('생성'),
-          ),
-        ],
-      ),
-    );
-    if (name == null || name.isEmpty) return;
-    final id = 'subject_${DateTime.now().millisecondsSinceEpoch}';
-    final p = UserProfile(id: id, name: name);
-    await gProfileService.save(p);
-    if (!mounted) return;
+    final saved = await ProfileEditDialog.show(context);
+    if (saved == null || !mounted) return;
+    setState(() {});
+  }
+
+  Future<void> _editProfile(UserProfile p) async {
+    final saved = await ProfileEditDialog.show(context, initial: p);
+    if (saved == null || !mounted) return;
     setState(() {});
   }
 
@@ -90,10 +72,22 @@ class _ProfileSelectScreenState extends State<ProfileSelectScreen> {
     return '방금 전';
   }
 
+  Map<SubjectCategory?, int> _countByCategory(List<UserProfile> all) {
+    final map = <SubjectCategory?, int>{};
+    for (final p in all) {
+      map[p.category] = (map[p.category] ?? 0) + 1;
+    }
+    return map;
+  }
+
   @override
   Widget build(BuildContext context) {
-    final profiles = gProfileService.all();
+    final all = gProfileService.all();
     final activeId = gProfileService.active?.id;
+    final counts = _countByCategory(all);
+    final visible = _filter == null
+        ? all
+        : all.where((p) => p.category == _filter).toList();
 
     return Scaffold(
       body: SafeArea(
@@ -102,57 +96,36 @@ class _ProfileSelectScreenState extends State<ProfileSelectScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Row(
-                children: [
-                  Container(
-                    width: 44,
-                    height: 44,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: Colors.indigoAccent.withValues(alpha: 0.2),
-                      border: Border.all(color: Colors.indigoAccent),
-                    ),
-                    child: const Icon(
-                      Icons.person,
-                      color: Colors.indigoAccent,
-                      size: 24,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: const [
-                      Text(
-                        '환자 선택',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 22,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      SizedBox(height: 2),
-                      Text(
-                        '측정할 환자 프로파일을 선택하세요',
-                        style: TextStyle(color: Colors.white54, fontSize: 12),
-                      ),
-                    ],
-                  ),
-                ],
+              const Text(
+                '환자 선택',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 2),
+              const Text(
+                '측정할 환자 프로파일을 선택하세요',
+                style: TextStyle(color: Colors.white38, fontSize: 12),
+              ),
+              const SizedBox(height: 16),
+              _buildFilterRow(all.length, counts),
+              const SizedBox(height: 12),
               Expanded(
-                child: profiles.isEmpty
-                    ? _buildEmpty()
+                child: visible.isEmpty
+                    ? _buildEmpty(all.isEmpty)
                     : ListView.separated(
-                        itemCount: profiles.length,
+                        itemCount: visible.length,
                         separatorBuilder: (_, i) => const SizedBox(height: 8),
                         itemBuilder: (_, i) {
-                          final p = profiles[i];
+                          final p = visible[i];
                           return _ProfileTile(
                             profile: p,
                             isActive: p.id == activeId,
                             onTap: () => _enter(p.id),
-                            onDelete: profiles.length > 1
+                            onEdit: () => _editProfile(p),
+                            onDelete: all.length > 1
                                 ? () => _deleteProfile(p)
                                 : null,
                             lastSessionLabel: _formatLastSession(p.lastSessionAt),
@@ -163,12 +136,12 @@ class _ProfileSelectScreenState extends State<ProfileSelectScreen> {
               const SizedBox(height: 12),
               OutlinedButton.icon(
                 onPressed: _createProfile,
-                icon: const Icon(Icons.add),
-                label: const Text('새 환자 프로파일 추가'),
+                icon: const Icon(Icons.add, size: 18),
+                label: const Text('새 환자 추가'),
                 style: OutlinedButton.styleFrom(
-                  foregroundColor: Colors.greenAccent,
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  side: const BorderSide(color: Colors.greenAccent),
+                  foregroundColor: Colors.white70,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  side: const BorderSide(color: Colors.white24),
                 ),
               ),
             ],
@@ -178,7 +151,74 @@ class _ProfileSelectScreenState extends State<ProfileSelectScreen> {
     );
   }
 
-  Widget _buildEmpty() {
+  Widget _buildFilterRow(int total, Map<SubjectCategory?, int> counts) {
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: [
+          _filterChip(label: '전체', count: total, selected: _filter == null,
+              color: Colors.indigoAccent, onTap: () => setState(() => _filter = null)),
+          for (final c in SubjectCategory.values) ...[
+            const SizedBox(width: 6),
+            _filterChip(
+              label: '${c.code} · ${c.short}',
+              count: counts[c] ?? 0,
+              selected: _filter == c,
+              color: c.color,
+              onTap: () => setState(() => _filter = c),
+            ),
+          ],
+          if ((counts[null] ?? 0) > 0) ...[
+            const SizedBox(width: 6),
+            _filterChip(
+              label: '미분류',
+              count: counts[null] ?? 0,
+              selected: false, // 미분류는 임시 — 필터 토글로 사용 안 함
+              color: Colors.white38,
+              onTap: () {},
+              dimmed: true,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _filterChip({
+    required String label,
+    required int count,
+    required bool selected,
+    required Color color,
+    required VoidCallback onTap,
+    bool dimmed = false,
+  }) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(4),
+        onTap: dimmed ? null : onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            border: Border.all(
+              color: selected ? color : Colors.white24,
+            ),
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: Text(
+            '$label  $count',
+            style: TextStyle(
+              color: selected ? color : Colors.white60,
+              fontSize: 11,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmpty(bool noProfilesAtAll) {
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -189,14 +229,18 @@ class _ProfileSelectScreenState extends State<ProfileSelectScreen> {
             color: Colors.white.withValues(alpha: 0.3),
           ),
           const SizedBox(height: 16),
-          const Text(
-            '등록된 환자가 없습니다',
-            style: TextStyle(color: Colors.white60, fontSize: 14),
+          Text(
+            noProfilesAtAll
+                ? '등록된 환자가 없습니다'
+                : '해당 분류의 환자가 없습니다',
+            style: const TextStyle(color: Colors.white60, fontSize: 14),
           ),
           const SizedBox(height: 6),
-          const Text(
-            '아래 버튼으로 첫 환자를 추가하세요',
-            style: TextStyle(color: Colors.white38, fontSize: 12),
+          Text(
+            noProfilesAtAll
+                ? '아래 버튼으로 첫 환자를 추가하세요'
+                : '필터를 전체로 바꾸거나 새 환자를 추가하세요',
+            style: const TextStyle(color: Colors.white38, fontSize: 12),
           ),
         ],
       ),
@@ -208,6 +252,7 @@ class _ProfileTile extends StatelessWidget {
   final UserProfile profile;
   final bool isActive;
   final VoidCallback onTap;
+  final VoidCallback onEdit;
   final VoidCallback? onDelete;
   final String lastSessionLabel;
 
@@ -215,112 +260,125 @@ class _ProfileTile extends StatelessWidget {
     required this.profile,
     required this.isActive,
     required this.onTap,
+    required this.onEdit,
     required this.onDelete,
     required this.lastSessionLabel,
   });
 
   @override
   Widget build(BuildContext context) {
-    final accent = isActive ? Colors.indigoAccent : Colors.white24;
+    final cat = profile.category;
+    final stripeColor = cat?.color ?? Colors.white24;
     return Material(
       color: isActive
-          ? Colors.indigoAccent.withValues(alpha: 0.12)
-          : Colors.white.withValues(alpha: 0.04),
-      borderRadius: BorderRadius.circular(12),
+          ? Colors.white.withValues(alpha: 0.06)
+          : Colors.transparent,
+      borderRadius: BorderRadius.circular(6),
       child: InkWell(
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(6),
         onTap: onTap,
         child: Container(
-          padding: const EdgeInsets.fromLTRB(14, 12, 8, 12),
           decoration: BoxDecoration(
-            border: Border.all(color: accent, width: isActive ? 1.5 : 1),
-            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.white12),
+            borderRadius: BorderRadius.circular(6),
           ),
-          child: Row(
-            children: [
-              CircleAvatar(
-                radius: 20,
-                backgroundColor: accent.withValues(alpha: 0.3),
-                child: Text(
-                  profile.name.isNotEmpty
-                      ? profile.name.characters.first.toUpperCase()
-                      : '?',
-                  style: TextStyle(
-                    color: isActive ? Colors.white : Colors.white70,
-                    fontWeight: FontWeight.bold,
-                  ),
+          child: IntrinsicHeight(
+            child: Row(
+              children: [
+                Container(
+                  width: 3,
+                  color: stripeColor,
                 ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        Row(
+                          children: [
+                            if (cat != null) ...[
+                              Text(
+                                cat.code,
+                                style: TextStyle(
+                                  color: cat.color,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                            ],
+                            Flexible(
+                              child: Text(
+                                profile.name,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            if (isActive) ...[
+                              const SizedBox(width: 6),
+                              const Icon(
+                                Icons.check,
+                                size: 13,
+                                color: Colors.white54,
+                              ),
+                            ],
+                          ],
+                        ),
+                        const SizedBox(height: 3),
                         Text(
-                          profile.name,
+                          '${cat == null ? '미분류' : cat.label}  ·  ${profile.sessionCount}회  ·  $lastSessionLabel',
                           style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 15,
-                            fontWeight: FontWeight.w600,
+                            color: Colors.white54,
+                            fontSize: 11,
                           ),
                         ),
-                        if (isActive) ...[
-                          const SizedBox(width: 6),
-                          const Icon(
-                            Icons.check_circle,
-                            size: 14,
-                            color: Colors.indigoAccent,
+                        if (profile.note != null &&
+                            profile.note!.isNotEmpty) ...[
+                          const SizedBox(height: 2),
+                          Text(
+                            profile.note!,
+                            style: const TextStyle(
+                              color: Colors.white38,
+                              fontSize: 10,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ],
                       ],
                     ),
-                    const SizedBox(height: 3),
-                    Text(
-                      '${profile.sessionCount} 세션 · $lastSessionLabel',
-                      style: const TextStyle(
-                        color: Colors.white54,
-                        fontSize: 11,
-                      ),
+                  ),
+                ),
+                PopupMenuButton<String>(
+                  icon: const Icon(
+                    Icons.more_horiz,
+                    color: Colors.white38,
+                    size: 18,
+                  ),
+                  onSelected: (v) {
+                    if (v == 'edit') onEdit();
+                    if (v == 'delete' && onDelete != null) onDelete!();
+                  },
+                  itemBuilder: (_) => [
+                    const PopupMenuItem(
+                      value: 'edit',
+                      child: Text('수정'),
                     ),
-                    if (profile.mvcRms != null ||
-                        profile.restingRms != null) ...[
-                      const SizedBox(height: 3),
-                      Text(
-                        [
-                          if (profile.mvcRms != null)
-                            'MVC ${profile.mvcRms!.toStringAsFixed(0)}',
-                          if (profile.restingRms != null)
-                            'rest ${profile.restingRms!.toStringAsFixed(0)}',
-                          if (profile.mdfBaseline != null)
-                            'MDF ${profile.mdfBaseline!.toStringAsFixed(0)}Hz',
-                        ].join('  ·  '),
-                        style: const TextStyle(
-                          color: Colors.white38,
-                          fontSize: 10,
-                        ),
+                    if (onDelete != null)
+                      const PopupMenuItem(
+                        value: 'delete',
+                        child: Text('삭제'),
                       ),
-                    ],
                   ],
                 ),
-              ),
-              if (onDelete != null)
-                IconButton(
-                  icon: const Icon(
-                    Icons.delete_outline,
-                    size: 18,
-                    color: Colors.white38,
-                  ),
-                  onPressed: onDelete,
-                  tooltip: '삭제',
-                ),
-              const Icon(
-                Icons.chevron_right,
-                color: Colors.white38,
-                size: 22,
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

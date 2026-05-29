@@ -55,74 +55,43 @@ class _SplashScreenState extends State<SplashScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [Color(0xFF1A237E), Color(0xFF0D1117)],
-          ),
-        ),
-        child: Center(
-          child: FadeTransition(
-            opacity: _fade,
-            child: ScaleTransition(
-              scale: _scale,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 110,
-                    height: 110,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      gradient: const LinearGradient(
-                        colors: [Color(0xFF69F0AE), Color(0xFF82B1FF)],
-                      ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.indigoAccent.withValues(alpha: 0.4),
-                          blurRadius: 32,
-                          spreadRadius: 4,
-                        ),
-                      ],
-                    ),
-                    child: const Icon(
-                      Icons.monitor_heart_rounded,
-                      size: 64,
-                      color: Colors.white,
-                    ),
+      body: Center(
+        child: FadeTransition(
+          opacity: _fade,
+          child: ScaleTransition(
+            scale: _scale,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.monitor_heart_outlined,
+                  size: 56,
+                  color: Colors.white70,
+                ),
+                const SizedBox(height: 20),
+                const Text(
+                  'EMG-FES Monitor',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.w600,
                   ),
-                  const SizedBox(height: 24),
-                  const Text(
-                    'EMG-FES Monitor',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 24,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 0.5,
-                    ),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  '근전도 · 전기자극 모니터링',
+                  style: TextStyle(color: Colors.white38, fontSize: 12),
+                ),
+                const SizedBox(height: 28),
+                const SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 1.8,
+                    valueColor: AlwaysStoppedAnimation(Colors.white38),
                   ),
-                  const SizedBox(height: 6),
-                  const Text(
-                    '근전도 · 전기자극 모니터링',
-                    style: TextStyle(
-                      color: Colors.white60,
-                      fontSize: 13,
-                      letterSpacing: 1.2,
-                    ),
-                  ),
-                  const SizedBox(height: 36),
-                  const SizedBox(
-                    width: 28,
-                    height: 28,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2.2,
-                      valueColor: AlwaysStoppedAnimation(Colors.white54),
-                    ),
-                  ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         ),

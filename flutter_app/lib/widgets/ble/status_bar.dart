@@ -13,38 +13,37 @@ class StatusBar extends StatelessWidget {
     Color stateColor;
     switch (connState) {
       case 'connected':
-        stateColor = Colors.green;
+        stateColor = Colors.greenAccent;
         break;
       case 'connecting':
       case 'scanning':
-        stateColor = Colors.orange;
+        stateColor = Colors.orangeAccent;
         break;
       case 'error':
-        stateColor = Colors.red;
+        stateColor = Colors.redAccent;
         break;
       default:
-        stateColor = Colors.grey;
+        stateColor = Colors.white54;
     }
     final chips = <Widget>[
       _chip(connState.toUpperCase(), stateColor),
-      if (status.isRunning) _chip('RUN', Colors.indigo),
-      if (status.isStimulating) _chip('STIM', Colors.orange),
-      if (status.fatigueDetected) _chip('FATIGUE', Colors.red),
-      _chip('state: ${status.muscleState}', Colors.blueGrey),
-      _chip('hist ${status.historyCount}', Colors.blueGrey),
+      if (status.isRunning) _chip('RUN', Colors.white70),
+      if (status.isStimulating) _chip('STIM', Colors.orangeAccent),
+      if (status.fatigueDetected) _chip('FATIGUE', Colors.redAccent),
+      _chip(status.muscleState, Colors.white54),
+      _chip('hist ${status.historyCount}', Colors.white54),
     ];
     return Wrap(spacing: 6, runSpacing: 6, children: chips);
   }
 
   Widget _chip(String label, Color color) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.25),
-        border: Border.all(color: color),
-        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: 0.5)),
+        borderRadius: BorderRadius.circular(4),
       ),
-      child: Text(label, style: TextStyle(color: color, fontSize: 12)),
+      child: Text(label, style: TextStyle(color: color, fontSize: 11)),
     );
   }
 }

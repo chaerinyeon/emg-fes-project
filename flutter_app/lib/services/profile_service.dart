@@ -12,11 +12,15 @@
 import 'dart:convert';
 import 'package:hive/hive.dart';
 
+import '../core/subject_category.dart';
+
 /// 환자별 측정 프로파일.
 /// 캘리브레이션 세션에서 MVC·resting·baseline 등을 채워 영구 저장.
 class UserProfile {
   final String id; // UUID 또는 임의 슬러그
   String name; // 표시명 (예: "Subject A", "김환자")
+  SubjectCategory? category; // 분류 (A/B/C). 미지정 가능.
+  String? note; // 자유 비고 (병변 부위, 수술 이력, 측정 조건 등)
   double? mvcRms; // 최대 수축 시 RMS (Maximum Voluntary Contraction)
   double? restingRms; // 휴식 시 평균 RMS (baseline)
   double? mdfBaseline; // 휴식 시 평균 MDF (Hz)
@@ -28,6 +32,8 @@ class UserProfile {
   UserProfile({
     required this.id,
     required this.name,
+    this.category,
+    this.note,
     this.mvcRms,
     this.restingRms,
     this.mdfBaseline,
@@ -40,6 +46,8 @@ class UserProfile {
 
   Map<String, dynamic> toJson() => {
     'name': name,
+    'category': category?.code,
+    'note': note,
     'mvcRms': mvcRms,
     'restingRms': restingRms,
     'mdfBaseline': mdfBaseline,
@@ -53,6 +61,8 @@ class UserProfile {
     return UserProfile(
       id: id,
       name: (j['name'] as String?) ?? id,
+      category: SubjectCategory.fromCode(j['category'] as String?),
+      note: j['note'] as String?,
       mvcRms: (j['mvcRms'] as num?)?.toDouble(),
       restingRms: (j['restingRms'] as num?)?.toDouble(),
       mdfBaseline: (j['mdfBaseline'] as num?)?.toDouble(),
@@ -73,6 +83,8 @@ class UserProfile {
 
   UserProfile copyWith({
     String? name,
+    Object? category = _sentinel,
+    Object? note = _sentinel,
     double? mvcRms,
     double? restingRms,
     double? mdfBaseline,
@@ -84,6 +96,10 @@ class UserProfile {
     return UserProfile(
       id: id,
       name: name ?? this.name,
+      category: identical(category, _sentinel)
+          ? this.category
+          : category as SubjectCategory?,
+      note: identical(note, _sentinel) ? this.note : note as String?,
       mvcRms: mvcRms ?? this.mvcRms,
       restingRms: restingRms ?? this.restingRms,
       mdfBaseline: mdfBaseline ?? this.mdfBaseline,
@@ -96,6 +112,9 @@ class UserProfile {
     );
   }
 }
+
+// copyWith에서 null 명시 전달과 미전달을 구분하기 위한 sentinel.
+const Object _sentinel = Object();
 
 class ProfileService {
   static const String _boxName = 'profiles';

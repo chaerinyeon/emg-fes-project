@@ -8,7 +8,9 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 import '../core/constants.dart';
 import '../core/models.dart';
+import '../core/subject_category.dart';
 import '../services/csv_exporter.dart';
+import '../services/fatigue_engine.dart';
 import '../services/csv_save_stub.dart'
     if (dart.library.html) '../services/csv_save_web.dart';
 import '../services/profile_service.dart';
@@ -23,6 +25,8 @@ import '../widgets/fatigue/fatigue_dialog.dart';
 import '../widgets/fatigue/fatigue_trigger_panel.dart';
 import '../widgets/pipeline/contraction_panel.dart';
 import '../widgets/pipeline/pipeline_diagram.dart';
+import '../widgets/mwave/algorithm_badge.dart';
+import '../widgets/mwave/mwave_panel.dart';
 import '../widgets/profile/profile_bar.dart';
 import '../widgets/readout/live_readout.dart';
 import 'splash_screen.dart';
@@ -58,6 +62,9 @@ class _HomePageState extends State<HomePage> {
   double _mdfLast = 0;
   double _lastEnvPushT = -1.0; // ENV push의 마지막 t (시간 기반 데시메이션)
   final AppStatus _st = AppStatus();
+
+  // 자체 fatigue 엔진 (활성 환자 분류에 맞춰 매 _startSession 때 재생성)
+  FatigueEngine _engine = FatigueEngine(category: SubjectCategory.healthy);
 
   // CSV 로깅 (web만) — 1Hz로 다운샘플 (10Hz BLE 중 초당 1번만 기록)
   final List<Map<String, dynamic>> _log = [];
@@ -320,6 +327,20 @@ class _HomePageState extends State<HomePage> {
           _push(_mdfSlope, Sample(t, (msg['ms'] as num).toDouble()));
         }
 
+        // M-wave 메트릭 (새 검출이 있을 때만 펌웨어가 송신)
+        if (msg['mwa'] != null) {
+          _st.mwAmp = (msg['mwa'] as num).toDouble();
+        }
+        if (msg['mwc'] != null) {
+          _st.mwArea = (msg['mwc'] as num).toDouble();
+        }
+        if (msg['mwl'] != null) {
+          _st.mwLatency = (msg['mwl'] as num).toDouble();
+        }
+        if (msg['mwn'] != null) {
+          _st.mwCount = (msg['mwn'] as num).toInt();
+        }
+
         // 1Hz 다운샘플: ts 초 단위가 바뀔 때만 로그 (펌웨어 BLE 10Hz → CSV 1Hz)
         // 단, 마커는 분실 방지 위해 들어오면 즉시 별도 행으로 기록
         final tsSec = (msg['ts'] as num).toInt() ~/ 1000;
@@ -349,7 +370,7 @@ class _HomePageState extends State<HomePage> {
         }
       }
 
-      final wasFatigued = _st.fatigueDetected;
+      final wasFatigued = _st.engineFatigueDetected;
       final wasStimulating = _st.isStimulating;
       _st.isRunning = running;
       _st.isStimulating = msg['stim'] ?? _st.isStimulating;
@@ -357,6 +378,15 @@ class _HomePageState extends State<HomePage> {
       _st.rmsSlope = (msg['rs'] as num?)?.toDouble() ?? _st.rmsSlope;
       _st.mdfSlope = (msg['ms'] as num?)?.toDouble() ?? _st.mdfSlope;
       _st.historyCount = (msg['hc'] as num?)?.toInt() ?? _st.historyCount;
+
+      // 엔진 임계값을 펌웨어 값과 동기화
+      _st.rmsThreshold = (msg['rt'] as num?)?.toDouble() ?? _st.rmsThreshold;
+      _st.mdfThreshold = (msg['mt'] as num?)?.toDouble() ?? _st.mdfThreshold;
+      _st.consecutiveTrigger =
+          (msg['ct'] as num?)?.toInt() ?? _st.consecutiveTrigger;
+      _engine.rmsThreshold = _st.rmsThreshold;
+      _engine.mdfThreshold = _st.mdfThreshold;
+      _engine.consecutiveTrigger = _st.consecutiveTrigger;
 
       // 수축 상태머신 필드
       _st.contractState = (msg['cs'] as num?)?.toInt() ?? _st.contractState;
@@ -375,7 +405,40 @@ class _HomePageState extends State<HomePage> {
         _st.sessionMaxRms = _rmsLast;
       }
 
-      if (!wasFatigued && _st.fatigueDetected) {
+      // ===== 자체 fatigue 엔진 (카테고리별 알고리즘) =====
+      final hasMw = msg['mwa'] != null;
+      final result = _engine.update(
+        rmsSlope: _st.rmsSlope,
+        mdfSlope: _st.mdfSlope,
+        historyCount: _st.historyCount,
+        mwAmp: hasMw ? (msg['mwa'] as num).toDouble() : null,
+        mwArea: hasMw ? (msg['mwc'] as num).toDouble() : null,
+        mwLatency: hasMw ? (msg['mwl'] as num).toDouble() : null,
+      );
+      _st.engineFatigueDetected = result.detected;
+      _st.engineConsecutive = result.consecutive;
+      _st.engineReasons = result.reasons;
+      _st.mwAmpBaseline = _engine.mwAmpBase;
+      _st.mwAreaBaseline = _engine.mwAreaBase;
+      _st.mwLatBaseline = _engine.mwLatBase;
+      _st.mwAmpDeclinePct = _engine.lastAmpDeclinePct;
+      _st.mwAreaDeclinePct = _engine.lastAreaDeclinePct;
+      _st.mwLatencyDeltaMs = _engine.lastLatencyDeltaMs;
+
+      if (result.justTriggered) {
+        // 엔진이 처음 fatigue 판정 → 자극이 켜져 있으면 즉시 정지
+        if (_st.isStimulating) {
+          _send({'cmd': 'stop'});
+        }
+        showFatigueDialog(
+          context,
+          rmsSlope: _st.rmsSlope,
+          mdfSlope: _st.mdfSlope,
+          fesWasOn: wasStimulating,
+        );
+      }
+      // 펌웨어 fd 상승 에지도 대비책으로 처리 (M-wave 없는 카테고리)
+      if (!wasFatigued && !result.detected && _st.fatigueDetected) {
         showFatigueDialog(
           context,
           rmsSlope: _st.rmsSlope,
@@ -419,6 +482,27 @@ class _HomePageState extends State<HomePage> {
     _log.clear();
     _pendingMarker = null;
     _st.sessionMaxRms = 0;
+    // 활성 환자 카테고리로 엔진 재생성 (미지정 시 healthy로 기본)
+    final cat = gProfileService.active?.category ?? SubjectCategory.healthy;
+    _engine = FatigueEngine(
+      category: cat,
+      rmsThreshold: _st.rmsThreshold,
+      mdfThreshold: _st.mdfThreshold,
+      consecutiveTrigger: _st.consecutiveTrigger,
+    );
+    _st.engineFatigueDetected = false;
+    _st.engineConsecutive = 0;
+    _st.engineReasons = const [];
+    _st.mwAmp = 0;
+    _st.mwArea = 0;
+    _st.mwLatency = 0;
+    _st.mwCount = 0;
+    _st.mwAmpBaseline = null;
+    _st.mwAreaBaseline = null;
+    _st.mwLatBaseline = null;
+    _st.mwAmpDeclinePct = null;
+    _st.mwAreaDeclinePct = null;
+    _st.mwLatencyDeltaMs = null;
     _send({'cmd': 'start'});
   }
 
@@ -556,19 +640,36 @@ class _HomePageState extends State<HomePage> {
                   style: const TextStyle(color: Colors.redAccent, fontSize: 11),
                 ),
               ],
-              const SizedBox(height: 10),
+              const SizedBox(height: 8),
+              AlgorithmBadge(
+                category: gProfileService.active?.category,
+              ),
+              const SizedBox(height: 8),
               LiveReadout(
                 active: active,
                 envLast: _envLast,
                 rmsLast: _rmsLast,
                 mdfLast: _mdfLast,
               ),
-              if (_st.fatigueDetected) ...[
+              const SizedBox(height: 6),
+              MwavePanel(status: _st),
+              if (_st.engineFatigueDetected || _st.fatigueDetected) ...[
                 const SizedBox(height: 8),
                 FatigueBanner(
                   rmsSlope: _st.rmsSlope,
                   mdfSlope: _st.mdfSlope,
                 ),
+                if (_st.engineReasons.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    '판정 근거: ${_st.engineReasons.join(' · ')}',
+                    style: const TextStyle(
+                      color: Colors.redAccent,
+                      fontSize: 11,
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+                ],
               ],
 
               const SizedBox(height: 14),

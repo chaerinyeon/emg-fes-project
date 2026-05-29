@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../../core/subject_category.dart';
 import '../../services/profile_service.dart';
+import 'profile_edit_dialog.dart';
 
 class ProfileBar extends StatelessWidget {
   final ProfileService service;
@@ -12,44 +14,20 @@ class ProfileBar extends StatelessWidget {
     required this.onChanged,
   });
 
-  Future<void> _showCreateProfileDialog(BuildContext context) async {
-    final ctrl = TextEditingController();
-    final name = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('새 프로파일'),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          decoration: const InputDecoration(
-            labelText: '환자 이름 또는 ID',
-            hintText: 'Subject B',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('취소'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
-            child: const Text('생성'),
-          ),
-        ],
-      ),
-    );
-    if (name == null || name.isEmpty) return;
-    final id = 'subject_${DateTime.now().millisecondsSinceEpoch}';
-    final p = UserProfile(id: id, name: name);
-    await service.save(p);
-    await service.setActive(id);
+  Future<void> _createProfile(BuildContext context) async {
+    final saved = await ProfileEditDialog.show(context);
+    if (saved == null) return;
+    await service.setActive(saved.id);
     onChanged();
   }
 
-  Future<void> _showDeleteProfileDialog(
-    BuildContext context,
-    String id,
-  ) async {
+  Future<void> _editProfile(BuildContext context, UserProfile p) async {
+    final saved = await ProfileEditDialog.show(context, initial: p);
+    if (saved == null) return;
+    onChanged();
+  }
+
+  Future<void> _deleteProfile(BuildContext context, String id) async {
     final p = service.get(id);
     if (p == null) return;
     final ok = await showDialog<bool>(
@@ -80,17 +58,19 @@ class ProfileBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final profile = service.active;
     final list = service.all();
+    final cat = profile?.category;
+    final accent = cat?.color ?? Colors.indigoAccent;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
-        color: Colors.indigo.withValues(alpha: 0.15),
-        border: Border.all(color: Colors.indigoAccent.withValues(alpha: 0.5)),
-        borderRadius: BorderRadius.circular(8),
+        color: Colors.white.withValues(alpha: 0.04),
+        border: Border.all(color: Colors.white12),
+        borderRadius: BorderRadius.circular(6),
       ),
       child: Row(
         children: [
-          const Icon(Icons.person, size: 18, color: Colors.indigoAccent),
+          Icon(Icons.person_outline, size: 18, color: accent),
           const SizedBox(width: 8),
           Expanded(
             child: profile == null
@@ -104,26 +84,26 @@ class ProfileBar extends StatelessWidget {
                     children: [
                       Row(
                         children: [
-                          Text(
-                            profile.name,
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 13,
+                          if (cat != null) ...[
+                            _categoryBadge(cat),
+                            const SizedBox(width: 6),
+                          ],
+                          Flexible(
+                            child: Text(
+                              profile.name,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13,
+                              ),
+                              overflow: TextOverflow.ellipsis,
                             ),
                           ),
                           const SizedBox(width: 8),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 6,
-                              vertical: 1,
-                            ),
-                            decoration: BoxDecoration(
-                              color: Colors.indigoAccent.withValues(alpha: 0.3),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Text(
-                              '${profile.sessionCount} 세션',
-                              style: const TextStyle(fontSize: 10),
+                          Text(
+                            '${profile.sessionCount} 세션',
+                            style: const TextStyle(
+                              fontSize: 10,
+                              color: Colors.white54,
                             ),
                           ),
                         ],
@@ -131,12 +111,13 @@ class ProfileBar extends StatelessWidget {
                       const SizedBox(height: 2),
                       Text(
                         [
+                          if (cat != null) cat.label,
                           if (profile.mvcRms != null)
                             'MVC ${profile.mvcRms!.toStringAsFixed(0)}',
                           if (profile.restingRms != null)
                             'rest ${profile.restingRms!.toStringAsFixed(0)}',
                           if (profile.mdfBaseline != null)
-                            'MDF baseline ${profile.mdfBaseline!.toStringAsFixed(0)}Hz',
+                            'MDF ${profile.mdfBaseline!.toStringAsFixed(0)}Hz',
                         ].join('  |  '),
                         style: const TextStyle(
                           color: Colors.white60,
@@ -155,9 +136,11 @@ class ProfileBar extends StatelessWidget {
             tooltip: '프로파일 전환/관리',
             onSelected: (v) async {
               if (v == '__new') {
-                await _showCreateProfileDialog(context);
+                await _createProfile(context);
+              } else if (v == '__edit' && profile != null) {
+                await _editProfile(context, profile);
               } else if (v == '__delete' && profile != null) {
-                await _showDeleteProfileDialog(context, profile.id);
+                await _deleteProfile(context, profile.id);
               } else {
                 await service.setActive(v);
                 onChanged();
@@ -179,11 +162,42 @@ class ProfileBar extends StatelessWidget {
                             : Colors.white54,
                       ),
                       const SizedBox(width: 8),
+                      if (p.category != null) ...[
+                        Container(
+                          width: 18,
+                          height: 18,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            color: p.category!.color.withValues(alpha: 0.7),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            p.category!.code,
+                            style: const TextStyle(
+                              color: Colors.black,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 10,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                      ],
                       Text(p.name),
                     ],
                   ),
                 ),
               const PopupMenuDivider(),
+              if (profile != null)
+                const PopupMenuItem(
+                  value: '__edit',
+                  child: Row(
+                    children: [
+                      Icon(Icons.edit, size: 16, color: Colors.white70),
+                      SizedBox(width: 8),
+                      Text('현재 프로파일 수정'),
+                    ],
+                  ),
+                ),
               const PopupMenuItem(
                 value: '__new',
                 child: Row(
@@ -212,6 +226,24 @@ class ProfileBar extends StatelessWidget {
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _categoryBadge(SubjectCategory c) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+      decoration: BoxDecoration(
+        border: Border.all(color: c.color, width: 1),
+        borderRadius: BorderRadius.circular(3),
+      ),
+      child: Text(
+        c.code,
+        style: TextStyle(
+          color: c.color,
+          fontWeight: FontWeight.w600,
+          fontSize: 10,
+        ),
       ),
     );
   }

@@ -12,44 +12,38 @@ void showFatigueDialog(
     context: context,
     barrierDismissible: false,
     builder: (ctx) => AlertDialog(
-      backgroundColor: Colors.red.shade900,
       icon: const Icon(
-        Icons.warning_amber_rounded,
-        size: 56,
-        color: Colors.white,
+        Icons.warning_amber_outlined,
+        size: 36,
+        color: Colors.redAccent,
       ),
       title: const Text(
-        '근피로 감지!',
+        '근피로 감지',
         textAlign: TextAlign.center,
-        style: TextStyle(
-          color: Colors.white,
-          fontWeight: FontWeight.bold,
-          fontSize: 22,
-        ),
+        style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
       ),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           Text(
-            'RMS slope +$rs%   |   MDF slope $ms%',
+            'RMS slope +$rs%   ·   MDF slope $ms%',
             textAlign: TextAlign.center,
-            style: const TextStyle(color: Colors.white, fontSize: 14),
+            style: const TextStyle(color: Colors.white70, fontSize: 13),
           ),
           const SizedBox(height: 6),
           Text(
             fesWasOn
                 ? '자극이 자동으로 정지되었습니다.'
-                : '연속 만족 카운트 5/5 도달 (FES 미가동 — 자동 정지 없음).',
+                : '연속 카운트 도달 (FES 미가동).',
             textAlign: TextAlign.center,
-            style: const TextStyle(color: Colors.white70, fontSize: 13),
+            style: const TextStyle(color: Colors.white54, fontSize: 12),
           ),
         ],
       ),
       actions: [
-        FilledButton(
-          style: FilledButton.styleFrom(backgroundColor: Colors.white),
+        TextButton(
           onPressed: () => Navigator.of(ctx).pop(),
-          child: const Text('확인', style: TextStyle(color: Colors.red)),
+          child: const Text('확인'),
         ),
       ],
     ),

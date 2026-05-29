@@ -164,9 +164,9 @@ class FatigueTriggerPanel extends StatelessWidget {
             Text(
               cond1 && cond2
                   ? (status.consecutive >= status.consecutiveTrigger
-                        ? '✅ 트리거 발동 — FES 자동 정지'
-                        : '⚠️ 두 조건 만족 — 카운터 누적 중')
-                  : (cond1 || cond2 ? '한 조건만 만족 (피로 아님)' : '조건 미충족 — 안정'),
+                        ? '트리거 발동 — FES 자동 정지'
+                        : '두 조건 만족 — 카운터 누적 중')
+                  : (cond1 || cond2 ? '한 조건만 만족' : '조건 미충족'),
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: cond1 && cond2

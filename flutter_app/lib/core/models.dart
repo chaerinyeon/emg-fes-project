@@ -31,4 +31,23 @@ class AppStatus {
 
   // 세션 중 관측된 최대 RMS (MVC 추정용)
   double sessionMaxRms = 0;
+
+  // ===== M-wave (자극 응답 EMG) =====
+  double mwAmp = 0; // 최신 peak-to-peak (ADC counts)
+  double mwArea = 0; // 최신 정류 면적 (Σ|sample|)
+  double mwLatency = 0; // 최신 peak까지의 ms
+  int mwCount = 0; // 세션 누적 검출 수
+
+  // 자체 fatigue 엔진 결과 (FatigueEngine이 채움)
+  bool engineFatigueDetected = false;
+  int engineConsecutive = 0;
+  List<String> engineReasons = const [];
+
+  // baseline / 변화율 (FatigueEngine이 채움 — UI 표시용)
+  double? mwAmpBaseline;
+  double? mwAreaBaseline;
+  double? mwLatBaseline;
+  double? mwAmpDeclinePct; // baseline 대비 % 감소 (양수=감소)
+  double? mwAreaDeclinePct;
+  double? mwLatencyDeltaMs; // baseline 대비 ms 증가 (양수=지연)
 }

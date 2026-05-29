@@ -63,6 +63,15 @@ const float MUSCLE_HIGH_RATIO = 1.5;
 const unsigned long STIM_TIMEOUT_MS = 180000;   // 3분
 const unsigned long DATA_THROTTLE_MS = 100;     // 데이터 송신 최소 간격 (BLE 부하 보호)
 
+// ===== M-wave 검출 파라미터 =====
+// 자극 artifact 검출 임계 (DC 보정된 centered 값의 절대값).
+// 실측에서 normal EMG burst 최대보다 충분히 커야 함. 일반적으로 1000~2000 범위.
+const int MW_ARTIFACT_THRESHOLD = 1500;
+const int MW_WINDOW_START_MS = 5;             // 자극 후 ms (artifact 제외용 dead-zone)
+const int MW_WINDOW_END_MS = 30;              // 자극 후 ms
+const int MW_WINDOW_LEN = (MW_WINDOW_END_MS - MW_WINDOW_START_MS) + 1;  // 26 샘플 (1kHz)
+const unsigned long MW_REFRACTORY_MS = 40;    // 같은 자극 중복 트리거 방지 (FES ≤ 25Hz 가정)
+
 // ===== BLE 핸들 =====
 NimBLECharacteristic* dataChar = nullptr;
 NimBLECharacteristic* cmdChar  = nullptr;
@@ -123,6 +132,18 @@ uint16_t burstCount = 0;
 uint16_t transientCount = 0;
 uint16_t sustainedCount = 0;
 
+// ===== M-wave 상태 (자극 artifact triggered) =====
+volatile unsigned long mwArtifactAtMs = 0;
+volatile bool mwCapturing = false;
+volatile int mwSampleCount = 0;
+volatile int mwSamples[MW_WINDOW_LEN + 4];     // +여유
+volatile bool mwReady = false;                 // 캡처 완료 → loop()에서 메트릭 계산
+float currentMwAmp = 0;                        // peak-to-peak (ADC counts)
+float currentMwArea = 0;                       // Σ|sample| (정류 면적)
+float currentMwLatency = 0;                    // artifact 후 peak까지 ms
+bool mwDirty = false;                          // 새 M-wave가 있어 다음 송신 포함
+uint32_t mwCount = 0;                          // 세션 누적 M-wave 검출 수
+
 // ===== 최신 계산값 =====
 float currentRMS = 0;
 float currentMDF = 0;
@@ -175,6 +196,32 @@ void samplingTask(void* /*param*/) {
     // 실시간 envelope 업데이트 (정류 + IIR LPF) — 버퍼와 무관하게 항상 갱신
     int absVal = centered < 0 ? -centered : centered;
     envLPF = ENV_LPF_ALPHA * (float)absVal + (1.0f - ENV_LPF_ALPHA) * envLPF;
+
+    // ===== M-wave: 자극 artifact 감지 + 윈도우 캡처 =====
+    // 자극 중에만, refractory 경과 후 큰 스파이크가 들어오면 artifact로 간주.
+    // artifact 시점부터 5~30ms 동안 centered 샘플을 버퍼에 모음 → loop에서 메트릭 계산.
+    {
+      unsigned long nowMs = millis();
+      if (isStimulating && !mwCapturing &&
+          absVal > MW_ARTIFACT_THRESHOLD &&
+          (nowMs - mwArtifactAtMs) > MW_REFRACTORY_MS) {
+        mwArtifactAtMs = nowMs;
+        mwCapturing = true;
+        mwSampleCount = 0;
+      }
+      if (mwCapturing) {
+        unsigned long since = nowMs - mwArtifactAtMs;
+        if (since >= (unsigned long)MW_WINDOW_START_MS &&
+            since <= (unsigned long)MW_WINDOW_END_MS) {
+          if (mwSampleCount < MW_WINDOW_LEN) {
+            mwSamples[mwSampleCount++] = centered;
+          }
+        } else if (since > (unsigned long)MW_WINDOW_END_MS) {
+          mwCapturing = false;
+          mwReady = true;
+        }
+      }
+    }
 
     if (bufferIdx >= RMS_WINDOW) continue;
 
@@ -399,6 +446,34 @@ void loop() {
     sendFullNext = true;
   }
 
+  // ===== M-wave 메트릭 계산 (sampling task가 mwReady=true 신호) =====
+  if (mwReady) {
+    portENTER_CRITICAL(&timerMux);
+    mwReady = false;
+    int n = mwSampleCount;
+    int snapshot[MW_WINDOW_LEN + 4];
+    for (int i = 0; i < n && i < MW_WINDOW_LEN + 4; i++) {
+      snapshot[i] = mwSamples[i];
+    }
+    portEXIT_CRITICAL(&timerMux);
+
+    if (n >= 5) {
+      int mn = snapshot[0], mx = snapshot[0], peakIdx = 0;
+      long absSum = 0;
+      for (int i = 0; i < n; i++) {
+        int v = snapshot[i];
+        if (v < mn) mn = v;
+        if (v > mx) { mx = v; peakIdx = i; }
+        absSum += (v < 0 ? -v : v);
+      }
+      currentMwAmp = (float)(mx - mn);
+      currentMwArea = (float)absSum;
+      currentMwLatency = (float)(MW_WINDOW_START_MS + peakIdx);
+      mwDirty = true;
+      mwCount++;
+    }
+  }
+
   // BLE 송신은 100ms마다 (DATA_THROTTLE_MS 내부 체크 사용)
   // → env(실시간 LPF)는 10Hz로, rms/mdf는 매번 같은 값(1Hz 갱신)으로 송신
   sendDataUpdate();
@@ -432,6 +507,16 @@ void handleCommand(JsonDocument& doc) {
     baselineRMS = 0;
     rmsRatio = 1.0;
     envLPF = 0;
+    // M-wave 카운터/상태 리셋
+    mwCount = 0;
+    mwCapturing = false;
+    mwSampleCount = 0;
+    mwReady = false;
+    mwDirty = false;
+    mwArtifactAtMs = 0;
+    currentMwAmp = 0;
+    currentMwArea = 0;
+    currentMwLatency = 0;
     muscleState = "calibrating";
     // 수축 상태머신 리셋
     contractState = CS_REST;
@@ -625,6 +710,15 @@ void sendDataUpdate() {
   if (hasMarker) {
     doc["mk"] = sessionMarker;
     sessionMarker = "";          // 마커는 1회만 전송
+  }
+
+  // ===== M-wave 메트릭 (새 검출이 있을 때만) =====
+  if (mwDirty) {
+    doc["mwa"] = currentMwAmp;
+    doc["mwc"] = currentMwArea;
+    doc["mwl"] = currentMwLatency;
+    doc["mwn"] = mwCount;
+    mwDirty = false;
   }
 
   // ===== full 메시지에만 (1Hz) =====

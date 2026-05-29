@@ -84,7 +84,7 @@ class PipelineDiagram extends StatelessWidget {
         children: [
           _stage(
             label: 'RAW EMG\nESP 1kHz',
-            value: running ? '✓' : '—',
+            value: running ? 'ON' : '—',
             active: running,
             activeColor: Colors.white70,
           ),
@@ -123,7 +123,7 @@ class PipelineDiagram extends StatelessWidget {
           _arrow(sloping),
           _stage(
             label: '이중 조건\nRMS↑ ∧ MDF↓',
-            value: (cond1 && cond2) ? '✓ 만족' : '✗',
+            value: (cond1 && cond2) ? '만족' : '—',
             active: sloping && (cond1 || cond2),
             activeColor: (cond1 && cond2) ? Colors.amberAccent : Colors.white24,
           ),
@@ -139,7 +139,7 @@ class PipelineDiagram extends StatelessWidget {
           _arrow(status.fatigueDetected),
           _stage(
             label: 'FATIGUE',
-            value: status.fatigueDetected ? '🚨 ON' : 'OFF',
+            value: status.fatigueDetected ? 'ON' : 'OFF',
             active: status.fatigueDetected,
             activeColor: cThr,
           ),

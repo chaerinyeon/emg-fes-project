@@ -14,18 +14,18 @@ class FatigueBanner extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 14),
+      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
       decoration: BoxDecoration(
-        color: Colors.red.shade800,
-        border: Border.all(color: Colors.redAccent, width: 2),
-        borderRadius: BorderRadius.circular(10),
+        color: Colors.redAccent.withValues(alpha: 0.1),
+        border: Border.all(color: Colors.redAccent.withValues(alpha: 0.6)),
+        borderRadius: BorderRadius.circular(6),
       ),
       child: Row(
         children: [
           const Icon(
-            Icons.warning_amber_rounded,
-            color: Colors.white,
-            size: 28,
+            Icons.warning_amber_outlined,
+            color: Colors.redAccent,
+            size: 20,
           ),
           const SizedBox(width: 10),
           Expanded(
@@ -33,16 +33,17 @@ class FatigueBanner extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  '🚨 근피로 감지 — 자극 자동 정지',
+                  '근피로 감지 — 자극 자동 정지',
                   style: TextStyle(
                     color: Colors.white,
-                    fontSize: 15,
-                    fontWeight: FontWeight.bold,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
+                const SizedBox(height: 2),
                 Text(
-                  'RMS slope +${rmsSlope.toStringAsFixed(1)}%  |  MDF slope ${mdfSlope.toStringAsFixed(1)}%',
-                  style: const TextStyle(color: Colors.white70, fontSize: 12),
+                  'RMS slope +${rmsSlope.toStringAsFixed(1)}%   ·   MDF slope ${mdfSlope.toStringAsFixed(1)}%',
+                  style: const TextStyle(color: Colors.white60, fontSize: 11),
                 ),
               ],
             ),
