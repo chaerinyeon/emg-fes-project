@@ -58,8 +58,9 @@ class _HomePageState extends State<HomePage> {
   static const int windowSec = 60;
   static const int maxPoints = windowSec;
 
-  final TextEditingController _hostCtrl =
-      TextEditingController(text: 'emg-fes.local:81');
+  final TextEditingController _hostCtrl = TextEditingController(
+    text: 'emg-fes.local:81',
+  );
 
   WebSocketChannel? _ch;
   StreamSubscription? _sub;
@@ -72,6 +73,7 @@ class _HomePageState extends State<HomePage> {
   final Queue<_Sample> _mdf = Queue();
   double _t0 = 0;
   final _Status _st = _Status();
+  bool _fatigueAlerted = false;
 
   void _push(Queue<_Sample> q, _Sample s) {
     q.add(s);
@@ -151,6 +153,7 @@ class _HomePageState extends State<HomePage> {
       }
 
       final wasFatigued = _st.fatigueDetected;
+      final wasRunning = _st.isRunning;
       _st.isRunning = msg['is_running'] ?? _st.isRunning;
       _st.isStimulating = msg['is_stimulating'] ?? _st.isStimulating;
       _st.fatigueDetected = msg['fatigue_detected'] ?? _st.fatigueDetected;
@@ -161,10 +164,14 @@ class _HomePageState extends State<HomePage> {
       _st.muscleState = msg['muscle_state'] as String? ?? _st.muscleState;
       _st.baselineRms =
           (msg['baseline_rms'] as num?)?.toDouble() ?? _st.baselineRms;
-      _st.rmsRatio =
-          (msg['rms_ratio'] as num?)?.toDouble() ?? _st.rmsRatio;
+      _st.rmsRatio = (msg['rms_ratio'] as num?)?.toDouble() ?? _st.rmsRatio;
 
-      if (!wasFatigued && _st.fatigueDetected) {
+      if (!wasRunning && _st.isRunning) {
+        _fatigueAlerted = false;
+      }
+
+      if (!wasFatigued && _st.fatigueDetected && !_fatigueAlerted) {
+        _fatigueAlerted = true;
         _onFatigueDetected();
       }
 
@@ -184,15 +191,19 @@ class _HomePageState extends State<HomePage> {
       barrierDismissible: false,
       builder: (_) => AlertDialog(
         backgroundColor: Colors.red.shade900,
-        icon: const Icon(Icons.warning_amber_rounded,
-            size: 56, color: Colors.white),
+        icon: const Icon(
+          Icons.warning_amber_rounded,
+          size: 56,
+          color: Colors.white,
+        ),
         title: const Text(
           '근피로 감지!',
           textAlign: TextAlign.center,
           style: TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.bold,
-              fontSize: 22),
+            color: Colors.white,
+            fontWeight: FontWeight.bold,
+            fontSize: 22,
+          ),
         ),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -214,8 +225,7 @@ class _HomePageState extends State<HomePage> {
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: Colors.white),
             onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('확인',
-                style: TextStyle(color: Colors.red)),
+            child: const Text('확인', style: TextStyle(color: Colors.red)),
           ),
         ],
       ),
@@ -227,7 +237,9 @@ class _HomePageState extends State<HomePage> {
         content: Text(
           '🚨 근피로 감지 — RMS +$rms%, MDF $mdf%',
           style: const TextStyle(
-              color: Colors.white, fontWeight: FontWeight.bold),
+            color: Colors.white,
+            fontWeight: FontWeight.bold,
+          ),
         ),
       ),
     );
@@ -241,8 +253,10 @@ class _HomePageState extends State<HomePage> {
     }
     try {
       ch.sink.add(jsonEncode(cmd));
-      _toast('→ ${cmd['cmd']}${cmd['label'] != null ? ': ${cmd['label']}' : ''}',
-          Colors.green);
+      _toast(
+        '→ ${cmd['cmd']}${cmd['label'] != null ? ': ${cmd['label']}' : ''}',
+        Colors.green,
+      );
     } catch (e) {
       _toast('전송 실패: $e', Colors.red);
     }
@@ -278,8 +292,7 @@ class _HomePageState extends State<HomePage> {
               _connState == 'connected' ? Icons.link : Icons.link_off,
               color: _connState == 'connected' ? Colors.greenAccent : null,
             ),
-            onPressed:
-                _connState == 'connected' ? _disconnect : _connect,
+            onPressed: _connState == 'connected' ? _disconnect : _connect,
           ),
         ],
       ),
@@ -310,9 +323,12 @@ class _HomePageState extends State<HomePage> {
                 child: Column(
                   children: [
                     Expanded(
-                      child: _buildChart('EMG envelope', _env,
-                          Colors.lightBlueAccent,
-                          fixedRange: const [0, 4095]),
+                      child: _buildChart(
+                        'EMG envelope',
+                        _env,
+                        Colors.lightBlueAccent,
+                        fixedRange: const [0, 4095],
+                      ),
                     ),
                     const SizedBox(height: 8),
                     Expanded(
@@ -320,8 +336,7 @@ class _HomePageState extends State<HomePage> {
                     ),
                     const SizedBox(height: 8),
                     Expanded(
-                      child:
-                          _buildChart('MDF (Hz)', _mdf, Colors.redAccent),
+                      child: _buildChart('MDF (Hz)', _mdf, Colors.redAccent),
                     ),
                   ],
                 ),
@@ -362,8 +377,10 @@ class _HomePageState extends State<HomePage> {
 
   Widget _buildStatusBar() {
     final chips = <Widget>[
-      _chip(_connState.toUpperCase(),
-          _connState == 'connected' ? Colors.green : Colors.grey),
+      _chip(
+        _connState.toUpperCase(),
+        _connState == 'connected' ? Colors.green : Colors.grey,
+      ),
       if (_st.isRunning) _chip('RUN', Colors.indigo),
       if (_st.isStimulating) _chip('STIM', Colors.orange),
       if (_st.fatigueDetected) _chip('FATIGUE', Colors.red),
@@ -374,49 +391,51 @@ class _HomePageState extends State<HomePage> {
     return Wrap(spacing: 6, runSpacing: 6, children: chips);
   }
 
-  ({Color color, IconData icon, String label, String hint}) _stateMeta(String s) {
+  ({Color color, IconData icon, String label, String hint}) _stateMeta(
+    String s,
+  ) {
     switch (s) {
       case 'calibrating':
         return (
           color: Colors.amber,
           icon: Icons.hourglass_top,
           label: '베이스라인 수집 중',
-          hint: '10초간 일정한 수축 유지'
+          hint: '10초간 일정한 수축 유지',
         );
       case 'low':
         return (
           color: Colors.lightBlueAccent,
           icon: Icons.arrow_downward,
           label: '저운동',
-          hint: 'FES 응답 약함 (기준 < 70%)'
+          hint: 'FES 응답 약함 (기준 < 70%)',
         );
       case 'normal':
         return (
           color: Colors.greenAccent,
           icon: Icons.check_circle_outline,
           label: '정상',
-          hint: '베이스라인 대비 70~150%'
+          hint: '베이스라인 대비 70~150%',
         );
       case 'high':
         return (
           color: Colors.orangeAccent,
           icon: Icons.arrow_upward,
           label: '과운동',
-          hint: 'FES 응답 강함 (기준 > 150%)'
+          hint: 'FES 응답 강함 (기준 > 150%)',
         );
       case 'fatigue':
         return (
           color: Colors.redAccent,
           icon: Icons.warning,
           label: '근피로',
-          hint: '자극 자동 정지'
+          hint: '자극 자동 정지',
         );
       default:
         return (
           color: Colors.blueGrey,
           icon: Icons.power_settings_new,
           label: '대기',
-          hint: 'Start 누르면 측정 시작'
+          hint: 'Start 누르면 측정 시작',
         );
     }
   }
@@ -495,8 +514,11 @@ class _HomePageState extends State<HomePage> {
       ),
       child: Row(
         children: [
-          const Icon(Icons.warning_amber_rounded,
-              color: Colors.white, size: 32),
+          const Icon(
+            Icons.warning_amber_rounded,
+            color: Colors.white,
+            size: 32,
+          ),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
@@ -536,8 +558,12 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _buildChart(String title, Queue<_Sample> q, Color color,
-      {List<double>? fixedRange}) {
+  Widget _buildChart(
+    String title,
+    Queue<_Sample> q,
+    Color color, {
+    List<double>? fixedRange,
+  }) {
     final spots = q.map((s) => FlSpot(s.t, s.value)).toList();
     double minX = 0, maxX = windowSec.toDouble();
     if (spots.isNotEmpty) {
@@ -575,15 +601,23 @@ class _HomePageState extends State<HomePage> {
                   gridData: const FlGridData(show: true),
                   titlesData: const FlTitlesData(
                     leftTitles: AxisTitles(
-                        sideTitles:
-                            SideTitles(showTitles: true, reservedSize: 40)),
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        reservedSize: 40,
+                      ),
+                    ),
                     bottomTitles: AxisTitles(
-                        sideTitles:
-                            SideTitles(showTitles: true, reservedSize: 22)),
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        reservedSize: 22,
+                      ),
+                    ),
                     topTitles: AxisTitles(
-                        sideTitles: SideTitles(showTitles: false)),
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
                     rightTitles: AxisTitles(
-                        sideTitles: SideTitles(showTitles: false)),
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
                   ),
                   borderData: FlBorderData(show: true),
                   lineBarsData: [

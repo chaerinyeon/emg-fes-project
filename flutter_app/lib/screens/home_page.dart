@@ -14,6 +14,7 @@ import '../services/fatigue_engine.dart';
 import '../services/csv_save_stub.dart'
     if (dart.library.html) '../services/csv_save_web.dart';
 import '../services/profile_service.dart';
+import '../services/simulator_service.dart';
 import '../widgets/ble/ble_bar.dart';
 import '../widgets/ble/status_bar.dart';
 import '../widgets/charts/chart_card.dart';
@@ -66,6 +67,10 @@ class _HomePageState extends State<HomePage> {
   // 자체 fatigue 엔진 (활성 환자 분류에 맞춰 매 _startSession 때 재생성)
   FatigueEngine _engine = FatigueEngine(category: SubjectCategory.healthy);
 
+  // 시뮬레이터 (EMG 센서 없이 UI 검증) — null 이면 BLE 모드
+  SimulatorService? _sim;
+  bool get _simOn => _sim != null;
+
   // CSV 로깅 (web만) — 1Hz로 다운샘플 (10Hz BLE 중 초당 1번만 기록)
   final List<Map<String, dynamic>> _log = [];
   String? _pendingMarker;
@@ -79,6 +84,7 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    _sim?.stop();
     _disconnect();
     _scanSub?.cancel();
     super.dispose();
@@ -461,6 +467,15 @@ class _HomePageState extends State<HomePage> {
 
   // ---------- 명령 ----------
   Future<void> _send(Map<String, dynamic> cmd) async {
+    // 시뮬레이터 모드: 명령을 시뮬레이터로 라우팅
+    if (_simOn) {
+      _sim!.handleCommand(cmd);
+      _toast(
+        '→ (sim) ${cmd['cmd']}${cmd['label'] != null ? ': ${cmd['label']}' : ''}',
+        Colors.blueAccent,
+      );
+      return;
+    }
     final c = _cmdChar;
     if (c == null) {
       _toast('연결 안 됨 — 먼저 Connect 하세요', Colors.orange);
@@ -476,6 +491,49 @@ class _HomePageState extends State<HomePage> {
     } catch (e) {
       _toast('전송 실패: $e', Colors.red);
     }
+  }
+
+  // ---------- 시뮬레이터 토글 ----------
+  // 켜면 실제 BLE 연결과 동일하게 보이도록 _connState='connected' 로 위장.
+  Future<void> _toggleSimulator() async {
+    if (_simOn) {
+      // 끄기: 진행 중 세션 정리 + BLE disconnect 와 동등한 상태로 복귀
+      _sim!.handleCommand({'cmd': 'stop'});
+      _sim!.stop();
+      _sim = null;
+      _env.clear();
+      _rms.clear();
+      _mdf.clear();
+      _rmsSlope.clear();
+      _mdfSlope.clear();
+      _t0 = 0;
+      _t0Init = false;
+      _lastEnvPushT = -1.0;
+      _envLast = 0;
+      _rmsLast = 0;
+      _mdfLast = 0;
+      if (mounted) {
+        setState(() {
+          _connState = 'disconnected';
+        });
+      }
+      return;
+    }
+    // 켜기 전에 실제 BLE 가 연결돼 있으면 끊기
+    if (_connState == 'connected') {
+      await _disconnect();
+    }
+    final sim = SimulatorService(
+      onMessage: (msg) {
+        _onCharData(utf8.encode(jsonEncode(msg)));
+      },
+    );
+    sim.start();
+    setState(() {
+      _sim = sim;
+      _connState = 'connected';                 // 스캔→연결 완료처럼 보이기
+      _lastError = null;
+    });
   }
 
   void _startSession() {
@@ -591,6 +649,14 @@ class _HomePageState extends State<HomePage> {
         title: const Text('EMG-FES Monitor'),
         actions: [
           IconButton(
+            tooltip: _simOn ? '시뮬레이터 끄기' : '시뮬레이터 켜기 (EMG 없이 UI 확인)',
+            icon: Icon(
+              Icons.science_outlined,
+              color: _simOn ? Colors.amberAccent : null,
+            ),
+            onPressed: _toggleSimulator,
+          ),
+          IconButton(
             tooltip: '처음 화면',
             icon: const Icon(Icons.home_outlined),
             onPressed: _goToSplash,
@@ -605,8 +671,9 @@ class _HomePageState extends State<HomePage> {
                   : Icons.bluetooth_searching,
               color: _connState == 'connected' ? Colors.greenAccent : null,
             ),
+            // 시뮬레이터로 연결된 상태면 disconnect 가 시뮬레이터를 끔
             onPressed: _connState == 'connected'
-                ? _disconnect
+                ? (_simOn ? _toggleSimulator : _disconnect)
                 : _scanAndConnect,
           ),
         ],
@@ -629,7 +696,7 @@ class _HomePageState extends State<HomePage> {
                 device: _device,
                 scanning: _scanning,
                 onScanAndConnect: _scanAndConnect,
-                onDisconnect: _disconnect,
+                onDisconnect: _simOn ? _toggleSimulator : _disconnect,
               ),
               const SizedBox(height: 8),
               StatusBar(connState: _connState, status: _st),
