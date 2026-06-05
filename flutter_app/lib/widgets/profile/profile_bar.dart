@@ -59,7 +59,7 @@ class ProfileBar extends StatelessWidget {
     final profile = service.active;
     final list = service.all();
     final cat = profile?.category;
-    final accent = cat?.color ?? Colors.green.shade800;
+    final accent = cat?.color ?? Colors.white;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),

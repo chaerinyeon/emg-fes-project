@@ -163,6 +163,20 @@ class FatigueEngine {
       if (mdf != null) mdfChart.ingest(mdf);
     }
 
+    // 판정·연속카운터는 1Hz full 샘플(rms/mdf 동반)에서만 갱신한다.
+    // 중간 10Hz(M-wave/env) 메시지가 consecutive 를 리셋하면 5연속이 누적되지
+    // 않아 RMS/MDF 경로 검출이 영영 발화하지 못한다.
+    final isDecisionTick = rms != null || mdf != null;
+    if (!isDecisionTick) {
+      return FatigueResult(
+        detected: _latched,
+        justTriggered: false,
+        reasons: const [],
+        consecutive: consecutive,
+        consecutiveTrigger: consecutiveTrigger,
+      );
+    }
+
     final reasons = <String>[];
 
     // 관리도 기반 RMS/MDF 이상 판정 (개인화 임계치)

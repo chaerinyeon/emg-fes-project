@@ -4,6 +4,7 @@ import 'dart:math';
 /// 자극 → 안정화 → 측정창 순으로 진행되는 임상 프로토콜의 단계.
 enum SimPhase {
   idle,         // 세션 전
+  prep,         // (불완전마비) 시작 직후 자발 수축으로 baseline 측정
   baseline,     // 0~10s, FES 자극 시작, baseline 수집
   stim,         // 10s~, FES 자극 지속 (피로 진행)
   cooldown,     // 피로 감지 후 stim OFF 직후의 안정화 (3s)
@@ -24,7 +25,11 @@ enum SimPhase {
 /// rt, mt, ct, b, rr, st, mk, mwa, mwc, mwl, mwn, cs, cd, lt, ld, lp, bc, sc, tc)
 /// 로 메시지를 만들어 [onMessage] 로 전달한다.
 class SimulatorService {
-  SimulatorService({required this.onMessage, this.voluntaryScale = 1.0});
+  SimulatorService({
+    required this.onMessage,
+    this.voluntaryScale = 1.0,
+    this.voluntaryBaselineFirst = false,
+  });
 
   /// 한 패킷이 만들어질 때마다 호출. home_page는 utf8 인코딩 후 _onCharData 로 흘림.
   final void Function(Map<String, dynamic>) onMessage;
@@ -33,6 +38,9 @@ class SimulatorService {
   ///   healthy 1.0 · 불완전마비 ~0.45 · 완전마비 ~0.12
   /// 자극(FES) 응답은 외부 구동이라 이 배수의 영향을 받지 않는다.
   final double voluntaryScale;
+
+  /// 시작 직후 자발 수축으로 baseline 을 먼저 측정할지 (불완전마비용).
+  final bool voluntaryBaselineFirst;
 
   // ---- 펌웨어와 동일한 임계값/파라미터 ----
   static const double _rmsThreshold = 20.0;
@@ -67,6 +75,7 @@ class SimulatorService {
 
   double _baseline = 0;
   bool _baselineReady = false;
+  double _voluntaryBaselinePeak = 0; // prep 단계에서 관측된 자발 수축 최대 RMS
   String _muscleState = 'idle';
 
   // 수축 상태머신
@@ -112,6 +121,7 @@ class SimulatorService {
   static const double _fesOffMs = 1500;
   static const double _fesPeriodMs = _fesOnMs + _fesOffMs;
   static const String _prompt = '손을 꽉 쥐어주세요';
+  static const String _voluntaryPrompt = '손에 힘을 주세요';   // 시작 baseline 측정
 
   bool get isRunning => _tickTimer != null;
 
@@ -133,11 +143,18 @@ class SimulatorService {
         _resetSession();
         _running = true;
         _runStartMs = _tsMs;
-        // 실사용: 마사지기(FES) 가 켜진 상태에서 측정 → M-wave 가 처음부터 잡혀야 함
-        _stimulating = true;
         _muscleState = 'calibrating';
         _pendingMarker = 'session_start';
-        _setPhase(SimPhase.baseline);
+        if (voluntaryBaselineFirst) {
+          // 불완전마비: 시작 즉시 자발 수축으로 baseline 측정 (자극 OFF)
+          _stimulating = false;
+          _setPhase(SimPhase.prep);
+          _pendingReq = _voluntaryPrompt;            // 첫 팝업 "손에 힘을 주세요"
+        } else {
+          // 그 외: 마사지기(FES) 켜진 상태로 baseline 수집
+          _stimulating = true;
+          _setPhase(SimPhase.baseline);
+        }
         break;
       case 'stop':
         _running = false;
@@ -186,6 +203,7 @@ class SimulatorService {
     _fdLatchUntilMs = 0;
     _baseline = 0;
     _baselineReady = false;
+    _voluntaryBaselinePeak = 0;
     _mwCount = 0;
     _mwAmp = _mwArea = _mwLat = 0;
     _mwDirty = false;
@@ -223,6 +241,20 @@ class SimulatorService {
   void _advancePhase(double tSinceRunS) {
     final phaseElapMs = _tsMs - _phaseStartMs;
     switch (_phase) {
+      case SimPhase.prep:
+        // 자발 수축 측정 5초 → baseline 확정 후 본 자극 운동 시작
+        if (phaseElapMs >= _measureMs) {
+          _pendingReqEnd = true;
+          _pendingMarker = 'baseline_voluntary';
+          if (_voluntaryBaselinePeak > 0) {
+            _baseline = _voluntaryBaselinePeak;       // 자발 수축이 baseline
+            _baselineReady = true;
+          }
+          _runStartMs = _tsMs;                        // 자극 baseline 10초 재계산 기준
+          _stimulating = true;
+          _setPhase(SimPhase.baseline);
+        }
+        break;
       case SimPhase.baseline:
         if (tSinceRunS >= 10) _setPhase(SimPhase.stim);
         break;
@@ -289,8 +321,8 @@ class SimulatorService {
     // ---- envelope (phase 기반) ----
     if (!_running) {
       _env = 3 + _rng.nextDouble() * 3;
-    } else if (_phase == SimPhase.measure) {
-      // 측정 창: 사용자가 직접 힘 → 자발적 EMG burst (bell curve).
+    } else if (_phase == SimPhase.measure || _phase == SimPhase.prep) {
+      // 측정/초기 baseline 창: 사용자가 직접 힘 → 자발적 EMG burst (bell curve).
       // 자극(stim) 보다 작고, 마비 정도(voluntaryScale)에 따라 더 작아진다.
       final mP = (phaseElapMs / _measureMs).clamp(0.0, 1.0);
       final bell = (1.0 - 4.0 * (mP - 0.5) * (mP - 0.5)).clamp(0.0, 1.0);
@@ -430,7 +462,15 @@ class SimulatorService {
     // ---- 목표 trajectory ----
     // 전체 사이클 동안 RMS/MDF 평탄 유지 → slope 자동 검출 안 됨.
     // fd 는 _advancePhase 의 3번째 measure 종료 분기에서 수동으로 True.
-    if (_phase == SimPhase.cooldown) {
+    if (_phase == SimPhase.prep) {
+      // 초기 자발 수축 — RMS 관측, 최대값을 baseline 으로 사용.
+      final mElapMs = _tsMs - _phaseStartMs;
+      final mP = (mElapMs / _measureMs).clamp(0.0, 1.0);
+      final bell = (1.0 - 4.0 * (mP - 0.5) * (mP - 0.5)).clamp(0.0, 1.0);
+      _rms = (25 + 130 * bell + _rng.nextDouble() * 10) * voluntaryScale;
+      _mdf = 75 + _rng.nextDouble() * 3;
+      if (_rms > _voluntaryBaselinePeak) _voluntaryBaselinePeak = _rms;
+    } else if (_phase == SimPhase.cooldown) {
       _rms = 12 + _rng.nextDouble() * 4;                    // 휴식 수준
       _mdf = 80 + _rng.nextDouble() * 3;
     } else if (_phase == SimPhase.measure) {
@@ -444,27 +484,24 @@ class SimulatorService {
       _rms = 10 + _rng.nextDouble() * 3;
       _mdf = 80 + _rng.nextDouble() * 3;
     } else if (_phase == SimPhase.baseline) {
-      // baseline 10초 동안에도 자극이 켜져 있어 EMG 가 이미 활성 — 실측에 맞춤
-      final t = tSinceRunS;
-      final rmsOsc = 18 * sin(2 * pi * 0.13 * t) +
-                     10 * sin(2 * pi * 0.35 * t);
-      _rms = (128 + rmsOsc + (_rng.nextDouble() - 0.5) * 35)
-          .clamp(85.0, 175.0);
-      final mdfOsc = 35 * sin(2 * pi * 0.09 * t) +
-                     22 * sin(2 * pi * 0.5 * t);
-      _mdf = (185 + mdfOsc + (_rng.nextDouble() - 0.5) * 80)
-          .clamp(110.0, 285.0);
+      // 학습 구간 — 아직 안 지친 상태의 안정적 baseline.
+      // 관리도(mean/σ)가 여기서 확정되므로 변동을 작게 유지(σ↓ → UCL/LCL 타이트).
+      _rms = 120 + (_rng.nextDouble() - 0.5) * 12;        // ~114~126
+      _mdf = 185 + (_rng.nextDouble() - 0.5) * 12;        // ~179~191
     } else {
-      // stim phase (3사이클 모두 동일한 노이즈 패턴 — 실측 RMS/MDF 범위)
-      final t = tSinceRunS;
-      final rmsOsc = 22 * sin(2 * pi * 0.13 * t) +
-                     12 * sin(2 * pi * 0.4 * t);
-      _rms = (128 + rmsOsc + (_rng.nextDouble() - 0.5) * 40)
-          .clamp(85.0, 175.0);
-      final mdfOsc = 40 * sin(2 * pi * 0.09 * t) +
-                     25 * sin(2 * pi * 0.55 * t);
-      _mdf = (180 + mdfOsc + (_rng.nextDouble() - 0.5) * 90)
-          .clamp(110.0, 285.0);
+      // stim phase — 사이클 1·2 는 baseline 수준 유지(피로 전),
+      // 마지막 사이클에서 실제 근피로 진행:
+      //   RMS 가 UCL 위로 상승 + MDF 가 LCL 아래로 하강 → 관리도 위반 → 엔진 검출.
+      if (_cycle >= _maxCycles) {
+        final stimP = ((_tsMs - _phaseStartMs) / _stimMaxMs).clamp(0.0, 1.0);
+        // 자극 시작 2초 후부터 ~10초까지 선형 진행, 이후 plateau.
+        final ramp = ((stimP - 0.1) / 0.4).clamp(0.0, 1.0);
+        _rms = 120 + 100 * ramp + (_rng.nextDouble() - 0.5) * 8;  // 120 → ~220
+        _mdf = 185 - 85 * ramp + (_rng.nextDouble() - 0.5) * 8;   // 185 → ~100
+      } else {
+        _rms = 120 + (_rng.nextDouble() - 0.5) * 12;
+        _mdf = 185 + (_rng.nextDouble() - 0.5) * 12;
+      }
     }
 
     _rmsHist.add(_rms);

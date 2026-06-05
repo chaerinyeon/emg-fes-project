@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_dotenv/flutter_dotenv.dart';
@@ -214,14 +215,30 @@ class AiAnalysisService {
       if (jsonMode) 'response_format': {'type': 'json_object'},
     };
 
-    final resp = await http.post(
-      Uri.parse(_endpoint),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $_key',
-      },
-      body: jsonEncode(body),
-    );
+    http.Response resp;
+    try {
+      resp = await http
+          .post(
+            Uri.parse(_endpoint),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $_key',
+            },
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 30));
+    } on TimeoutException {
+      throw Exception('요청 시간이 초과됐어요. 네트워크 상태를 확인한 뒤 다시 시도하세요.');
+    } catch (e) {
+      final s = e.toString();
+      if (s.contains('SocketException') ||
+          s.contains('Failed host lookup') ||
+          s.contains('Network is unreachable') ||
+          s.contains('Connection')) {
+        throw Exception('인터넷에 연결할 수 없어요. 기기의 네트워크 연결을 확인한 뒤 다시 시도하세요.');
+      }
+      rethrow;
+    }
 
     if (resp.statusCode != 200) {
       throw Exception('API 오류 ${resp.statusCode}: ${utf8.decode(resp.bodyBytes)}');

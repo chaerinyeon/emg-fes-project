@@ -577,7 +577,8 @@ class _HomePageState extends State<HomePage> {
       await _disconnect();
     }
     // 자발 수축 EMG 크기 — 마비 정도가 클수록 작음 (자극 응답은 영향 없음).
-    final voluntaryScale = switch (gProfileService.active?.category) {
+    final cat = gProfileService.active?.category;
+    final voluntaryScale = switch (cat) {
       SubjectCategory.incomplete => 0.45,
       SubjectCategory.complete => 0.12,
       _ => 1.0,
@@ -587,6 +588,8 @@ class _HomePageState extends State<HomePage> {
         _onCharData(utf8.encode(jsonEncode(msg)));
       },
       voluntaryScale: voluntaryScale,
+      // 불완전마비: 시작 직후 자발 수축으로 baseline 측정
+      voluntaryBaselineFirst: cat == SubjectCategory.incomplete,
     );
     sim.start();
     setState(() {
