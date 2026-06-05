@@ -59,7 +59,7 @@ class ProfileBar extends StatelessWidget {
     final profile = service.active;
     final list = service.all();
     final cat = profile?.category;
-    final accent = cat?.color ?? Colors.indigoAccent;
+    final accent = cat?.color ?? Colors.green.shade800;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -158,7 +158,7 @@ class ProfileBar extends StatelessWidget {
                             : Icons.radio_button_unchecked,
                         size: 16,
                         color: p.id == profile?.id
-                            ? Colors.indigoAccent
+                            ? Colors.green.shade800
                             : Colors.black45,
                       ),
                       const SizedBox(width: 8),

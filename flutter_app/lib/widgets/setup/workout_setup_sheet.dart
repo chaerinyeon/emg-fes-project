@@ -67,10 +67,18 @@ class _WorkoutSetupSheetState extends State<_WorkoutSetupSheet> {
   bool _emgMeasured = false;
   double _initEmg = 0;
 
-  // AI 권장
+  // AI 개인화 리포트 (자동 실행)
   bool _recommending = false;
   AiRecommendation? _rec;
   String? _recError;
+  int _reqSeq = 0; // 중복/경합 요청 가드
+
+  @override
+  void initState() {
+    super.initState();
+    // 시트를 열면 누적 기록으로 즉시 개인화 리포트를 생성.
+    if (AiAnalysisService.hasKey) _runRecommend();
+  }
 
   // ---------- 계산 (기록 요약용) ----------
   double? _mean(List<double> xs) =>
@@ -110,9 +118,12 @@ class _WorkoutSetupSheetState extends State<_WorkoutSetupSheet> {
       _emgMeasured = b > 0;
       _measuring = false;
     });
+    // 초기 EMG 반영해 개인화 리포트 갱신.
+    if (AiAnalysisService.hasKey) _runRecommend();
   }
 
   Future<void> _runRecommend() async {
+    final seq = ++_reqSeq;
     setState(() {
       _recommending = true;
       _recError = null;
@@ -122,13 +133,13 @@ class _WorkoutSetupSheetState extends State<_WorkoutSetupSheet> {
         _condition,
         _emgMeasured ? _initEmg : null,
       );
-      if (!mounted) return;
+      if (!mounted || seq != _reqSeq) return; // 더 최신 요청이 있으면 폐기
       setState(() {
         _rec = r;
         _recommending = false;
       });
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || seq != _reqSeq) return;
       setState(() {
         _recError = '$e';
         _recommending = false;
@@ -182,7 +193,7 @@ class _WorkoutSetupSheetState extends State<_WorkoutSetupSheet> {
               _emgRow(),
 
               const SizedBox(height: 18),
-              _sectionLabel('AI 권장 강도'),
+              _sectionLabel('AI 개인화 리포트'),
               const SizedBox(height: 8),
               _recommendSection(),
 
@@ -284,54 +295,73 @@ class _WorkoutSetupSheetState extends State<_WorkoutSetupSheet> {
     );
   }
 
-  // ---------- AI 권장 강도 ----------
+  // ---------- AI 개인화 리포트 (자동) ----------
   Widget _recommendSection() {
+    if (!AiAnalysisService.hasKey) {
+      return Card(
+        margin: EdgeInsets.zero,
+        color: Colors.orange.shade50,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Text(
+            '.env 에 OPENAI_API_KEY 가 없어 개인화 리포트를 사용할 수 없습니다.',
+            style: TextStyle(color: Colors.orange.shade800, fontSize: 12),
+          ),
+        ),
+      );
+    }
+
     final rec = _rec;
+
+    // 첫 분석 중 — 결과가 아직 없을 때.
+    if (rec == null && _recError == null) {
+      return Card(
+        margin: EdgeInsets.zero,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 28),
+          child: Center(
+            child: Column(
+              children: const [
+                SizedBox(
+                  width: 26,
+                  height: 26,
+                  child: CircularProgressIndicator(strokeWidth: 2.4),
+                ),
+                SizedBox(height: 12),
+                Text('누적 기록으로 개인화 분석 중…',
+                    style: TextStyle(color: Colors.black54, fontSize: 12)),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (_recError != null) {
+      return Card(
+        margin: EdgeInsets.zero,
+        color: Colors.red.shade50,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Text('개인화 분석 실패\n$_recError',
+              style: TextStyle(color: Colors.red.shade700, fontSize: 12)),
+        ),
+      );
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (rec?.intensity != null) ...[
-          Center(child: _gauge(rec!.intensity!)),
+        if (_recommending)
+          const Padding(
+            padding: EdgeInsets.only(bottom: 8),
+            child: LinearProgressIndicator(minHeight: 2),
+          ),
+        if (rec!.intensity != null) ...[
+          Center(child: _gauge(rec.intensity!)),
           const SizedBox(height: 12),
         ],
-        if (rec != null) ...[
-          _personalCard(rec),
-          const SizedBox(height: 10),
-        ],
-        if (_recError != null) ...[
-          Card(
-            margin: EdgeInsets.zero,
-            color: Colors.red.shade50,
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Text('분석 실패\n$_recError',
-                  style:
-                      TextStyle(color: Colors.red.shade700, fontSize: 12)),
-            ),
-          ),
-          const SizedBox(height: 10),
-        ],
-        OutlinedButton.icon(
-          onPressed: (_recommending || !AiAnalysisService.hasKey)
-              ? null
-              : _runRecommend,
-          icon: _recommending
-              ? const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Icon(Icons.auto_awesome, size: 18),
-          label: Text(_recommending
-              ? '누적 기록 분석 중…'
-              : (rec == null ? 'AI 권장 강도 분석' : '다시 분석')),
-        ),
-        if (!AiAnalysisService.hasKey)
-          Padding(
-            padding: const EdgeInsets.only(top: 6),
-            child: Text('.env 에 OPENAI_API_KEY 가 없어 AI 권장을 사용할 수 없습니다.',
-                style: TextStyle(color: Colors.orange.shade800, fontSize: 11)),
-          ),
+        _personalCard(rec),
       ],
     );
   }
@@ -405,7 +435,12 @@ class _WorkoutSetupSheetState extends State<_WorkoutSetupSheet> {
   Widget _conditionChip(TodayCondition c) {
     final selected = _condition == c;
     return GestureDetector(
-      onTap: () => setState(() => _condition = c),
+      onTap: () {
+        if (_condition == c) return;
+        setState(() => _condition = c);
+        // 컨디션 변경 시 개인화 리포트 자동 갱신.
+        if (AiAnalysisService.hasKey) _runRecommend();
+      },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 150),
         margin: const EdgeInsets.symmetric(horizontal: 4),

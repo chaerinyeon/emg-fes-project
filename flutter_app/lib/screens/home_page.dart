@@ -54,8 +54,11 @@ class _HomePageState extends State<HomePage> {
       'disconnected'; // disconnected / scanning / connecting / connected / error
   String? _lastError;
 
-  // 하단 네비게이션 탭 인덱스 (0:대시보드 1:차트 2:분석 3:제어)
+  // 하단 네비게이션 탭 인덱스 (0:대시보드 1:차트 2:분석 3:AI분석)
   int _tabIndex = 0;
+
+  // 운동 종료 시 AI분석 패널 자동 실행 트리거 (값이 바뀌면 1회 실행)
+  int _aiAutoRun = 0;
 
   // 시계열 (60초 윈도우)
   final Queue<Sample> _env = Queue();
@@ -654,6 +657,14 @@ class _HomePageState extends State<HomePage> {
     } else {
       _toast('세션 기록됨 (모바일 CSV 저장은 PC 로거 사용)', Colors.green);
     }
+
+    // 운동 종료 → AI분석 탭으로 이동해 오늘의 운동을 자동 분석.
+    if (AiAnalysisService.hasKey && mounted) {
+      setState(() {
+        _tabIndex = 3;
+        _aiAutoRun++;
+      });
+    }
   }
 
   void _sendMarker(String label) {
@@ -1069,7 +1080,10 @@ class _HomePageState extends State<HomePage> {
         children: [
           const SectionTitle('AI 분석 (OpenAI)'),
           const SizedBox(height: 6),
-          AiAnalysisPanel(onRequest: _requestAiAnalysis),
+          AiAnalysisPanel(
+            onRequest: _requestAiAnalysis,
+            autoRunTrigger: _aiAutoRun,
+          ),
           const SizedBox(height: 8),
         ],
       ),

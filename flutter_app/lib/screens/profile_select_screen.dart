@@ -157,7 +157,7 @@ class _ProfileSelectScreenState extends State<ProfileSelectScreen> {
       child: Row(
         children: [
           _filterChip(label: '전체', count: total, selected: _filter == null,
-              color: Colors.indigoAccent, onTap: () => setState(() => _filter = null)),
+              color: Colors.green.shade800, onTap: () => setState(() => _filter = null)),
           for (final c in SubjectCategory.values) ...[
             const SizedBox(width: 6),
             _filterChip(

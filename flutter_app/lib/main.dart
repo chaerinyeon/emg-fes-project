@@ -35,7 +35,7 @@ class EmgFesApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.indigo,
+          seedColor: const Color(0xFF2E7D32), // 브랜드 초록 (운동 시작 바텀시트와 통일)
           brightness: Brightness.light,
         ),
         scaffoldBackgroundColor: const Color(0xFFF5F6FA),

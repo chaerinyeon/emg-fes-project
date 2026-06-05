@@ -24,7 +24,7 @@ class PipelineDiagram extends StatelessWidget {
     Color? activeColor,
   }) {
     final color = active
-        ? (activeColor ?? Colors.indigoAccent)
+        ? (activeColor ?? Colors.green.shade800)
         : Colors.black26;
     final bg = active ? color.withValues(alpha: 0.15) : Colors.black12;
     return Container(
