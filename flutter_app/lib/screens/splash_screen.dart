@@ -66,13 +66,13 @@ class _SplashScreenState extends State<SplashScreen>
                 const Icon(
                   Icons.monitor_heart_outlined,
                   size: 56,
-                  color: Colors.white70,
+                  color: Colors.black54,
                 ),
                 const SizedBox(height: 20),
                 const Text(
                   'EMG-FES Monitor',
                   style: TextStyle(
-                    color: Colors.white,
+                    color: Colors.black87,
                     fontSize: 20,
                     fontWeight: FontWeight.w600,
                   ),
@@ -80,7 +80,7 @@ class _SplashScreenState extends State<SplashScreen>
                 const SizedBox(height: 4),
                 const Text(
                   '근전도 · 전기자극 모니터링',
-                  style: TextStyle(color: Colors.white38, fontSize: 12),
+                  style: TextStyle(color: Colors.black38, fontSize: 12),
                 ),
                 const SizedBox(height: 28),
                 const SizedBox(
@@ -88,7 +88,7 @@ class _SplashScreenState extends State<SplashScreen>
                   height: 22,
                   child: CircularProgressIndicator(
                     strokeWidth: 1.8,
-                    valueColor: AlwaysStoppedAnimation(Colors.white38),
+                    valueColor: AlwaysStoppedAnimation(Colors.black38),
                   ),
                 ),
               ],

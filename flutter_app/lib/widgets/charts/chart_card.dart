@@ -13,6 +13,10 @@ class ChartCard extends StatelessWidget {
   final String? hint;
   final List<double>? fixedRange;
   final double? baselineY;
+  // 관리도(SPC) 표시 — center / UCL / LCL 모두 옵셔널.
+  final double? centerY;
+  final double? upperLimitY;
+  final double? lowerLimitY;
   final double height;
 
   const ChartCard({
@@ -23,8 +27,42 @@ class ChartCard extends StatelessWidget {
     this.hint,
     this.fixedRange,
     this.baselineY,
+    this.centerY,
+    this.upperLimitY,
+    this.lowerLimitY,
     this.height = 160,
   });
+
+  List<HorizontalLine> _buildLimitLines() {
+    final lines = <HorizontalLine>[];
+    HorizontalLine make(double y, Color c, String label,
+        {List<int> dash = const [4, 4], double width = 1}) =>
+        HorizontalLine(
+          y: y,
+          color: c,
+          strokeWidth: width,
+          dashArray: dash,
+          label: HorizontalLineLabel(
+            show: true,
+            alignment: Alignment.topRight,
+            style: TextStyle(color: c.withValues(alpha: 0.9), fontSize: 9),
+            labelResolver: (_) => label,
+          ),
+        );
+    if (baselineY != null) {
+      lines.add(make(baselineY!, Colors.black38, 'baseline'));
+    }
+    if (centerY != null) {
+      lines.add(make(centerY!, Colors.teal.shade600, 'mean', dash: [2, 3]));
+    }
+    if (upperLimitY != null) {
+      lines.add(make(upperLimitY!, Colors.redAccent, 'UCL'));
+    }
+    if (lowerLimitY != null) {
+      lines.add(make(lowerLimitY!, Colors.redAccent, 'LCL'));
+    }
+    return lines;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -48,6 +86,12 @@ class ChartCard extends StatelessWidget {
       if (baselineY != null) {
         if (baselineY! < minY) minY = baselineY! - pad;
         if (baselineY! > maxY) maxY = baselineY! + pad;
+      }
+      // UCL/LCL 선이 화면 밖에 있으면 보이도록 범위 확장
+      for (final v in [centerY, upperLimitY, lowerLimitY]) {
+        if (v == null) continue;
+        if (v < minY) minY = v - pad;
+        if (v > maxY) maxY = v + pad;
       }
     }
 
@@ -82,7 +126,7 @@ class ChartCard extends StatelessWidget {
               const SizedBox(height: 2),
               Text(
                 hint!,
-                style: const TextStyle(color: Colors.white54, fontSize: 10),
+                style: const TextStyle(color: Colors.black45, fontSize: 10),
               ),
             ],
             const SizedBox(height: 4),
@@ -92,7 +136,7 @@ class ChartCard extends StatelessWidget {
                   ? const Center(
                       child: Text(
                         '대기 중',
-                        style: TextStyle(color: Colors.white38, fontSize: 11),
+                        style: TextStyle(color: Colors.black38, fontSize: 11),
                       ),
                     )
                   : RepaintBoundary(
@@ -124,27 +168,9 @@ class ChartCard extends StatelessWidget {
                             ),
                           ),
                           borderData: FlBorderData(show: true),
-                          extraLinesData: baselineY != null
-                              ? ExtraLinesData(
-                                  horizontalLines: [
-                                    HorizontalLine(
-                                      y: baselineY!,
-                                      color: Colors.white38,
-                                      strokeWidth: 1,
-                                      dashArray: [4, 4],
-                                      label: HorizontalLineLabel(
-                                        show: true,
-                                        alignment: Alignment.topRight,
-                                        style: const TextStyle(
-                                          color: Colors.white54,
-                                          fontSize: 9,
-                                        ),
-                                        labelResolver: (_) => 'baseline',
-                                      ),
-                                    ),
-                                  ],
-                                )
-                              : const ExtraLinesData(),
+                          extraLinesData: ExtraLinesData(
+                            horizontalLines: _buildLimitLines(),
+                          ),
                           lineBarsData: [
                             LineChartBarData(
                               spots: spots,

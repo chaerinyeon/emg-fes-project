@@ -9,18 +9,59 @@ import '../../core/models.dart';
 class SlopesChart extends StatelessWidget {
   final Queue<Sample> rmsSlopeQueue;
   final Queue<Sample> mdfSlopeQueue;
-  final double rmsThreshold;
-  final double mdfThreshold;
+  // 관리도(값 차트)에서 derive 한 슬로프 등가 임계.
+  //   rmsSlopeUcl = (UCL_rms - mean_rms) / mean_rms * 100   (≈ 3σ/mean × 100)
+  //   mdfSlopeLcl = (LCL_mdf - mean_mdf) / mean_mdf * 100
+  // 8점 학습 완료 전엔 null → 선 안 그림.
+  final double? rmsSlopeUcl;
+  final double? mdfSlopeLcl;
 
   const SlopesChart({
     super.key,
     required this.rmsSlopeQueue,
     required this.mdfSlopeQueue,
-    required this.rmsThreshold,
-    required this.mdfThreshold,
+    this.rmsSlopeUcl,
+    this.mdfSlopeLcl,
   });
 
-  Widget _legendDot(Color color, String label, {bool dashed = false}) {
+  List<HorizontalLine> _buildLimitLines() {
+    final lines = <HorizontalLine>[
+      HorizontalLine(y: 0, color: Colors.black26, strokeWidth: 1),
+    ];
+    if (rmsSlopeUcl != null) {
+      lines.add(HorizontalLine(
+        y: rmsSlopeUcl!,
+        color: cThr.withValues(alpha: 0.7),
+        strokeWidth: 1.2,
+        dashArray: [5, 4],
+        label: HorizontalLineLabel(
+          show: true,
+          alignment: Alignment.topRight,
+          style: TextStyle(color: cThr, fontSize: 9),
+          labelResolver: (_) =>
+              'RMS UCL +${rmsSlopeUcl!.toStringAsFixed(1)}%',
+        ),
+      ));
+    }
+    if (mdfSlopeLcl != null) {
+      lines.add(HorizontalLine(
+        y: mdfSlopeLcl!,
+        color: cThr.withValues(alpha: 0.7),
+        strokeWidth: 1.2,
+        dashArray: [5, 4],
+        label: HorizontalLineLabel(
+          show: true,
+          alignment: Alignment.bottomRight,
+          style: TextStyle(color: cThr, fontSize: 9),
+          labelResolver: (_) =>
+              'MDF LCL ${mdfSlopeLcl!.toStringAsFixed(1)}%',
+        ),
+      ));
+    }
+    return lines;
+  }
+
+  Widget _legendDot(Color color, String label) {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -35,7 +76,7 @@ class SlopesChart extends StatelessWidget {
         const SizedBox(width: 4),
         Text(
           label,
-          style: const TextStyle(color: Colors.white70, fontSize: 10),
+          style: const TextStyle(color: Colors.black54, fontSize: 10),
         ),
       ],
     );
@@ -59,6 +100,9 @@ class SlopesChart extends StatelessWidget {
       minY = lo < -30 ? lo - 5 : -30;
       maxY = hi > 30 ? hi + 5 : 30;
     }
+    // 관리도 derive 임계선이 범위 밖이면 보이게 확장
+    if (rmsSlopeUcl != null && rmsSlopeUcl! > maxY) maxY = rmsSlopeUcl! + 5;
+    if (mdfSlopeLcl != null && mdfSlopeLcl! < minY) minY = mdfSlopeLcl! - 5;
 
     return Card(
       margin: EdgeInsets.zero,
@@ -73,13 +117,14 @@ class SlopesChart extends StatelessWidget {
                 const SizedBox(width: 14),
                 _legendDot(cMdfSlope, 'MDF slope %'),
                 const SizedBox(width: 14),
-                _legendDot(cThr, '임계값', dashed: true),
+                _legendDot(cThr, 'CC-derive 임계'),
               ],
             ),
             const SizedBox(height: 2),
             const Text(
-              '30초 선형회귀 변화율. 두 선이 동시에 각자 임계값 넘으면 → 피로 카운터 +1.',
-              style: TextStyle(color: Colors.white54, fontSize: 10),
+              '30초 선형회귀 변화율. 점선은 관리도 UCL/LCL을 슬로프 등가로 환산한 값 '
+              '(= 3σ/mean × 100). 8점 학습 후 자동 표시.',
+              style: TextStyle(color: Colors.black45, fontSize: 10),
             ),
             const SizedBox(height: 4),
             SizedBox(
@@ -88,7 +133,7 @@ class SlopesChart extends StatelessWidget {
                   ? const Center(
                       child: Text(
                         '대기 중 (30초치 모일 때까지)',
-                        style: TextStyle(color: Colors.white38, fontSize: 11),
+                        style: TextStyle(color: Colors.black38, fontSize: 11),
                       ),
                     )
                   : RepaintBoundary(
@@ -121,39 +166,7 @@ class SlopesChart extends StatelessWidget {
                           ),
                           borderData: FlBorderData(show: true),
                           extraLinesData: ExtraLinesData(
-                            horizontalLines: [
-                              HorizontalLine(
-                                y: 0,
-                                color: Colors.white24,
-                                strokeWidth: 1,
-                              ),
-                              HorizontalLine(
-                                y: rmsThreshold,
-                                color: cThr.withValues(alpha: 0.7),
-                                strokeWidth: 1.2,
-                                dashArray: [5, 4],
-                                label: HorizontalLineLabel(
-                                  show: true,
-                                  alignment: Alignment.topRight,
-                                  style: TextStyle(color: cThr, fontSize: 9),
-                                  labelResolver: (_) =>
-                                      'RMS thr +${rmsThreshold.toStringAsFixed(0)}%',
-                                ),
-                              ),
-                              HorizontalLine(
-                                y: mdfThreshold,
-                                color: cThr.withValues(alpha: 0.7),
-                                strokeWidth: 1.2,
-                                dashArray: [5, 4],
-                                label: HorizontalLineLabel(
-                                  show: true,
-                                  alignment: Alignment.bottomRight,
-                                  style: TextStyle(color: cThr, fontSize: 9),
-                                  labelResolver: (_) =>
-                                      'MDF thr ${mdfThreshold.toStringAsFixed(0)}%',
-                                ),
-                              ),
-                            ],
+                            horizontalLines: _buildLimitLines(),
                           ),
                           lineBarsData: [
                             LineChartBarData(

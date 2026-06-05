@@ -9,6 +9,7 @@
 //   ts, raw, env, rms, mdf, rs, ms, fd, run, stim, hc, cc, rt, mt, ct, b, rr, st, mk
 
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
 import 'screens/splash_screen.dart';
@@ -16,6 +17,10 @@ import 'services/profile_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // .env (OPENAI_API_KEY 등) 로드 — 없어도 앱은 동작 (AI 분석만 비활성).
+  try {
+    await dotenv.load(fileName: '.env');
+  } catch (_) {}
   await Hive.initFlutter();
   await gProfileService.init();
   runApp(const EmgFesApp());
@@ -31,8 +36,9 @@ class EmgFesApp extends StatelessWidget {
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
           seedColor: Colors.indigo,
-          brightness: Brightness.dark,
+          brightness: Brightness.light,
         ),
+        scaffoldBackgroundColor: const Color(0xFFF5F6FA),
         useMaterial3: true,
       ),
       home: const SplashScreen(),

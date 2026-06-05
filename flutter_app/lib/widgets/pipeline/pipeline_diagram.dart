@@ -25,8 +25,8 @@ class PipelineDiagram extends StatelessWidget {
   }) {
     final color = active
         ? (activeColor ?? Colors.indigoAccent)
-        : Colors.white24;
-    final bg = active ? color.withValues(alpha: 0.15) : Colors.white10;
+        : Colors.black26;
+    final bg = active ? color.withValues(alpha: 0.15) : Colors.black12;
     return Container(
       constraints: const BoxConstraints(minWidth: 78),
       padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
@@ -41,7 +41,7 @@ class PipelineDiagram extends StatelessWidget {
           Text(
             label,
             style: TextStyle(
-              color: active ? Colors.white : Colors.white54,
+              color: active ? color : Colors.black45,
               fontSize: 10,
               fontWeight: FontWeight.w600,
             ),
@@ -66,7 +66,7 @@ class PipelineDiagram extends StatelessWidget {
     child: Icon(
       Icons.east,
       size: 16,
-      color: active ? Colors.white70 : Colors.white24,
+      color: active ? Colors.black54 : Colors.black26,
     ),
   );
 
@@ -86,7 +86,7 @@ class PipelineDiagram extends StatelessWidget {
             label: 'RAW EMG\nESP 1kHz',
             value: running ? 'ON' : '—',
             active: running,
-            activeColor: Colors.white70,
+            activeColor: Colors.black54,
           ),
           _arrow(running),
           _stage(
@@ -109,7 +109,7 @@ class PipelineDiagram extends StatelessWidget {
             label: '60s 버퍼',
             value: '${status.historyCount}/60',
             active: running && status.historyCount > 0,
-            activeColor: Colors.cyanAccent,
+            activeColor: Colors.cyan.shade700,
           ),
           _arrow(sloping),
           _stage(
@@ -125,7 +125,7 @@ class PipelineDiagram extends StatelessWidget {
             label: '이중 조건\nRMS↑ ∧ MDF↓',
             value: (cond1 && cond2) ? '만족' : '—',
             active: sloping && (cond1 || cond2),
-            activeColor: (cond1 && cond2) ? Colors.amberAccent : Colors.white24,
+            activeColor: (cond1 && cond2) ? Colors.amber.shade800 : Colors.black26,
           ),
           _arrow(status.consecutive > 0),
           _stage(
@@ -134,7 +134,7 @@ class PipelineDiagram extends StatelessWidget {
             active: status.consecutive > 0,
             activeColor: consec >= status.consecutiveTrigger
                 ? Colors.red
-                : Colors.orangeAccent,
+                : Colors.orange.shade700,
           ),
           _arrow(status.fatigueDetected),
           _stage(

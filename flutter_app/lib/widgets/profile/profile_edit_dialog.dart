@@ -101,7 +101,7 @@ class _ProfileEditDialogState extends State<ProfileEditDialog> {
             const Text(
               '분류',
               style: TextStyle(
-                color: Colors.white70,
+                color: Colors.black54,
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
               ),
@@ -142,7 +142,7 @@ class _ProfileEditDialogState extends State<ProfileEditDialog> {
       child: Material(
         color: selected
             ? c.color.withValues(alpha: 0.15)
-            : Colors.white.withValues(alpha: 0.04),
+            : Colors.black.withValues(alpha: 0.04),
         borderRadius: BorderRadius.circular(8),
         child: InkWell(
           borderRadius: BorderRadius.circular(8),
@@ -151,7 +151,7 @@ class _ProfileEditDialogState extends State<ProfileEditDialog> {
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
             decoration: BoxDecoration(
               border: Border.all(
-                color: selected ? c.color : Colors.white24,
+                color: selected ? c.color : Colors.black26,
                 width: selected ? 1.5 : 1,
               ),
               borderRadius: BorderRadius.circular(8),
@@ -169,7 +169,7 @@ class _ProfileEditDialogState extends State<ProfileEditDialog> {
                   child: Text(
                     c.code,
                     style: TextStyle(
-                      color: selected ? Colors.black : Colors.white,
+                      color: selected ? Colors.white : Colors.black87,
                       fontWeight: FontWeight.bold,
                       fontSize: 13,
                     ),
@@ -183,7 +183,7 @@ class _ProfileEditDialogState extends State<ProfileEditDialog> {
                       Text(
                         c.label,
                         style: TextStyle(
-                          color: selected ? Colors.white : Colors.white70,
+                          color: selected ? Colors.black87 : Colors.black54,
                           fontSize: 13,
                           fontWeight: selected
                               ? FontWeight.w600
@@ -194,7 +194,7 @@ class _ProfileEditDialogState extends State<ProfileEditDialog> {
                       Text(
                         c.description,
                         style: const TextStyle(
-                          color: Colors.white54,
+                          color: Colors.black45,
                           fontSize: 10,
                         ),
                       ),
@@ -206,7 +206,7 @@ class _ProfileEditDialogState extends State<ProfileEditDialog> {
                       ? Icons.radio_button_checked
                       : Icons.radio_button_unchecked,
                   size: 18,
-                  color: selected ? c.color : Colors.white38,
+                  color: selected ? c.color : Colors.black38,
                 ),
               ],
             ),

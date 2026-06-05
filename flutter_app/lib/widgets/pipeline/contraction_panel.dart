@@ -23,11 +23,11 @@ class ContractionPanel extends StatelessWidget {
   static Color _stateColor(int s) {
     switch (s) {
       case 1:
-        return Colors.orangeAccent;
+        return Colors.orange.shade700;
       case 2:
-        return Colors.greenAccent;
+        return Colors.green.shade600;
       default:
-        return Colors.white38;
+        return Colors.black38;
     }
   }
 
@@ -49,11 +49,11 @@ class ContractionPanel extends StatelessWidget {
       case 'b':
         return Colors.redAccent;
       case 't':
-        return Colors.amberAccent;
+        return Colors.amber.shade800;
       case 's':
-        return Colors.greenAccent;
+        return Colors.green.shade600;
       default:
-        return Colors.white38;
+        return Colors.black38;
     }
   }
 
@@ -83,7 +83,7 @@ class ContractionPanel extends StatelessWidget {
             borderRadius: BorderRadius.circular(3),
             child: Stack(
               children: [
-                Container(height: 6, color: Colors.white10),
+                Container(height: 6, color: Colors.black12),
                 FractionallySizedBox(
                   widthFactor: ratio.clamp(0.0, 1.0),
                   child: Container(height: 6, color: color),
@@ -99,7 +99,7 @@ class ContractionPanel extends StatelessWidget {
             '$count',
             textAlign: TextAlign.right,
             style: const TextStyle(
-              color: Colors.white,
+              color: Colors.black87,
               fontSize: 12,
               fontFeatures: [FontFeature.tabularFigures()],
             ),
@@ -109,7 +109,7 @@ class ContractionPanel extends StatelessWidget {
         Expanded(
           child: Text(
             hint,
-            style: const TextStyle(color: Colors.white38, fontSize: 9),
+            style: const TextStyle(color: Colors.black38, fontSize: 9),
             overflow: TextOverflow.ellipsis,
           ),
         ),
@@ -144,7 +144,7 @@ class ContractionPanel extends StatelessWidget {
                 const SizedBox(width: 8),
                 const Text(
                   '현재 상태',
-                  style: TextStyle(color: Colors.white60, fontSize: 11),
+                  style: TextStyle(color: Colors.black54, fontSize: 11),
                 ),
                 const SizedBox(width: 8),
                 Text(
@@ -168,16 +168,16 @@ class ContractionPanel extends StatelessWidget {
                   ),
               ],
             ),
-            const Divider(height: 18, color: Colors.white12),
+            const Divider(height: 18, color: Colors.black12),
 
             // 마지막 수축
             Row(
               children: [
-                const Icon(Icons.history, size: 14, color: Colors.white54),
+                const Icon(Icons.history, size: 14, color: Colors.black45),
                 const SizedBox(width: 6),
                 const Text(
                   '마지막 수축',
-                  style: TextStyle(color: Colors.white60, fontSize: 11),
+                  style: TextStyle(color: Colors.black54, fontSize: 11),
                 ),
                 const SizedBox(width: 8),
                 Text(
@@ -196,26 +196,26 @@ class ContractionPanel extends StatelessWidget {
                 padding: const EdgeInsets.only(left: 20),
                 child: Text(
                   '지속 ${lastDur}s   |   peak RMS ${status.lastContractPeak.toStringAsFixed(0)}',
-                  style: const TextStyle(color: Colors.white54, fontSize: 11),
+                  style: const TextStyle(color: Colors.black45, fontSize: 11),
                 ),
               ),
             ],
-            const Divider(height: 18, color: Colors.white12),
+            const Divider(height: 18, color: Colors.black12),
 
             // 누적 카운터
             Row(
               children: [
-                const Icon(Icons.bar_chart, size: 14, color: Colors.white54),
+                const Icon(Icons.bar_chart, size: 14, color: Colors.black45),
                 const SizedBox(width: 6),
                 const Text(
                   '세션 누적',
-                  style: TextStyle(color: Colors.white60, fontSize: 11),
+                  style: TextStyle(color: Colors.black54, fontSize: 11),
                 ),
                 const SizedBox(width: 8),
                 Text(
                   '총 $total회',
                   style: const TextStyle(
-                    color: Colors.white,
+                    color: Colors.black87,
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
                   ),
@@ -227,7 +227,7 @@ class ContractionPanel extends StatelessWidget {
               'SUSTAINED',
               status.sustainedCount,
               total,
-              Colors.greenAccent,
+              Colors.green.shade600,
               '분석에 유효',
             ),
             const SizedBox(height: 4),
@@ -235,7 +235,7 @@ class ContractionPanel extends StatelessWidget {
               'TRANSIENT',
               status.transientCount,
               total,
-              Colors.amberAccent,
+              Colors.amber.shade800,
               '경계, 주의',
             ),
             const SizedBox(height: 4),

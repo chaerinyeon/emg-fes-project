@@ -23,7 +23,7 @@ class LiveReadout extends StatelessWidget {
         children: [
           Text(
             label,
-            style: const TextStyle(color: Colors.white60, fontSize: 11),
+            style: const TextStyle(color: Colors.black54, fontSize: 11),
           ),
           const SizedBox(height: 2),
           RichText(
@@ -40,7 +40,7 @@ class LiveReadout extends StatelessWidget {
                 ),
                 TextSpan(
                   text: '  $unit',
-                  style: const TextStyle(color: Colors.white38, fontSize: 11),
+                  style: const TextStyle(color: Colors.black38, fontSize: 11),
                 ),
               ],
             ),
@@ -55,17 +55,17 @@ class LiveReadout extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 14),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.05),
-        border: Border.all(color: Colors.white24),
+        color: Colors.black.withValues(alpha: 0.05),
+        border: Border.all(color: Colors.black26),
         borderRadius: BorderRadius.circular(10),
       ),
       child: Row(
         children: [
           _tile('ENV', active ? envLast.toStringAsFixed(0) : '—', cEnv, ''),
-          Container(width: 1, height: 38, color: Colors.white24),
+          Container(width: 1, height: 38, color: Colors.black26),
           const SizedBox(width: 10),
           _tile('RMS', active ? rmsLast.toStringAsFixed(1) : '—', cRms, ''),
-          Container(width: 1, height: 38, color: Colors.white24),
+          Container(width: 1, height: 38, color: Colors.black26),
           const SizedBox(width: 10),
           _tile('MDF', active ? mdfLast.toStringAsFixed(1) : '—', cMdf, 'Hz'),
         ],

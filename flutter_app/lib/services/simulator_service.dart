@@ -90,19 +90,23 @@ class SimulatorService {
   String _pendingMarker = '';
   int _tickCount = 0;            // 100ms tick (= 10Hz)
 
-  // Phase 머신
+  // Phase 머신 / 사이클
   SimPhase _phase = SimPhase.idle;
   int _phaseStartMs = 0;
+  int _cycle = 1;                                  // 현재 사이클 (1..3)
   String _pendingReq = '';
   bool _pendingReqEnd = false;
+  // 데모 친화 타이밍 (실측 프로토콜 1분/사이클 → 20초/사이클로 단축).
+  // 총 세션 길이: 10s baseline + (20+3+5)*3 ≈ 94s
+  static const int _stimMaxMs = 20000;             // 각 사이클 자극 20초
   static const int _cooldownMs = 3000;
   static const int _measureMs = 5000;
-  static const List<String> _prompts = [
-    '발목을 들어 올려 주세요',
-    '발을 아래로 눌러 주세요',
-    '무릎을 펴 주세요',
-    '지금 힘을 주세요',
-  ];
+  static const int _maxCycles = 3;                 // 3번째 측정에서 fd 발화
+  // FES duty cycle — 1.5초 ON + 1.5초 OFF 반복 (총 주기 3.0초)
+  static const double _fesOnMs = 1500;
+  static const double _fesOffMs = 1500;
+  static const double _fesPeriodMs = _fesOnMs + _fesOffMs;
+  static const String _prompt = '손을 꽉 쥐어주세요';
 
   bool get isRunning => _tickTimer != null;
 
@@ -194,6 +198,7 @@ class SimulatorService {
     _env = 0;
     _phase = SimPhase.idle;
     _phaseStartMs = 0;
+    _cycle = 1;
     _pendingReq = '';
     _pendingReqEnd = false;
   }
@@ -203,12 +208,13 @@ class SimulatorService {
     _phaseStartMs = _tsMs;
   }
 
-  /// _tick 안에서 매번 호출 — phase 사이 전환을 시간 또는 이벤트 기반으로 진행.
+  /// _tick 안에서 매번 호출 — phase 사이 전환을 시간/이벤트 기반으로 진행.
   ///   idle    → baseline : 'start' 명령에서 직접 전환
-  ///   baseline → stim     : 10s 경과 (baseline 수집 완료)
-  ///   stim    → cooldown : 자극이 OFF 된 직후 (피로 감지로 auto-off)
-  ///   cooldown→ measure  : 3s 안정화 완료, 측정 창 + 동작 요청 팝업
-  ///   measure → done     : 5s 측정 종료
+  ///   baseline → stim     : 10s 경과 (baseline 수집 완료, 사이클 1 시작)
+  ///   stim    → cooldown : 60s 경과 (강제 OFF) 또는 _stimulating false
+  ///   cooldown→ measure  : 3s 안정화 완료, 동작 요청 팝업
+  ///   measure → stim     : 5s 측정 종료, 다음 사이클 시작 (_cycle++ , _stimulating ON)
+  ///   measure → done     : 5s 측정 종료 + _cycle == _maxCycles → 근피로 검출 (fd True)
   void _advancePhase(double tSinceRunS) {
     final phaseElapMs = _tsMs - _phaseStartMs;
     switch (_phase) {
@@ -216,27 +222,45 @@ class SimulatorService {
         if (tSinceRunS >= 10) _setPhase(SimPhase.stim);
         break;
       case SimPhase.stim:
+        // 60s 경과 시 강제 자극 OFF → cooldown
+        if (_stimulating && phaseElapMs >= _stimMaxMs) {
+          _stimulating = false;
+        }
         if (!_stimulating) {
-          // 자극이 방금 꺼짐 (피로 감지 → auto-off, 또는 수동 OFF)
           _setPhase(SimPhase.cooldown);
         }
         break;
       case SimPhase.cooldown:
         if (phaseElapMs >= _cooldownMs) {
           _setPhase(SimPhase.measure);
-          _pendingReq = _prompts[_rng.nextInt(_prompts.length)];
-          _pendingMarker = 'measure_start';
+          _pendingReq = _prompt;
+          _pendingMarker = 'measure_start_$_cycle';
         }
         break;
       case SimPhase.measure:
         if (phaseElapMs >= _measureMs) {
-          _setPhase(SimPhase.done);
           _pendingReqEnd = true;
-          _pendingMarker = 'measure_end';
+          _pendingMarker = 'measure_end_$_cycle';
+          if (_cycle >= _maxCycles) {
+            // 3번째 측정 종료 → done 진입. fd 는 done 들어간 뒤
+            // 500ms 후에 set 해서 측정 팝업이 먼저 닫히고 피로 팝업이 뜨도록.
+            _setPhase(SimPhase.done);
+          } else {
+            // 다음 사이클: 자극 재개
+            _cycle++;
+            _stimulating = true;
+            _setPhase(SimPhase.stim);
+          }
+        }
+        break;
+      case SimPhase.done:
+        // done 진입 500ms 후 fd 발화 — 측정 다이얼로그 dismiss 와 충돌 방지
+        if (!_fd && phaseElapMs >= 500) {
+          _fd = true;
+          _fdLatchUntilMs = _tsMs + _fdLatchMs;
         }
         break;
       case SimPhase.idle:
-      case SimPhase.done:
         break;
     }
   }
@@ -248,54 +272,84 @@ class SimulatorService {
     _tsMs += 100;
     _tickCount++;
 
-    // 진행도 — FES 자극 중 환자는 passive 상태라 EMG envelope/RMS 는 거의 평탄.
-    // 피로는 M-wave 진폭·면적이 감소하고 잠복기가 늘어나는 형태로 나타남.
+    // FES passive 자극이므로 EMG envelope/RMS 는 거의 평탄.
+    // 피로 검출은 사이클 카운터로 제어 — 3번째 측정 종료 시점에 _fd=true.
     final tSinceRunMs = _running ? (_tsMs - _runStartMs) : 0;
     final tSinceRunS = tSinceRunMs / 1000.0;
-    final fatigueP = ((tSinceRunS - 55) / 20.0).clamp(0.0, 1.0); // 가속 구간 비율
+    final phaseElapMs = _tsMs - _phaseStartMs;
 
     // ---- Phase 머신 전환 ----
     _advancePhase(tSinceRunS);
 
-    // ---- envelope (FES artifact + 미세한 자발성 EMG, 거의 평탄) ----
+    // ---- envelope (phase 기반) ----
     if (!_running) {
       _env = 3 + _rng.nextDouble() * 3;
     } else if (_phase == SimPhase.measure) {
       // 측정 창: 사용자가 동작 → 자발적 EMG burst (bell curve)
-      final mElapMs = _tsMs - _phaseStartMs;
-      final mP = (mElapMs / _measureMs).clamp(0.0, 1.0);
+      final mP = (phaseElapMs / _measureMs).clamp(0.0, 1.0);
       final bell = (1.0 - 4.0 * (mP - 0.5) * (mP - 0.5)).clamp(0.0, 1.0);
       _env = 30 + 220 * bell + _rng.nextDouble() * 25;
     } else if (_phase == SimPhase.cooldown) {
-      // 안정화: 자극 끊김 → 빠르게 휴식 레벨로
-      _env = 10 + _rng.nextDouble() * 6;
+      _env = 10 + _rng.nextDouble() * 6;                 // 휴식
     } else if (_phase == SimPhase.done) {
       _env = 8 + _rng.nextDouble() * 4;
     } else {
-      // FES 가 유발한 평균적 신호 레벨 + 작은 잡음. 피로 진행 시 살짝만 증가.
-      final mildRise = 6 * fatigueP;
-      _env = 48 + mildRise + _rng.nextDouble() * 5;
+      // baseline / stim — FES duty cycle: 1.5s ON + 1.5s OFF 반복.
+      // ON 구간 동안 envelope 가 sustained high, OFF 구간엔 빠르게 baseline 으로.
+      final phaseMs = (tSinceRunS * 1000.0) % _fesPeriodMs;
+      final cycleIdx = (tSinceRunS * 1000.0 / _fesPeriodMs).floor();
+      final peakHigh = 156 + 12 * sin(cycleIdx * 1.27);   // 144~168, 사이클별 고정
+      const baselineLevel = 32.0;
+      double pulse;
+      if (phaseMs < _fesOnMs) {
+        // ----- ON 구간 (0 ~ 1500ms) -----
+        if (phaseMs < 80) {
+          // 빠른 상승 — baseline → peak
+          pulse = baselineLevel +
+              (peakHigh - baselineLevel) * (phaseMs / 80.0);
+        } else {
+          // sustained plateau — peak 부근에서 small ripple
+          pulse = peakHigh +
+              7 * sin(2 * pi * 6.0 * (phaseMs - 80) / 1000.0);
+        }
+      } else {
+        // ----- OFF 구간 (1500 ~ 3000ms) -----
+        final offMs = phaseMs - _fesOnMs;
+        if (offMs < 150) {
+          // 자극 종료 직후 빠른 하강
+          pulse = baselineLevel +
+              (peakHigh - baselineLevel) * exp(-offMs / 60.0);
+        } else {
+          // baseline 휴식
+          pulse = baselineLevel + 4 * sin(2 * pi * 0.4 * tSinceRunS);
+        }
+      }
+      _env = (pulse + (_rng.nextDouble() - 0.5) * 12).clamp(18.0, 185.0);
     }
 
-    // ---- M-wave: 자극 중이면 ~50ms 마다 한 번 ----
-    // 진폭/면적은 baseline 대비 0% → 45% 감소, 잠복기는 +0 → +3.5ms.
-    // FatigueEngine 의 임계값(amp/area ≥30% 감소 OR 잠복기 +2ms) 을 t≈60s 부근에서 처음 넘김.
+    // ---- M-wave: FES burst (3초 duty cycle) 마다 한 번 ----
+    // 사이클별 진폭/면적 감소 (baseline 대비):
+    //   사이클 1: 0 → 8%
+    //   사이클 2: 8 → 22%
+    //   사이클 3: 22 → 42%  ← 30% 임계 통과 → Cat C/B 환자에서 M-wave 경로로 fd 자연 발화
+    // (Cat A 는 RMS/MDF UCL/LCL 위반만 사용 → M-wave 변화는 표시만 됨)
     if (_running && _stimulating &&
-        (_tsMs - _lastMwAtMs) >= 50) {
+        (_tsMs - _lastMwAtMs) >= _fesPeriodMs.toInt()) {
       _lastMwAtMs = _tsMs;
-      // declineP: 자극 시작 후 진행도 (피로 가속 전엔 천천히, 이후 가파르게)
-      double declineP;
-      if (tSinceRunS < 10) {
-        declineP = 0;                                          // baseline 수집 중
-      } else if (tSinceRunS < 55) {
-        declineP = 0.15 * (tSinceRunS - 10) / 45.0;            // 0 → 15%
-      } else {
-        declineP = 0.15 + 0.35 * fatigueP;                     // 15% → 50%
+      double declineP = 0;
+      if (_phase == SimPhase.stim) {
+        final stimP = (phaseElapMs / _stimMaxMs).clamp(0.0, 1.0);
+        const startsByCycle = [0.0, 0.08, 0.22];
+        const endsByCycle   = [0.08, 0.22, 0.42];
+        final i = (_cycle - 1).clamp(0, _maxCycles - 1);
+        declineP = startsByCycle[i] +
+                   (endsByCycle[i] - startsByCycle[i]) * stimP;
       }
-      final ampBase = 1000 + _rng.nextDouble() * 60;           // baseline ~1000
+      final ampBase = 1000 + _rng.nextDouble() * 60;
       _mwAmp = ampBase * (1.0 - declineP);
       _mwArea = (7000 + _rng.nextDouble() * 400) * (1.0 - declineP);
-      _mwLat = 8.0 + 3.5 * declineP / 0.5 + _rng.nextDouble() * 0.4; // 8 → 11.5ms
+      // 잠복기는 declineP 0.42 까지 +3.5ms 증가 (2ms 임계도 사이클 3 에서 통과)
+      _mwLat = 8.0 + 3.5 * (declineP / 0.42) + _rng.nextDouble() * 0.4;
       _mwCount++;
       _mwDirty = true;
     }
@@ -367,20 +421,43 @@ class SimulatorService {
   // RMS/MDF/slope/근피로 판정 — 펌웨어 loop() 의 1Hz 경로와 동일 논리
   void _updatePerSecond(double tSinceRunS) {
     // ---- 목표 trajectory ----
-    // FES passive 자극 중이라 RMS 는 거의 평탄. 피로는 주로 M-wave 로 잡힘.
-    // 단, 카테고리 A(건강) 환자도 동일 시뮬에서 detect 되도록 t≈55s 이후에만
-    // RMS/MDF slope 가 살짝 임계값을 넘도록 작은 트렌드를 둠.
-    if (tSinceRunS < 10) {
-      _rms = 48 + _rng.nextDouble() * 3;
+    // 전체 사이클 동안 RMS/MDF 평탄 유지 → slope 자동 검출 안 됨.
+    // fd 는 _advancePhase 의 3번째 measure 종료 분기에서 수동으로 True.
+    if (_phase == SimPhase.cooldown) {
+      _rms = 12 + _rng.nextDouble() * 4;                    // 휴식 수준
       _mdf = 80 + _rng.nextDouble() * 3;
-    } else if (tSinceRunS < 55) {
-      _rms = 50 + _rng.nextDouble() * 2;                    // 평탄 (피로 전)
-      _mdf = 79 + _rng.nextDouble() * 2;                    // 평탄
+    } else if (_phase == SimPhase.measure) {
+      // 자발적 수축 (사용자 동작) — RMS 강하게 ↑, MDF 살짝 ↓
+      final mElapMs = _tsMs - _phaseStartMs;
+      final mP = (mElapMs / _measureMs).clamp(0.0, 1.0);
+      final bell = (1.0 - 4.0 * (mP - 0.5) * (mP - 0.5)).clamp(0.0, 1.0);
+      _rms = 30 + 200 * bell + _rng.nextDouble() * 10;
+      _mdf = 75 + _rng.nextDouble() * 3;
+    } else if (_phase == SimPhase.done) {
+      _rms = 10 + _rng.nextDouble() * 3;
+      _mdf = 80 + _rng.nextDouble() * 3;
+    } else if (_phase == SimPhase.baseline) {
+      // baseline 10초 동안에도 자극이 켜져 있어 EMG 가 이미 활성 — 실측에 맞춤
+      final t = tSinceRunS;
+      final rmsOsc = 18 * sin(2 * pi * 0.13 * t) +
+                     10 * sin(2 * pi * 0.35 * t);
+      _rms = (128 + rmsOsc + (_rng.nextDouble() - 0.5) * 35)
+          .clamp(85.0, 175.0);
+      final mdfOsc = 35 * sin(2 * pi * 0.09 * t) +
+                     22 * sin(2 * pi * 0.5 * t);
+      _mdf = (185 + mdfOsc + (_rng.nextDouble() - 0.5) * 80)
+          .clamp(110.0, 285.0);
     } else {
-      final p = ((tSinceRunS - 55) / 20.0).clamp(0.0, 1.0);
-      // 보상성 자발 EMG 증가 (mild) + MDF 하강 — slope 가 t≈65s 부근에 임계 통과
-      _rms = 50 + 22 * p + _rng.nextDouble() * 3;           // 50 → 72
-      _mdf = 79 - 11 * p + _rng.nextDouble() * 2;           // 79 → 68
+      // stim phase (3사이클 모두 동일한 노이즈 패턴 — 실측 RMS/MDF 범위)
+      final t = tSinceRunS;
+      final rmsOsc = 22 * sin(2 * pi * 0.13 * t) +
+                     12 * sin(2 * pi * 0.4 * t);
+      _rms = (128 + rmsOsc + (_rng.nextDouble() - 0.5) * 40)
+          .clamp(85.0, 175.0);
+      final mdfOsc = 40 * sin(2 * pi * 0.09 * t) +
+                     25 * sin(2 * pi * 0.55 * t);
+      _mdf = (180 + mdfOsc + (_rng.nextDouble() - 0.5) * 90)
+          .clamp(110.0, 285.0);
     }
 
     _rmsHist.add(_rms);
@@ -405,23 +482,8 @@ class SimulatorService {
       _baselineReady = true;
     }
 
-    // 근피로 판정 (펌웨어와 동일)
-    if (_rmsHist.length >= 30) {
-      final cond = (_rmsSlope > _rmsThreshold) && (_mdfSlope < _mdfThreshold);
-      if (cond) {
-        _consecutive++;
-        if (_consecutive >= _consecutiveTrigger && !_fd) {
-          _fd = true;
-          _fdLatchUntilMs = _tsMs + _fdLatchMs;
-          // 자극이 켜져 있었으면 자동 OFF
-          if (_stimulating) {
-            _stimulating = false;
-          }
-        }
-      } else {
-        _consecutive = 0;
-      }
-    }
+    // 자동 slope 기반 _fd 트리거는 비활성화 — 사이클 구조와 충돌하기 때문.
+    // fd 는 _advancePhase 의 3번째 measure 종료 분기에서만 set.
     if (_fd && _tsMs > _fdLatchUntilMs) {
       _fd = false;
     }

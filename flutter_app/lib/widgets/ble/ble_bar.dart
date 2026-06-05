@@ -28,8 +28,8 @@ class BleBar extends StatelessWidget {
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             decoration: BoxDecoration(
-              color: Colors.white10,
-              border: Border.all(color: Colors.white24),
+              color: Colors.black12,
+              border: Border.all(color: Colors.black26),
               borderRadius: BorderRadius.circular(8),
             ),
             child: Row(
@@ -39,7 +39,7 @@ class BleBar extends StatelessWidget {
                       ? Icons.bluetooth_connected
                       : Icons.bluetooth_searching,
                   size: 18,
-                  color: isConn ? Colors.greenAccent : Colors.white60,
+                  color: isConn ? Colors.green.shade600 : Colors.black54,
                 ),
                 const SizedBox(width: 8),
                 Expanded(

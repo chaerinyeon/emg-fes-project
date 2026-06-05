@@ -9,12 +9,14 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import '../core/constants.dart';
 import '../core/models.dart';
 import '../core/subject_category.dart';
+import '../services/ai_analysis_service.dart';
 import '../services/csv_exporter.dart';
 import '../services/fatigue_engine.dart';
 import '../services/csv_save_stub.dart'
     if (dart.library.html) '../services/csv_save_web.dart';
 import '../services/profile_service.dart';
 import '../services/simulator_service.dart';
+import '../widgets/ai/ai_analysis_panel.dart';
 import '../widgets/ble/ble_bar.dart';
 import '../widgets/ble/status_bar.dart';
 import '../widgets/charts/chart_card.dart';
@@ -24,6 +26,8 @@ import '../widgets/controls/controls.dart';
 import '../widgets/fatigue/fatigue_banner.dart';
 import '../widgets/fatigue/fatigue_dialog.dart';
 import '../widgets/fatigue/fatigue_trigger_panel.dart';
+import '../widgets/measurement/measurement_request_dialog.dart';
+import '../widgets/setup/session_setup_dialog.dart';
 import '../widgets/pipeline/contraction_panel.dart';
 import '../widgets/pipeline/pipeline_diagram.dart';
 import '../widgets/mwave/algorithm_badge.dart';
@@ -50,6 +54,9 @@ class _HomePageState extends State<HomePage> {
       'disconnected'; // disconnected / scanning / connecting / connected / error
   String? _lastError;
 
+  // 하단 네비게이션 탭 인덱스 (0:대시보드 1:차트 2:분석 3:제어)
+  int _tabIndex = 0;
+
   // 시계열 (60초 윈도우)
   final Queue<Sample> _env = Queue();
   final Queue<Sample> _rms = Queue();
@@ -67,9 +74,17 @@ class _HomePageState extends State<HomePage> {
   // 자체 fatigue 엔진 (활성 환자 분류에 맞춰 매 _startSession 때 재생성)
   FatigueEngine _engine = FatigueEngine(category: SubjectCategory.healthy);
 
+  // AI 분석 (OpenAI) — .env 의 OPENAI_API_KEY 사용
+  final AiAnalysisService _ai = AiAnalysisService();
+
   // 시뮬레이터 (EMG 센서 없이 UI 검증) — null 이면 BLE 모드
   SimulatorService? _sim;
   bool get _simOn => _sim != null;
+
+  // 측정창 팝업이 현재 떠 있는지 — 같은 세션 동안 중복 표시 방지
+  bool _measureDialogShown = false;
+  // 근피로 다이얼로그 — 한 세션에 한 번만 띄우기
+  bool _fatigueDialogShown = false;
 
   // CSV 로깅 (web만) — 1Hz로 다운샘플 (10Hz BLE 중 초당 1번만 기록)
   final List<Map<String, dynamic>> _log = [];
@@ -288,18 +303,8 @@ class _HomePageState extends State<HomePage> {
       _st.mdfThreshold = (msg['mt'] as num?)?.toDouble() ?? _st.mdfThreshold;
 
       final running = msg['run'] as bool? ?? _st.isRunning;
-      if (!running && _st.isRunning) {
-        _env.clear();
-        _rms.clear();
-        _mdf.clear();
-        _rmsSlope.clear();
-        _mdfSlope.clear();
-        _envLast = 0;
-        _rmsLast = 0;
-        _mdfLast = 0;
-        _lastEnvPushT = -1.0;
-      }
-      // 세션이 새로 시작되면 로그/데시 추적도 리셋
+      // 세션이 멈출 때 차트를 즉시 비우지 않음 — 피로 시점 데이터를
+      // 화면에 남겨두고, 다음 세션 _startSession() 에서 명시적으로 클리어.
       if (running && !_st.isRunning) {
         _lastLoggedSec = null;
         _lastEnvPushT = -1.0;
@@ -319,11 +324,13 @@ class _HomePageState extends State<HomePage> {
         if (msg['rms'] != null) {
           final r = (msg['rms'] as num).toDouble();
           _rmsLast = r;
+          _st.lastRms = r;
           _push(_rms, Sample(t, r));
         }
         if (msg['mdf'] != null) {
           final m = (msg['mdf'] as num).toDouble();
           _mdfLast = m;
+          _st.lastMdf = m;
           _push(_mdf, Sample(t, m));
         }
         if (msg['rs'] != null) {
@@ -376,7 +383,6 @@ class _HomePageState extends State<HomePage> {
         }
       }
 
-      final wasFatigued = _st.engineFatigueDetected;
       final wasStimulating = _st.isStimulating;
       _st.isRunning = running;
       _st.isStimulating = msg['stim'] ?? _st.isStimulating;
@@ -413,10 +419,16 @@ class _HomePageState extends State<HomePage> {
 
       // ===== 자체 fatigue 엔진 (카테고리별 알고리즘) =====
       final hasMw = msg['mwa'] != null;
+      // rms/mdf 는 1Hz "full" 메시지에만 들어옴 — 관리도 표본 학습에 사용.
+      final hasRms = msg['rms'] != null;
+      final hasMdf = msg['mdf'] != null;
       final result = _engine.update(
         rmsSlope: _st.rmsSlope,
         mdfSlope: _st.mdfSlope,
         historyCount: _st.historyCount,
+        rms: hasRms ? (msg['rms'] as num).toDouble() : null,
+        mdf: hasMdf ? (msg['mdf'] as num).toDouble() : null,
+        isStimulating: _st.isStimulating,
         mwAmp: hasMw ? (msg['mwa'] as num).toDouble() : null,
         mwArea: hasMw ? (msg['mwc'] as num).toDouble() : null,
         mwLatency: hasMw ? (msg['mwl'] as num).toDouble() : null,
@@ -430,28 +442,55 @@ class _HomePageState extends State<HomePage> {
       _st.mwAmpDeclinePct = _engine.lastAmpDeclinePct;
       _st.mwAreaDeclinePct = _engine.lastAreaDeclinePct;
       _st.mwLatencyDeltaMs = _engine.lastLatencyDeltaMs;
+      // 관리도 상태
+      _st.rmsCcMean = _engine.rmsChart.mean;
+      _st.rmsCcUcl = _engine.rmsChart.upperLimit;
+      _st.mdfCcMean = _engine.mdfChart.mean;
+      _st.mdfCcLcl = _engine.mdfChart.lowerLimit;
+      _st.rmsCcSamples = _engine.rmsChart.sampleCount;
+      _st.mdfCcSamples = _engine.mdfChart.sampleCount;
+      _st.mwAmpCcMean = _engine.mwAmpChart.mean;
+      _st.mwAmpCcLcl = _engine.mwAmpChart.lowerLimit;
+      _st.mwAreaCcMean = _engine.mwAreaChart.mean;
+      _st.mwAreaCcLcl = _engine.mwAreaChart.lowerLimit;
+      _st.mwLatCcMean = _engine.mwLatChart.mean;
+      _st.mwLatCcUcl = _engine.mwLatChart.upperLimit;
 
-      if (result.justTriggered) {
-        // 엔진이 처음 fatigue 판정 → 자극이 켜져 있으면 즉시 정지
+      // 근피로 다이얼로그 — 엔진 트리거 또는 펌웨어 fd 가 처음 true 가 됐을 때 한 번만.
+      final shouldShowFatigue = !_fatigueDialogShown &&
+          (result.justTriggered || _st.fatigueDetected);
+      if (shouldShowFatigue) {
+        _fatigueDialogShown = true;
         if (_st.isStimulating) {
           _send({'cmd': 'stop'});
         }
+        // 엔진 reasons 가 있으면 사용, 없으면 fallback (펌웨어 fd 단독 트리거)
+        final dialogReasons = result.reasons.isNotEmpty
+            ? result.reasons
+            : const <String>['3사이클 측정 완료 — 누적 피로 추정'];
         showFatigueDialog(
           context,
-          rmsSlope: _st.rmsSlope,
-          mdfSlope: _st.mdfSlope,
+          status: _st,
           fesWasOn: wasStimulating,
+          reasons: dialogReasons,
+          onConfirm: _stopSession,        // 확인 → Stop 버튼과 동일하게 세션 종료
         );
       }
-      // 펌웨어 fd 상승 에지도 대비책으로 처리 (M-wave 없는 카테고리)
-      if (!wasFatigued && !result.detected && _st.fatigueDetected) {
-        showFatigueDialog(
+      // ===== 측정창 동작 요청 팝업 (시뮬레이터 또는 펌웨어가 'req' 발화 시) =====
+      final reqText = msg['req'] as String?;
+      if (reqText != null && reqText.isNotEmpty && !_measureDialogShown) {
+        final dur = (msg['req_dur'] as num?)?.toInt() ?? 5000;
+        _measureDialogShown = true;
+        showMeasurementRequestDialog(
           context,
-          rmsSlope: _st.rmsSlope,
-          mdfSlope: _st.mdfSlope,
-          fesWasOn: wasStimulating,
+          prompt: reqText,
+          durationMs: dur,
         );
       }
+      if (msg['req_end'] == true) {
+        _measureDialogShown = false;
+      }
+
       if (mounted) setState(() {});
     } catch (_) {
       // parse 실패는 무시
@@ -536,10 +575,34 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
-  void _startSession() {
+  Future<void> _startSession() async {
+    // 1) 세션 시작 전 개인화 셋업 다이얼로그 — 과거 기록 + 오늘 컨디션 입력
+    final cond = await showSessionSetupDialog(
+      context,
+      profile: gProfileService.active,
+      initial: _st.todayCondition,
+    );
+    if (cond == null) return;                              // 사용자가 취소
+    _st.todayCondition = cond;
+
+    // 새 세션 시작 — 차트/큐/마지막 값 모두 깨끗이 초기화
+    _env.clear();
+    _rms.clear();
+    _mdf.clear();
+    _rmsSlope.clear();
+    _mdfSlope.clear();
+    _envLast = 0;
+    _rmsLast = 0;
+    _mdfLast = 0;
+    _lastEnvPushT = -1.0;
+    _t0 = 0;
+    _t0Init = false;
+
     _log.clear();
     _pendingMarker = null;
     _st.sessionMaxRms = 0;
+    _measureDialogShown = false;
+    _fatigueDialogShown = false;
     // 활성 환자 카테고리로 엔진 재생성 (미지정 시 healthy로 기본)
     final cat = gProfileService.active?.category ?? SubjectCategory.healthy;
     _engine = FatigueEngine(
@@ -547,6 +610,7 @@ class _HomePageState extends State<HomePage> {
       rmsThreshold: _st.rmsThreshold,
       mdfThreshold: _st.mdfThreshold,
       consecutiveTrigger: _st.consecutiveTrigger,
+      sigmaMultiplier: cond.sigma,                          // 컨디션별 ±kσ
     );
     _st.engineFatigueDetected = false;
     _st.engineConsecutive = 0;
@@ -592,6 +656,60 @@ class _HomePageState extends State<HomePage> {
   void _sendMarker(String label) {
     _pendingMarker = label;
     _send({'cmd': 'marker', 'label': label});
+  }
+
+  // ---------- AI 분석 요청 ----------
+  // 현재 세션 지표를 스냅샷으로 만들어 OpenAI 로 보내고 자연어 해석을 받는다.
+  Future<String> _requestAiAnalysis() {
+    final p = gProfileService.active;
+    final data = <String, dynamic>{
+      'profile': {
+        'name': p?.name,
+        'category': p?.category?.label,
+        'todayCondition': _st.todayCondition.label,
+      },
+      'session': {
+        'isRunning': _st.isRunning,
+        'isStimulating': _st.isStimulating,
+        'historySeconds': _st.historyCount,
+        'baselineRms': _st.baselineRms,
+        'lastRms': _st.lastRms,
+        'lastMdf': _st.lastMdf,
+        'sessionMaxRms': _st.sessionMaxRms,
+        'rmsSlopePct': _st.rmsSlope,
+        'mdfSlopePct': _st.mdfSlope,
+      },
+      'fatigue': {
+        'detected': _st.engineFatigueDetected || _st.fatigueDetected,
+        'consecutive': '${_st.engineConsecutive}/${_st.consecutiveTrigger}',
+        'reasons': _st.engineReasons,
+      },
+      'controlChart': {
+        'rmsMean': _st.rmsCcMean,
+        'rmsUcl': _st.rmsCcUcl,
+        'rmsSamples': _st.rmsCcSamples,
+        'mdfMean': _st.mdfCcMean,
+        'mdfLcl': _st.mdfCcLcl,
+        'mdfSamples': _st.mdfCcSamples,
+      },
+      'contraction': {
+        'burst': _st.burstCount,
+        'sustained': _st.sustainedCount,
+        'transient': _st.transientCount,
+        'lastType': _st.lastContractType,
+        'lastPeak': _st.lastContractPeak,
+      },
+      'mwave': {
+        'amp': _st.mwAmp,
+        'area': _st.mwArea,
+        'latencyMs': _st.mwLatency,
+        'count': _st.mwCount,
+        'ampDeclinePct': _st.mwAmpDeclinePct,
+        'areaDeclinePct': _st.mwAreaDeclinePct,
+        'latencyDeltaMs': _st.mwLatencyDeltaMs,
+      },
+    };
+    return _ai.analyze(data);
   }
 
   void _toast(String msg, Color color) {
@@ -652,7 +770,7 @@ class _HomePageState extends State<HomePage> {
             tooltip: _simOn ? '시뮬레이터 끄기' : '시뮬레이터 켜기 (EMG 없이 UI 확인)',
             icon: Icon(
               Icons.science_outlined,
-              color: _simOn ? Colors.amberAccent : null,
+              color: _simOn ? Colors.amber.shade800 : null,
             ),
             onPressed: _toggleSimulator,
           ),
@@ -669,7 +787,7 @@ class _HomePageState extends State<HomePage> {
               _connState == 'connected'
                   ? Icons.bluetooth_connected
                   : Icons.bluetooth_searching,
-              color: _connState == 'connected' ? Colors.greenAccent : null,
+              color: _connState == 'connected' ? Colors.green.shade600 : null,
             ),
             // 시뮬레이터로 연결된 상태면 disconnect 가 시뮬레이터를 끔
             onPressed: _connState == 'connected'
@@ -679,134 +797,232 @@ class _HomePageState extends State<HomePage> {
         ],
       ),
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              ProfileBar(
-                service: gProfileService,
-                onChanged: () {
-                  if (mounted) setState(() {});
-                },
-              ),
-              const SizedBox(height: 8),
-              BleBar(
-                connState: _connState,
-                device: _device,
-                scanning: _scanning,
-                onScanAndConnect: _scanAndConnect,
-                onDisconnect: _simOn ? _toggleSimulator : _disconnect,
-              ),
-              const SizedBox(height: 8),
-              StatusBar(connState: _connState, status: _st),
-              if (_lastError != null) ...[
-                const SizedBox(height: 4),
-                Text(
-                  _lastError!,
-                  style: const TextStyle(color: Colors.redAccent, fontSize: 11),
-                ),
-              ],
-              const SizedBox(height: 8),
-              AlgorithmBadge(
-                category: gProfileService.active?.category,
-              ),
-              const SizedBox(height: 8),
-              LiveReadout(
-                active: active,
-                envLast: _envLast,
-                rmsLast: _rmsLast,
-                mdfLast: _mdfLast,
-              ),
-              const SizedBox(height: 6),
-              MwavePanel(status: _st),
-              if (_st.engineFatigueDetected || _st.fatigueDetected) ...[
-                const SizedBox(height: 8),
-                FatigueBanner(
-                  rmsSlope: _st.rmsSlope,
-                  mdfSlope: _st.mdfSlope,
-                ),
-                if (_st.engineReasons.isNotEmpty) ...[
-                  const SizedBox(height: 4),
-                  Text(
-                    '판정 근거: ${_st.engineReasons.join(' · ')}',
-                    style: const TextStyle(
-                      color: Colors.redAccent,
-                      fontSize: 11,
-                      fontStyle: FontStyle.italic,
-                    ),
-                  ),
-                ],
-              ],
-
-              const SizedBox(height: 14),
-              const SectionTitle('① 수축 검출 (Contraction state machine)'),
-              const SizedBox(height: 6),
-              ContractionPanel(status: _st),
-
-              const SizedBox(height: 14),
-              const SectionTitle('② 근피로 추출 파이프라인'),
-              const SizedBox(height: 6),
-              PipelineDiagram(
-                status: _st,
-                envLast: _envLast,
-                rmsLast: _rmsLast,
-                mdfLast: _mdfLast,
-              ),
-
-              const SizedBox(height: 14),
-              const SectionTitle('③ 신호 차트 (60초 윈도우)'),
-              const SizedBox(height: 6),
-              ChartCard(
-                title: 'EMG envelope',
-                queue: _env,
-                color: cEnv,
-                hint: 'RAW의 |x-DC| → IIR LPF (10Hz 갱신). 힘 주면 즉시 ↑, 풀면 ↓.',
-                height: 140,
-              ),
-              const SizedBox(height: 6),
-              ChartCard(
-                title: 'RMS (근활성도 크기)',
-                queue: _rms,
-                color: cRms,
-                hint: '√(Σ(raw-mean)²/N) — 1초 윈도우. 피로 시 ↑ 또는 환자가 힘 더 줘도 ↑.',
-                baselineY: _st.baselineRms > 0 ? _st.baselineRms : null,
-                height: 140,
-              ),
-              const SizedBox(height: 6),
-              ChartCard(
-                title: 'MDF (근피로 주파수)',
-                queue: _mdf,
-                color: cMdf,
-                hint: 'FFT 파워 중앙 주파수 (Hz). 피로 시 ↓ (저주파로 left-shift).',
-                height: 140,
-              ),
-              const SizedBox(height: 6),
-              SlopesChart(
-                rmsSlopeQueue: _rmsSlope,
-                mdfSlopeQueue: _mdfSlope,
-                rmsThreshold: _st.rmsThreshold,
-                mdfThreshold: _st.mdfThreshold,
-              ),
-
-              const SizedBox(height: 14),
-              const SectionTitle('④ 피로 트리거 (이중 조건 + 연속 카운터)'),
-              const SizedBox(height: 6),
-              FatigueTriggerPanel(status: _st),
-
-              const SizedBox(height: 18),
-              ControlsBar(
-                canSend: canSend,
-                onStart: _startSession,
-                onStop: _stopSession,
-                onCalibrate: () => _send({'cmd': 'calibrate'}),
-                onMarker: _sendMarker,
-                onEmergency: () => _send({'cmd': 'emergency'}),
-              ),
-              const SizedBox(height: 8),
-            ],
-          ),
+        child: IndexedStack(
+          index: _tabIndex,
+          children: [
+            _dashboardTab(active, canSend),
+            _chartsTab(),
+            _analysisTab(),
+            _aiAnalysisTab(),
+          ],
         ),
+      ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _tabIndex,
+        onDestinationSelected: (i) => setState(() => _tabIndex = i),
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.dashboard_outlined),
+            selectedIcon: Icon(Icons.dashboard),
+            label: '대시보드',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.show_chart),
+            label: '차트',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.account_tree_outlined),
+            selectedIcon: Icon(Icons.account_tree),
+            label: '분석',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.auto_awesome_outlined),
+            selectedIcon: Icon(Icons.auto_awesome),
+            label: 'AI분석',
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ============================================================
+  // 탭 1: 대시보드 — 연결/상태 + 실시간 값
+  // ============================================================
+  Widget _dashboardTab(bool active, bool canSend) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          ProfileBar(
+            service: gProfileService,
+            onChanged: () {
+              if (mounted) setState(() {});
+            },
+          ),
+          const SizedBox(height: 8),
+          BleBar(
+            connState: _connState,
+            device: _device,
+            scanning: _scanning,
+            onScanAndConnect: _scanAndConnect,
+            onDisconnect: _simOn ? _toggleSimulator : _disconnect,
+          ),
+          const SizedBox(height: 8),
+          StatusBar(connState: _connState, status: _st),
+          if (_lastError != null) ...[
+            const SizedBox(height: 4),
+            Text(
+              _lastError!,
+              style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+            ),
+          ],
+          const SizedBox(height: 8),
+          AlgorithmBadge(
+            category: gProfileService.active?.category,
+          ),
+          const SizedBox(height: 8),
+          LiveReadout(
+            active: active,
+            envLast: _envLast,
+            rmsLast: _rmsLast,
+            mdfLast: _mdfLast,
+          ),
+          const SizedBox(height: 6),
+          MwavePanel(status: _st),
+          if (_st.engineFatigueDetected || _st.fatigueDetected) ...[
+            const SizedBox(height: 8),
+            FatigueBanner(
+              rmsSlope: _st.rmsSlope,
+              mdfSlope: _st.mdfSlope,
+            ),
+            if (_st.engineReasons.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Text(
+                '판정 근거: ${_st.engineReasons.join(' · ')}',
+                style: const TextStyle(
+                  color: Colors.redAccent,
+                  fontSize: 11,
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+            ],
+          ],
+          const SizedBox(height: 14),
+          const SectionTitle('세션 제어'),
+          const SizedBox(height: 6),
+          ControlsBar(
+            canSend: canSend,
+            onStart: _startSession,
+            onStop: _stopSession,
+            onCalibrate: () => _send({'cmd': 'calibrate'}),
+            onMarker: _sendMarker,
+            onEmergency: () => _send({'cmd': 'emergency'}),
+          ),
+          const SizedBox(height: 8),
+        ],
+      ),
+    );
+  }
+
+  // ============================================================
+  // 탭 2: 차트 — 신호 시계열 (60초 윈도우)
+  // ============================================================
+  Widget _chartsTab() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const SectionTitle('③ 신호 차트 (60초 윈도우)'),
+          const SizedBox(height: 6),
+          ChartCard(
+            title: 'EMG envelope',
+            queue: _env,
+            color: cEnv,
+            hint: 'RAW의 |x-DC| → IIR LPF (10Hz 갱신). 힘 주면 즉시 ↑, 풀면 ↓.',
+            height: 140,
+          ),
+          const SizedBox(height: 6),
+          ChartCard(
+            title: 'RMS (근활성도 크기)',
+            queue: _rms,
+            color: cRms,
+            hint:
+                '√(Σ(raw-mean)²/N) — 1초 윈도우. 초기 8점으로 관리도 학습 → UCL 초과 시 이상.',
+            baselineY: _st.baselineRms > 0 ? _st.baselineRms : null,
+            centerY: _st.rmsCcMean,
+            upperLimitY: _st.rmsCcUcl,
+            height: 140,
+          ),
+          const SizedBox(height: 6),
+          ChartCard(
+            title: 'MDF (근피로 주파수)',
+            queue: _mdf,
+            color: cMdf,
+            hint:
+                'FFT 파워 중앙 주파수 (Hz). 초기 8점으로 관리도 학습 → LCL 미만 시 이상.',
+            centerY: _st.mdfCcMean,
+            lowerLimitY: _st.mdfCcLcl,
+            height: 140,
+          ),
+          const SizedBox(height: 6),
+          SlopesChart(
+            rmsSlopeQueue: _rmsSlope,
+            mdfSlopeQueue: _mdfSlope,
+            // 관리도 UCL/LCL → 슬로프 등가 (= 3σ/mean × 100)
+            rmsSlopeUcl:
+                (_st.rmsCcUcl != null && _st.rmsCcMean != null &&
+                        _st.rmsCcMean! > 0.01)
+                    ? (_st.rmsCcUcl! - _st.rmsCcMean!) / _st.rmsCcMean! * 100
+                    : null,
+            mdfSlopeLcl:
+                (_st.mdfCcLcl != null && _st.mdfCcMean != null &&
+                        _st.mdfCcMean! > 0.01)
+                    ? (_st.mdfCcLcl! - _st.mdfCcMean!) / _st.mdfCcMean! * 100
+                    : null,
+          ),
+          const SizedBox(height: 8),
+        ],
+      ),
+    );
+  }
+
+  // ============================================================
+  // 탭 3: 분석 — 수축 검출 · 파이프라인 · 피로 트리거
+  // ============================================================
+  Widget _analysisTab() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const SectionTitle('① 수축 검출 (Contraction state machine)'),
+          const SizedBox(height: 6),
+          ContractionPanel(status: _st),
+          const SizedBox(height: 14),
+          const SectionTitle('② 근피로 추출 파이프라인'),
+          const SizedBox(height: 6),
+          PipelineDiagram(
+            status: _st,
+            envLast: _envLast,
+            rmsLast: _rmsLast,
+            mdfLast: _mdfLast,
+          ),
+          const SizedBox(height: 14),
+          const SectionTitle('④ 피로 트리거 (이중 조건 + 연속 카운터)'),
+          const SizedBox(height: 6),
+          FatigueTriggerPanel(status: _st),
+          const SizedBox(height: 8),
+        ],
+      ),
+    );
+  }
+
+  // ============================================================
+  // 탭 4: AI분석 — OpenAI 기반 세션 해석
+  // ============================================================
+  Widget _aiAnalysisTab() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const SectionTitle('AI 분석 (OpenAI)'),
+          const SizedBox(height: 6),
+          AiAnalysisPanel(onRequest: _requestAiAnalysis),
+          const SizedBox(height: 8),
+        ],
       ),
     );
   }

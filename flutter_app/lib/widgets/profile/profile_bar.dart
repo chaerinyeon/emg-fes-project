@@ -64,8 +64,8 @@ class ProfileBar extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.04),
-        border: Border.all(color: Colors.white12),
+        color: Colors.black.withValues(alpha: 0.04),
+        border: Border.all(color: Colors.black12),
         borderRadius: BorderRadius.circular(6),
       ),
       child: Row(
@@ -76,7 +76,7 @@ class ProfileBar extends StatelessWidget {
             child: profile == null
                 ? const Text(
                     '환자 프로파일 없음',
-                    style: TextStyle(color: Colors.white70, fontSize: 12),
+                    style: TextStyle(color: Colors.black54, fontSize: 12),
                   )
                 : Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -103,7 +103,7 @@ class ProfileBar extends StatelessWidget {
                             '${profile.sessionCount} 세션',
                             style: const TextStyle(
                               fontSize: 10,
-                              color: Colors.white54,
+                              color: Colors.black45,
                             ),
                           ),
                         ],
@@ -120,7 +120,7 @@ class ProfileBar extends StatelessWidget {
                             'MDF ${profile.mdfBaseline!.toStringAsFixed(0)}Hz',
                         ].join('  |  '),
                         style: const TextStyle(
-                          color: Colors.white60,
+                          color: Colors.black54,
                           fontSize: 11,
                         ),
                       ),
@@ -131,7 +131,7 @@ class ProfileBar extends StatelessWidget {
             icon: const Icon(
               Icons.expand_more,
               size: 20,
-              color: Colors.white70,
+              color: Colors.black54,
             ),
             tooltip: '프로파일 전환/관리',
             onSelected: (v) async {
@@ -159,7 +159,7 @@ class ProfileBar extends StatelessWidget {
                         size: 16,
                         color: p.id == profile?.id
                             ? Colors.indigoAccent
-                            : Colors.white54,
+                            : Colors.black45,
                       ),
                       const SizedBox(width: 8),
                       if (p.category != null) ...[
@@ -192,19 +192,19 @@ class ProfileBar extends StatelessWidget {
                   value: '__edit',
                   child: Row(
                     children: [
-                      Icon(Icons.edit, size: 16, color: Colors.white70),
+                      Icon(Icons.edit, size: 16, color: Colors.black54),
                       SizedBox(width: 8),
                       Text('현재 프로파일 수정'),
                     ],
                   ),
                 ),
-              const PopupMenuItem(
+              PopupMenuItem(
                 value: '__new',
                 child: Row(
                   children: [
-                    Icon(Icons.add, size: 16, color: Colors.greenAccent),
-                    SizedBox(width: 8),
-                    Text('+ 새 프로파일'),
+                    Icon(Icons.add, size: 16, color: Colors.green.shade600),
+                    const SizedBox(width: 8),
+                    const Text('+ 새 프로파일'),
                   ],
                 ),
               ),

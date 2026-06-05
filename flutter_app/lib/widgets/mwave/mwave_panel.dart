@@ -24,13 +24,13 @@ class MwavePanel extends StatelessWidget {
                 Icon(
                   Icons.bolt,
                   size: 16,
-                  color: active ? Colors.amberAccent : Colors.white38,
+                  color: active ? Colors.amber.shade800 : Colors.black38,
                 ),
                 const SizedBox(width: 6),
                 const Text(
                   'M-wave (자극 응답)',
                   style: TextStyle(
-                    color: Colors.white,
+                    color: Colors.black87,
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
                   ),
@@ -40,7 +40,7 @@ class MwavePanel extends StatelessWidget {
                   active
                       ? '${status.mwCount}회 검출${hasBaseline ? ' · baseline 확립' : ' · baseline 수집 중'}'
                       : (status.isStimulating ? '자극 시작 대기' : '자극 OFF'),
-                  style: const TextStyle(color: Colors.white54, fontSize: 10),
+                  style: const TextStyle(color: Colors.black45, fontSize: 10),
                 ),
               ],
             ),
@@ -84,7 +84,7 @@ class MwavePanel extends StatelessWidget {
   Widget _divider() => Container(
     width: 1,
     height: 38,
-    color: Colors.white12,
+    color: Colors.black12,
     margin: const EdgeInsets.symmetric(horizontal: 8),
   );
 
@@ -96,11 +96,11 @@ class MwavePanel extends StatelessWidget {
     required bool isDecline, // true: 양수 감소가 fatigue, false: 양수 지연이 fatigue
     required bool active,
   }) {
-    Color deltaColor = Colors.white54;
+    Color deltaColor = Colors.black45;
     String deltaText = '';
     if (active && declinePct != null) {
       final isWarning = isDecline ? declinePct > 15 : declinePct > 1.0;
-      deltaColor = isWarning ? Colors.orangeAccent : Colors.white60;
+      deltaColor = isWarning ? Colors.orange.shade700 : Colors.black54;
       if (isDecline) {
         final sign = declinePct >= 0 ? '↓' : '↑';
         deltaText =
@@ -118,12 +118,12 @@ class MwavePanel extends StatelessWidget {
             children: [
               Text(
                 label,
-                style: const TextStyle(color: Colors.white60, fontSize: 11),
+                style: const TextStyle(color: Colors.black54, fontSize: 11),
               ),
               const SizedBox(width: 4),
               Text(
                 unit,
-                style: const TextStyle(color: Colors.white38, fontSize: 9),
+                style: const TextStyle(color: Colors.black38, fontSize: 9),
               ),
             ],
           ),
@@ -131,7 +131,7 @@ class MwavePanel extends StatelessWidget {
           Text(
             value,
             style: TextStyle(
-              color: active ? Colors.amberAccent : Colors.white38,
+              color: active ? Colors.amber.shade800 : Colors.black38,
               fontSize: 18,
               fontWeight: FontWeight.bold,
               fontFeatures: const [FontFeature.tabularFigures()],

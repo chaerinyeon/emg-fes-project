@@ -35,7 +35,7 @@ class FatigueBanner extends StatelessWidget {
                 const Text(
                   '근피로 감지 — 자극 자동 정지',
                   style: TextStyle(
-                    color: Colors.white,
+                    color: Colors.black87,
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
                   ),
@@ -43,7 +43,7 @@ class FatigueBanner extends StatelessWidget {
                 const SizedBox(height: 2),
                 Text(
                   'RMS slope +${rmsSlope.toStringAsFixed(1)}%   ·   MDF slope ${mdfSlope.toStringAsFixed(1)}%',
-                  style: const TextStyle(color: Colors.white60, fontSize: 11),
+                  style: const TextStyle(color: Colors.black54, fontSize: 11),
                 ),
               ],
             ),

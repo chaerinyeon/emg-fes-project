@@ -27,7 +27,7 @@ class AlgorithmBadge extends StatelessWidget {
         Text(
           'algorithm',
           style: TextStyle(
-            color: Colors.white38,
+            color: Colors.black38,
             fontSize: 10,
             letterSpacing: 0.5,
           ),
@@ -36,7 +36,7 @@ class AlgorithmBadge extends StatelessWidget {
         Expanded(
           child: Text(
             _description(),
-            style: const TextStyle(color: Colors.white70, fontSize: 11),
+            style: const TextStyle(color: Colors.black54, fontSize: 11),
             overflow: TextOverflow.ellipsis,
           ),
         ),

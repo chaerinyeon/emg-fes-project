@@ -62,15 +62,15 @@ class _MeasurementRequestDialogState extends State<_MeasurementRequestDialog>
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      icon: const Icon(
+      icon: Icon(
         Icons.fitness_center,
         size: 36,
-        color: Colors.amberAccent,
+        color: Colors.amber.shade800,
       ),
       title: const Text(
         '측정 — 동작 요청',
         textAlign: TextAlign.center,
-        style: TextStyle(fontSize: 15, color: Colors.white70),
+        style: TextStyle(fontSize: 15, color: Colors.black54),
       ),
       content: Column(
         mainAxisSize: MainAxisSize.min,
@@ -81,7 +81,7 @@ class _MeasurementRequestDialogState extends State<_MeasurementRequestDialog>
             style: const TextStyle(
               fontSize: 22,
               fontWeight: FontWeight.w700,
-              color: Colors.white,
+              color: Colors.black87,
               height: 1.3,
             ),
           ),
@@ -97,16 +97,16 @@ class _MeasurementRequestDialogState extends State<_MeasurementRequestDialog>
                   LinearProgressIndicator(
                     value: 1.0 - _ctrl.value,
                     minHeight: 6,
-                    backgroundColor: Colors.white12,
-                    valueColor: const AlwaysStoppedAnimation(
-                      Colors.amberAccent,
+                    backgroundColor: Colors.black12,
+                    valueColor: AlwaysStoppedAnimation(
+                      Colors.amber.shade800,
                     ),
                   ),
                   const SizedBox(height: 6),
                   Text(
                     '$secs 초',
                     style: const TextStyle(
-                      color: Colors.white54,
+                      color: Colors.black45,
                       fontSize: 12,
                     ),
                   ),

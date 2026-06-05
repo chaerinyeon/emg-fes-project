@@ -99,7 +99,7 @@ class _ProfileSelectScreenState extends State<ProfileSelectScreen> {
               const Text(
                 '환자 선택',
                 style: TextStyle(
-                  color: Colors.white,
+                  color: Colors.black87,
                   fontSize: 20,
                   fontWeight: FontWeight.w600,
                 ),
@@ -107,7 +107,7 @@ class _ProfileSelectScreenState extends State<ProfileSelectScreen> {
               const SizedBox(height: 2),
               const Text(
                 '측정할 환자 프로파일을 선택하세요',
-                style: TextStyle(color: Colors.white38, fontSize: 12),
+                style: TextStyle(color: Colors.black38, fontSize: 12),
               ),
               const SizedBox(height: 16),
               _buildFilterRow(all.length, counts),
@@ -139,9 +139,9 @@ class _ProfileSelectScreenState extends State<ProfileSelectScreen> {
                 icon: const Icon(Icons.add, size: 18),
                 label: const Text('새 환자 추가'),
                 style: OutlinedButton.styleFrom(
-                  foregroundColor: Colors.white70,
+                  foregroundColor: Colors.black54,
                   padding: const EdgeInsets.symmetric(vertical: 12),
-                  side: const BorderSide(color: Colors.white24),
+                  side: const BorderSide(color: Colors.black26),
                 ),
               ),
             ],
@@ -174,7 +174,7 @@ class _ProfileSelectScreenState extends State<ProfileSelectScreen> {
               label: '미분류',
               count: counts[null] ?? 0,
               selected: false, // 미분류는 임시 — 필터 토글로 사용 안 함
-              color: Colors.white38,
+              color: Colors.black38,
               onTap: () {},
               dimmed: true,
             ),
@@ -201,14 +201,14 @@ class _ProfileSelectScreenState extends State<ProfileSelectScreen> {
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
           decoration: BoxDecoration(
             border: Border.all(
-              color: selected ? color : Colors.white24,
+              color: selected ? color : Colors.black26,
             ),
             borderRadius: BorderRadius.circular(4),
           ),
           child: Text(
             '$label  $count',
             style: TextStyle(
-              color: selected ? color : Colors.white60,
+              color: selected ? color : Colors.black54,
               fontSize: 11,
               fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
             ),
@@ -226,21 +226,21 @@ class _ProfileSelectScreenState extends State<ProfileSelectScreen> {
           Icon(
             Icons.person_outline,
             size: 64,
-            color: Colors.white.withValues(alpha: 0.3),
+            color: Colors.black.withValues(alpha: 0.2),
           ),
           const SizedBox(height: 16),
           Text(
             noProfilesAtAll
                 ? '등록된 환자가 없습니다'
                 : '해당 분류의 환자가 없습니다',
-            style: const TextStyle(color: Colors.white60, fontSize: 14),
+            style: const TextStyle(color: Colors.black54, fontSize: 14),
           ),
           const SizedBox(height: 6),
           Text(
             noProfilesAtAll
                 ? '아래 버튼으로 첫 환자를 추가하세요'
                 : '필터를 전체로 바꾸거나 새 환자를 추가하세요',
-            style: const TextStyle(color: Colors.white38, fontSize: 12),
+            style: const TextStyle(color: Colors.black38, fontSize: 12),
           ),
         ],
       ),
@@ -268,10 +268,10 @@ class _ProfileTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cat = profile.category;
-    final stripeColor = cat?.color ?? Colors.white24;
+    final stripeColor = cat?.color ?? Colors.black26;
     return Material(
       color: isActive
-          ? Colors.white.withValues(alpha: 0.06)
+          ? Colors.black.withValues(alpha: 0.05)
           : Colors.transparent,
       borderRadius: BorderRadius.circular(6),
       child: InkWell(
@@ -279,7 +279,7 @@ class _ProfileTile extends StatelessWidget {
         onTap: onTap,
         child: Container(
           decoration: BoxDecoration(
-            border: Border.all(color: Colors.white12),
+            border: Border.all(color: Colors.black12),
             borderRadius: BorderRadius.circular(6),
           ),
           child: IntrinsicHeight(
@@ -313,7 +313,7 @@ class _ProfileTile extends StatelessWidget {
                               child: Text(
                                 profile.name,
                                 style: const TextStyle(
-                                  color: Colors.white,
+                                  color: Colors.black87,
                                   fontSize: 14,
                                   fontWeight: FontWeight.w500,
                                 ),
@@ -325,7 +325,7 @@ class _ProfileTile extends StatelessWidget {
                               const Icon(
                                 Icons.check,
                                 size: 13,
-                                color: Colors.white54,
+                                color: Colors.black45,
                               ),
                             ],
                           ],
@@ -334,7 +334,7 @@ class _ProfileTile extends StatelessWidget {
                         Text(
                           '${cat == null ? '미분류' : cat.label}  ·  ${profile.sessionCount}회  ·  $lastSessionLabel',
                           style: const TextStyle(
-                            color: Colors.white54,
+                            color: Colors.black45,
                             fontSize: 11,
                           ),
                         ),
@@ -344,7 +344,7 @@ class _ProfileTile extends StatelessWidget {
                           Text(
                             profile.note!,
                             style: const TextStyle(
-                              color: Colors.white38,
+                              color: Colors.black38,
                               fontSize: 10,
                             ),
                             maxLines: 1,
@@ -358,7 +358,7 @@ class _ProfileTile extends StatelessWidget {
                 PopupMenuButton<String>(
                   icon: const Icon(
                     Icons.more_horiz,
-                    color: Colors.white38,
+                    color: Colors.black38,
                     size: 18,
                   ),
                   onSelected: (v) {

@@ -1,4 +1,5 @@
 import '../core/subject_category.dart';
+import 'control_chart.dart';
 
 /// fatigue 판정 1회 결과.
 class FatigueResult {
@@ -17,8 +18,12 @@ class FatigueResult {
 }
 
 /// 환자 분류별 fatigue 판정 엔진.
-/// - A (건강): RMS slope + MDF slope 이중 조건
-/// - B (불완전마비): RMS / MDF / M-wave 중 2개 이상 만족
+///
+/// RMS / MDF 임계치는 운동 초반 8점으로 학습한 관리도(SPC)의 UCL / LCL.
+/// (기존 +20% / -3% 같은 하드코딩 슬로프 임계는 사용하지 않음)
+///
+/// - A (건강): RMS > UCL  AND  MDF < LCL
+/// - B (불완전마비): {RMS > UCL, MDF < LCL, M-wave 이상} 중 2개 이상
 /// - C (완전마비): M-wave 변화 단독
 ///
 /// 5x 연속 카운터로 노이즈 방지. 펌웨어의 fd 필드와 독립적으로 동작.
@@ -28,24 +33,30 @@ class FatigueEngine {
   double mdfThreshold;
   int consecutiveTrigger;
 
-  // M-wave 임계값
-  static const int mwBaselineSamples = 10;
-  static const double mwAmpDeclinePctTrigger = 30.0; // baseline 대비 30% 감소
-  static const double mwAreaDeclinePctTrigger = 30.0;
-  static const double mwLatencyDelayMsTrigger = 2.0; // baseline 대비 2ms 지연
+  // 개인화 임계치(관리도) — 운동 초반 표본으로 mean ± k·σ 학습.
+  // RMS·MDF: 1Hz 갱신 → 8점이면 8초
+  // M-wave: 3초 burst 당 1점 → 6점이면 ~18초
+  final ControlChart rmsChart;
+  final ControlChart mdfChart;
+  final ControlChart mwAmpChart;
+  final ControlChart mwAreaChart;
+  final ControlChart mwLatChart;
 
-  // baseline 수집용 시드
-  final List<double> _mwAmpSeed = [];
-  final List<double> _mwAreaSeed = [];
-  final List<double> _mwLatSeed = [];
+  // 가장 최근 M-wave 측정값 (CC 비교용으로 보관)
+  double? _lastMwAmp;
+  double? _lastMwArea;
+  double? _lastMwLat;
 
-  double? mwAmpBase;
-  double? mwAreaBase;
-  double? mwLatBase;
   int mwSeen = 0;
+  // UI 표시 호환용 — baseline mean 대비 percent decline / latency delta
   double? lastAmpDeclinePct;
   double? lastAreaDeclinePct;
   double? lastLatencyDeltaMs;
+
+  // 호환 alias (MwavePanel 등에서 사용)
+  double? get mwAmpBase => mwAmpChart.mean;
+  double? get mwAreaBase => mwAreaChart.mean;
+  double? get mwLatBase => mwLatChart.mean;
 
   int consecutive = 0;
   bool _latched = false;
@@ -55,59 +66,72 @@ class FatigueEngine {
     this.rmsThreshold = 20.0,
     this.mdfThreshold = -3.0,
     this.consecutiveTrigger = 5,
-  });
+    double sigmaMultiplier = 3.0,
+  })  : rmsChart = ControlChart(sigmaMultiplier: sigmaMultiplier),
+        mdfChart = ControlChart(sigmaMultiplier: sigmaMultiplier),
+        // M-wave 는 burst 당 1점이라 sample 도착이 느림 → baseline 6점
+        mwAmpChart = ControlChart(
+            baselineSamples: 6, sigmaMultiplier: sigmaMultiplier),
+        mwAreaChart = ControlChart(
+            baselineSamples: 6, sigmaMultiplier: sigmaMultiplier),
+        mwLatChart = ControlChart(
+            baselineSamples: 6, sigmaMultiplier: sigmaMultiplier);
 
   void resetSession() {
-    _mwAmpSeed.clear();
-    _mwAreaSeed.clear();
-    _mwLatSeed.clear();
-    mwAmpBase = null;
-    mwAreaBase = null;
-    mwLatBase = null;
     mwSeen = 0;
     lastAmpDeclinePct = null;
     lastAreaDeclinePct = null;
     lastLatencyDeltaMs = null;
+    _lastMwAmp = null;
+    _lastMwArea = null;
+    _lastMwLat = null;
+    rmsChart.reset();
+    mdfChart.reset();
+    mwAmpChart.reset();
+    mwAreaChart.reset();
+    mwLatChart.reset();
     consecutive = 0;
     _latched = false;
   }
 
   void _ingestMw(double amp, double area, double lat) {
     mwSeen++;
-    if (mwAmpBase == null) {
-      _mwAmpSeed.add(amp);
-      _mwAreaSeed.add(area);
-      _mwLatSeed.add(lat);
-      if (_mwAmpSeed.length >= mwBaselineSamples) {
-        mwAmpBase = _mean(_mwAmpSeed);
-        mwAreaBase = _mean(_mwAreaSeed);
-        mwLatBase = _mean(_mwLatSeed);
-      }
+    _lastMwAmp = amp;
+    _lastMwArea = area;
+    _lastMwLat = lat;
+    // 관리도 학습 — 6점 모이면 mean·stddev 확정
+    mwAmpChart.ingest(amp);
+    mwAreaChart.ingest(area);
+    mwLatChart.ingest(lat);
+    // UI 호환용 baseline mean 대비 percent
+    final aBase = mwAmpChart.mean;
+    if (aBase != null && aBase > 0) {
+      lastAmpDeclinePct = 100.0 * (aBase - amp) / aBase;
     }
-    if (mwAmpBase != null && mwAmpBase! > 0) {
-      lastAmpDeclinePct = 100.0 * (mwAmpBase! - amp) / mwAmpBase!;
+    final areaBase = mwAreaChart.mean;
+    if (areaBase != null && areaBase > 0) {
+      lastAreaDeclinePct = 100.0 * (areaBase - area) / areaBase;
     }
-    if (mwAreaBase != null && mwAreaBase! > 0) {
-      lastAreaDeclinePct = 100.0 * (mwAreaBase! - area) / mwAreaBase!;
-    }
-    if (mwLatBase != null) {
-      lastLatencyDeltaMs = lat - mwLatBase!;
+    final lBase = mwLatChart.mean;
+    if (lBase != null) {
+      lastLatencyDeltaMs = lat - lBase;
     }
   }
 
-  double _mean(List<double> xs) =>
-      xs.isEmpty ? 0 : xs.reduce((a, b) => a + b) / xs.length;
-
+  /// M-wave 관리도 위반 판정:
+  ///   진폭·면적 동반 LCL 미만  OR  잠복기 UCL 초과
   bool _mwFatigue(List<String> reasons) {
-    if (mwAmpBase == null) return false;
-    final ampDrop = (lastAmpDeclinePct ?? 0) >= mwAmpDeclinePctTrigger;
-    final areaDrop = (lastAreaDeclinePct ?? 0) >= mwAreaDeclinePctTrigger;
-    final latDelay = (lastLatencyDeltaMs ?? 0) >= mwLatencyDelayMsTrigger;
-    // 진폭+면적 동반 감소 OR 잠복기 의미있게 증가
-    final triggered = (ampDrop && areaDrop) || latDelay;
+    if (!mwAmpChart.isEstablished) return false;
+    final amp = _lastMwAmp;
+    final area = _lastMwArea;
+    final lat = _lastMwLat;
+    final ampBelow = amp != null && mwAmpChart.belowLower(amp);
+    final areaBelow = area != null && mwAreaChart.belowLower(area);
+    final latAbove = lat != null && mwLatChart.exceedsUpper(lat);
+    final triggered = (ampBelow && areaBelow) || latAbove;
     if (triggered) {
-      if (ampDrop && areaDrop) reasons.add('M-wave 진폭·면적 감소');
-      if (latDelay) reasons.add('M-wave 잠복기 지연');
+      if (ampBelow && areaBelow) reasons.add('M-wave 진폭·면적 < LCL');
+      if (latAbove) reasons.add('M-wave 잠복기 > UCL');
     }
     return triggered;
   }
@@ -115,10 +139,15 @@ class FatigueEngine {
   /// 매 BLE 메시지마다 호출. raw 메트릭을 받아 카테고리별로 판정.
   /// rmsSlope/mdfSlope는 historyCount >= 30 일 때만 의미 있음.
   /// mw* 값이 null이면 M-wave 부분은 건너뜀.
+  /// rms/mdf 값은 1Hz 갱신 시점에만 non-null — 관리도(SPC) 학습/체크에 사용.
+  /// 자극(FES) 중에만 관리도 표본을 수집하고, 자극 중 위반 시 fatigue 후보.
   FatigueResult update({
     required double rmsSlope,
     required double mdfSlope,
     required int historyCount,
+    double? rms,
+    double? mdf,
+    bool isStimulating = false,
     double? mwAmp,
     double? mwArea,
     double? mwLatency,
@@ -127,29 +156,40 @@ class FatigueEngine {
       _ingestMw(mwAmp, mwArea, mwLatency);
     }
 
+    // ---- 관리도 — 자극 중 RMS/MDF 값(절대값) 표본 학습 ----
+    // (slope SPC 는 baseline 이 거의 0 이라 band 가 너무 좁게 학습됨 → 사용 안 함)
+    if (isStimulating) {
+      if (rms != null) rmsChart.ingest(rms);
+      if (mdf != null) mdfChart.ingest(mdf);
+    }
+
     final reasons = <String>[];
-    final slopeReady = historyCount >= 30;
-    final rmsCond = slopeReady && rmsSlope > rmsThreshold;
-    final mdfCond = slopeReady && mdfSlope < mdfThreshold;
+
+    // 관리도 기반 RMS/MDF 이상 판정 (개인화 임계치)
+    // — 자극 중에만, 현재 값을 학습된 UCL/LCL 과 비교.
+    final rmsHigh = rmsChart.isEstablished &&
+        isStimulating && rms != null && rmsChart.exceedsUpper(rms);
+    final mdfLow = mdfChart.isEstablished &&
+        isStimulating && mdf != null && mdfChart.belowLower(mdf);
 
     bool fatigueCond;
     switch (category) {
       case SubjectCategory.healthy:
-        // A: RMS slope ↑ AND MDF slope ↓
-        fatigueCond = rmsCond && mdfCond;
-        if (rmsCond) reasons.add('RMS slope ↑');
-        if (mdfCond) reasons.add('MDF slope ↓');
+        // A: RMS UCL 초과 AND MDF LCL 미만 (둘 다 관리도 위반)
+        fatigueCond = rmsHigh && mdfLow;
+        if (rmsHigh) reasons.add('RMS > UCL');
+        if (mdfLow) reasons.add('MDF < LCL');
         break;
       case SubjectCategory.incomplete:
-        // B: RMS / MDF / M-wave 중 2개 이상 만족
+        // B: {RMS UCL 초과, MDF LCL 미만, M-wave 이상} 중 2개 이상
         int positives = 0;
-        if (rmsCond) {
+        if (rmsHigh) {
           positives++;
-          reasons.add('RMS slope ↑');
+          reasons.add('RMS > UCL');
         }
-        if (mdfCond) {
+        if (mdfLow) {
           positives++;
-          reasons.add('MDF slope ↓');
+          reasons.add('MDF < LCL');
         }
         if (_mwFatigue(reasons)) positives++;
         fatigueCond = positives >= 2;

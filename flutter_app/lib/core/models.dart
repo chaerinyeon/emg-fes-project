@@ -4,6 +4,21 @@ class Sample {
   const Sample(this.t, this.value);
 }
 
+/// 오늘의 컨디션 — 세션 시작 전 사용자가 입력.
+/// 모든 컨디션에 공통으로 **3σ Shewhart 표준**을 적용.
+/// 컨디션 값은 기록·코칭 노트·향후 자극 강도 추천용으로만 사용.
+enum TodayCondition {
+  good('좋음'),
+  normal('보통'),
+  tired('피곤함');
+
+  final String label;
+  const TodayCondition(this.label);
+
+  /// 모든 컨디션 공통 — Shewhart 3σ.
+  double get sigma => 3.0;
+}
+
 class AppStatus {
   bool isRunning = false;
   bool isStimulating = false;
@@ -50,4 +65,28 @@ class AppStatus {
   double? mwAmpDeclinePct; // baseline 대비 % 감소 (양수=감소)
   double? mwAreaDeclinePct;
   double? mwLatencyDeltaMs; // baseline 대비 ms 증가 (양수=지연)
+
+  // 가장 최근 1Hz RMS / MDF (관리도 표시용)
+  double lastRms = 0;
+  double lastMdf = 0;
+
+  // 오늘의 컨디션 (세션 시작 셋업에서 설정)
+  TodayCondition todayCondition = TodayCondition.normal;
+
+  // ===== 관리도(SPC) — 개인화 RMS/MDF 임계치 =====
+  // FatigueEngine 이 매 update 시 채움. mean / UCL / LCL 은 8점 모이면 확정.
+  double? rmsCcMean;
+  double? rmsCcUcl;        // 평균 + 3σ
+  double? mdfCcMean;
+  double? mdfCcLcl;        // 평균 - 3σ
+  int rmsCcSamples = 0;
+  int mdfCcSamples = 0;
+
+  // ===== 관리도(SPC) — 개인화 M-wave 임계치 (6점 학습) =====
+  double? mwAmpCcMean;
+  double? mwAmpCcLcl;       // 평균 - 3σ (진폭 하한)
+  double? mwAreaCcMean;
+  double? mwAreaCcLcl;
+  double? mwLatCcMean;
+  double? mwLatCcUcl;       // 평균 + 3σ (잠복기 상한)
 }
