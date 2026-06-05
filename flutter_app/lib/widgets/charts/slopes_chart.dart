@@ -38,8 +38,7 @@ class SlopesChart extends StatelessWidget {
           show: true,
           alignment: Alignment.topRight,
           style: TextStyle(color: cThr, fontSize: 9),
-          labelResolver: (_) =>
-              'RMS UCL +${rmsSlopeUcl!.toStringAsFixed(1)}%',
+          labelResolver: (_) => 'RMS UCL',
         ),
       ));
     }
@@ -53,8 +52,7 @@ class SlopesChart extends StatelessWidget {
           show: true,
           alignment: Alignment.bottomRight,
           style: TextStyle(color: cThr, fontSize: 9),
-          labelResolver: (_) =>
-              'MDF LCL ${mdfSlopeLcl!.toStringAsFixed(1)}%',
+          labelResolver: (_) => 'MDF LCL',
         ),
       ));
     }

@@ -89,6 +89,12 @@ class _HomePageState extends State<HomePage> {
   // 근피로 다이얼로그 — 한 세션에 한 번만 띄우기
   bool _fatigueDialogShown = false;
 
+  // 운동 결과 분석용 — 세션 시작 시각 + 피로 검출까지 걸린 시간(초)
+  DateTime? _sessionStart;
+  int? _timeToFatigueSec;
+  // 직전 운동 결과 요약 (오늘 vs 평소 비교) — stop 시 기록 추가 '전'에 스냅샷
+  Map<String, dynamic>? _lastWorkoutSummary;
+
   // CSV 로깅 (web만) — 1Hz로 다운샘플 (10Hz BLE 중 초당 1번만 기록)
   final List<Map<String, dynamic>> _log = [];
   String? _pendingMarker;
@@ -464,6 +470,11 @@ class _HomePageState extends State<HomePage> {
           (result.justTriggered || _st.fatigueDetected);
       if (shouldShowFatigue) {
         _fatigueDialogShown = true;
+        // 세션 시작~피로 검출까지 걸린 시간 기록 (운동 결과 분석용)
+        if (_sessionStart != null) {
+          _timeToFatigueSec =
+              DateTime.now().difference(_sessionStart!).inSeconds;
+        }
         if (_st.isStimulating) {
           _send({'cmd': 'stop'});
         }
@@ -585,11 +596,9 @@ class _HomePageState extends State<HomePage> {
       profile: gProfileService.active,
       status: _st,
       initial: _st.todayCondition,
-      onRecommend: _recommendIntensity,
     );
     if (result == null) return;                            // 사용자가 취소/닫음
     _st.todayCondition = result.condition;
-    _st.recommendedIntensity = result.recommendedIntensity;
 
     // 새 세션 시작 — 차트/큐/마지막 값 모두 깨끗이 초기화
     _env.clear();
@@ -607,6 +616,8 @@ class _HomePageState extends State<HomePage> {
     _log.clear();
     _pendingMarker = null;
     _st.sessionMaxRms = 0;
+    _sessionStart = DateTime.now();
+    _timeToFatigueSec = null;
     _measureDialogShown = false;
     _fatigueDialogShown = false;
     // 활성 환자 카테고리로 엔진 재생성 (미지정 시 healthy로 기본)
@@ -637,6 +648,26 @@ class _HomePageState extends State<HomePage> {
   Future<void> _stopSession() async {
     _send({'cmd': 'stop'});
 
+    // 오늘 vs 평소 비교 스냅샷 — recordSession 이 오늘 값을 이력에 넣기 '전'에 캡처.
+    final fatigued = _st.fatigueDetected || _st.engineFatigueDetected;
+    if (fatigued) {
+      final p = gProfileService.active;
+      double? mean(List<double>? xs) =>
+          (xs == null || xs.isEmpty) ? null : xs.reduce((a, b) => a + b) / xs.length;
+      _lastWorkoutSummary = {
+        'fatigueDetected': true,
+        'timeToFatigueSec': _timeToFatigueSec,
+        'usualTimeToFatigueSec': mean(p?.recentTimeToFatigueSec),
+        'todayFatigueRmsSlopePct': _st.rmsSlope,
+        'usualFatigueRmsSlopePct': mean(p?.recentFatigueRmsSlopes),
+        'todayFatigueMdfSlopePct': _st.mdfSlope,
+        'usualFatigueMdfSlopePct': mean(p?.recentFatigueMdfSlopes),
+        'priorSessionCount': p?.sessionCount ?? 0,
+      };
+    } else {
+      _lastWorkoutSummary = {'fatigueDetected': false};
+    }
+
     // 활성 프로파일에 세션 결과 기록
     await gProfileService.recordSession(
       baselineRms: _st.baselineRms > 0 ? _st.baselineRms : null,
@@ -644,6 +675,7 @@ class _HomePageState extends State<HomePage> {
       maxRms: _st.sessionMaxRms > 0 ? _st.sessionMaxRms : null,
       fatigueRmsSlope: _st.fatigueDetected ? _st.rmsSlope : null,
       fatigueMdfSlope: _st.fatigueDetected ? _st.mdfSlope : null,
+      timeToFatigueSec: _timeToFatigueSec?.toDouble(),
     );
     if (mounted) setState(() {});
 
@@ -695,30 +727,14 @@ class _HomePageState extends State<HomePage> {
       // 직전 세션들의 피로 시점 slope 이력 — 개인 피로 패턴의 핵심 단서
       'recentFatigueRmsSlopes': p?.recentFatigueRmsSlopes ?? const [],
       'recentFatigueMdfSlopes': p?.recentFatigueMdfSlopes ?? const [],
+      // 직전 세션들의 피로까지 걸린 시간(초) 이력 — '평소보다 빨리/늦게' 판단용
+      'recentTimeToFatigueSec': p?.recentTimeToFatigueSec ?? const [],
     };
-  }
-
-  // ---------- AI 권장 강도 (운동 전 바텀시트) ----------
-  // 누적 기록 + 오늘 컨디션 + 초기 EMG → 개인화 권장 강도/제안.
-  Future<AiRecommendation> _recommendIntensity(
-    TodayCondition condition,
-    double? initEmg,
-  ) {
-    final p = gProfileService.active;
-    final data = <String, dynamic>{
-      'profile': {'name': p?.name, 'category': p?.category?.label},
-      'today': {
-        'condition': condition.label,
-        'initialRestingEmg': initEmg,
-      },
-      'history': _historySnapshot(),
-    };
-    return _ai.recommend(data);
   }
 
   // ---------- AI 분석 요청 (AI분석 탭) ----------
-  // 현재 세션 지표 + 누적 기록을 보내 개인화된 자연어 해석을 받는다.
-  Future<String> _requestAiAnalysis() {
+  // 현재 세션 지표 + 누적 기록을 보내 구조화된 개인화 리포트를 받는다.
+  Future<AiReport> _requestAiAnalysis() {
     final p = gProfileService.active;
     final data = <String, dynamic>{
       'profile': {
@@ -727,6 +743,8 @@ class _HomePageState extends State<HomePage> {
         'todayCondition': _st.todayCondition.label,
         'recommendedIntensity': _st.recommendedIntensity,
       },
+      // 오늘 결과 vs 평소 (피로까지 시간 / 피로 강도) — 운동결과분석 비교용
+      if (_lastWorkoutSummary != null) 'todayResult': _lastWorkoutSummary,
       'history': _historySnapshot(),
       'session': {
         'isRunning': _st.isRunning,
@@ -824,7 +842,7 @@ class _HomePageState extends State<HomePage> {
     final active = _connState == 'connected' && _st.isRunning;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('EMG-FES Monitor'),
+        title: const Text('RE-FIT'),
         actions: [
           IconButton(
             tooltip: _simOn ? '시뮬레이터 끄기' : '시뮬레이터 켜기 (EMG 없이 UI 확인)',

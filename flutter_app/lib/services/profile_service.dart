@@ -28,6 +28,7 @@ class UserProfile {
   String? lastSessionAt; // ISO 8601 timestamp
   List<double> recentFatigueRmsSlopes; // 직전 N개 세션의 피로 시점 RMS slope
   List<double> recentFatigueMdfSlopes; // 같은 방식 MDF slope
+  List<double> recentTimeToFatigueSec; // 직전 N개 세션의 피로까지 걸린 시간(초)
 
   UserProfile({
     required this.id,
@@ -41,8 +42,10 @@ class UserProfile {
     this.lastSessionAt,
     List<double>? recentFatigueRmsSlopes,
     List<double>? recentFatigueMdfSlopes,
+    List<double>? recentTimeToFatigueSec,
   }) : recentFatigueRmsSlopes = recentFatigueRmsSlopes ?? <double>[],
-       recentFatigueMdfSlopes = recentFatigueMdfSlopes ?? <double>[];
+       recentFatigueMdfSlopes = recentFatigueMdfSlopes ?? <double>[],
+       recentTimeToFatigueSec = recentTimeToFatigueSec ?? <double>[];
 
   Map<String, dynamic> toJson() => {
     'name': name,
@@ -55,6 +58,7 @@ class UserProfile {
     'lastSessionAt': lastSessionAt,
     'recentFatigueRmsSlopes': recentFatigueRmsSlopes,
     'recentFatigueMdfSlopes': recentFatigueMdfSlopes,
+    'recentTimeToFatigueSec': recentTimeToFatigueSec,
   };
 
   factory UserProfile.fromJson(Map<String, dynamic> j, String id) {
@@ -78,6 +82,11 @@ class UserProfile {
               ?.map((e) => (e as num).toDouble())
               .toList() ??
           <double>[],
+      recentTimeToFatigueSec:
+          (j['recentTimeToFatigueSec'] as List?)
+              ?.map((e) => (e as num).toDouble())
+              .toList() ??
+          <double>[],
     );
   }
 
@@ -92,6 +101,7 @@ class UserProfile {
     String? lastSessionAt,
     List<double>? recentFatigueRmsSlopes,
     List<double>? recentFatigueMdfSlopes,
+    List<double>? recentTimeToFatigueSec,
   }) {
     return UserProfile(
       id: id,
@@ -109,6 +119,8 @@ class UserProfile {
           recentFatigueRmsSlopes ?? this.recentFatigueRmsSlopes,
       recentFatigueMdfSlopes:
           recentFatigueMdfSlopes ?? this.recentFatigueMdfSlopes,
+      recentTimeToFatigueSec:
+          recentTimeToFatigueSec ?? this.recentTimeToFatigueSec,
     );
   }
 }
@@ -204,6 +216,7 @@ class ProfileService {
     required double? maxRms, // 세션 중 관찰된 최대 RMS (MVC 추정)
     double? fatigueRmsSlope, // 피로 트리거 시점의 slope (있으면)
     double? fatigueMdfSlope,
+    double? timeToFatigueSec, // 세션 시작~피로 검출까지 걸린 시간(초)
   }) async {
     final cur = active;
     if (cur == null) return;
@@ -243,6 +256,13 @@ class ProfileService {
         newMdfSlopes.removeAt(0);
       }
     }
+    final newTimeToFatigue = List<double>.from(cur.recentTimeToFatigueSec);
+    if (timeToFatigueSec != null) {
+      newTimeToFatigue.add(timeToFatigueSec);
+      while (newTimeToFatigue.length > 10) {
+        newTimeToFatigue.removeAt(0);
+      }
+    }
 
     final updated = cur.copyWith(
       mvcRms: updatedMvc,
@@ -252,6 +272,7 @@ class ProfileService {
       lastSessionAt: DateTime.now().toIso8601String(),
       recentFatigueRmsSlopes: newRmsSlopes,
       recentFatigueMdfSlopes: newMdfSlopes,
+      recentTimeToFatigueSec: newTimeToFatigue,
     );
     await save(updated);
   }

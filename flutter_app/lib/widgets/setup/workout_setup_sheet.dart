@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
 import '../../core/models.dart';
-import '../../services/ai_analysis_service.dart';
 import '../../services/profile_service.dart';
 
 const Color _accent = Color(0xFF2E7D32); // 차분한 초록 (cRms 계열)
@@ -9,22 +8,17 @@ const Color _accent = Color(0xFF2E7D32); // 차분한 초록 (cRms 계열)
 /// 운동 전 셋업 결과 — home_page._startSession 이 사용.
 class PreWorkoutResult {
   final TodayCondition condition;
-  final int? recommendedIntensity; // AI 권장 강도 % (없을 수 있음)
-  const PreWorkoutResult({required this.condition, this.recommendedIntensity});
+  const PreWorkoutResult({required this.condition});
 }
 
 /// 운동 시작 전 바텀시트:
-///   기록 요약 · 오늘 컨디션 · 초기 EMG · AI 권장 강도(누적 기록 개인화)
+///   기록 요약 · 오늘 컨디션 · 초기 EMG
 /// "운동 시작하기" 시 [PreWorkoutResult] 반환, 닫으면 null.
 Future<PreWorkoutResult?> showWorkoutSetupSheet(
   BuildContext context, {
   required UserProfile? profile,
   required AppStatus status,
   required TodayCondition initial,
-  required Future<AiRecommendation> Function(
-    TodayCondition condition,
-    double? initEmg,
-  ) onRecommend,
 }) {
   return showModalBottomSheet<PreWorkoutResult>(
     context: context,
@@ -37,7 +31,6 @@ Future<PreWorkoutResult?> showWorkoutSetupSheet(
       profile: profile,
       status: status,
       initial: initial,
-      onRecommend: onRecommend,
     ),
   );
 }
@@ -46,13 +39,11 @@ class _WorkoutSetupSheet extends StatefulWidget {
   final UserProfile? profile;
   final AppStatus status;
   final TodayCondition initial;
-  final Future<AiRecommendation> Function(TodayCondition, double?) onRecommend;
 
   const _WorkoutSetupSheet({
     required this.profile,
     required this.status,
     required this.initial,
-    required this.onRecommend,
   });
 
   @override
@@ -66,19 +57,6 @@ class _WorkoutSetupSheetState extends State<_WorkoutSetupSheet> {
   bool _measuring = false;
   bool _emgMeasured = false;
   double _initEmg = 0;
-
-  // AI 개인화 리포트 (자동 실행)
-  bool _recommending = false;
-  AiRecommendation? _rec;
-  String? _recError;
-  int _reqSeq = 0; // 중복/경합 요청 가드
-
-  @override
-  void initState() {
-    super.initState();
-    // 시트를 열면 누적 기록으로 즉시 개인화 리포트를 생성.
-    if (AiAnalysisService.hasKey) _runRecommend();
-  }
 
   // ---------- 계산 (기록 요약용) ----------
   double? _mean(List<double> xs) =>
@@ -118,39 +96,10 @@ class _WorkoutSetupSheetState extends State<_WorkoutSetupSheet> {
       _emgMeasured = b > 0;
       _measuring = false;
     });
-    // 초기 EMG 반영해 개인화 리포트 갱신.
-    if (AiAnalysisService.hasKey) _runRecommend();
-  }
-
-  Future<void> _runRecommend() async {
-    final seq = ++_reqSeq;
-    setState(() {
-      _recommending = true;
-      _recError = null;
-    });
-    try {
-      final r = await widget.onRecommend(
-        _condition,
-        _emgMeasured ? _initEmg : null,
-      );
-      if (!mounted || seq != _reqSeq) return; // 더 최신 요청이 있으면 폐기
-      setState(() {
-        _rec = r;
-        _recommending = false;
-      });
-    } catch (e) {
-      if (!mounted || seq != _reqSeq) return;
-      setState(() {
-        _recError = '$e';
-        _recommending = false;
-      });
-    }
   }
 
   void _finish() {
-    Navigator.of(context).pop(
-      PreWorkoutResult(condition: _condition, recommendedIntensity: _rec?.intensity),
-    );
+    Navigator.of(context).pop(PreWorkoutResult(condition: _condition));
   }
 
   // ============================================================
@@ -191,11 +140,6 @@ class _WorkoutSetupSheetState extends State<_WorkoutSetupSheet> {
               _sectionLabel('초기 EMG'),
               const SizedBox(height: 8),
               _emgRow(),
-
-              const SizedBox(height: 18),
-              _sectionLabel('AI 개인화 리포트'),
-              const SizedBox(height: 8),
-              _recommendSection(),
 
               const SizedBox(height: 20),
               FilledButton(
@@ -295,138 +239,6 @@ class _WorkoutSetupSheetState extends State<_WorkoutSetupSheet> {
     );
   }
 
-  // ---------- AI 개인화 리포트 (자동) ----------
-  Widget _recommendSection() {
-    if (!AiAnalysisService.hasKey) {
-      return Card(
-        margin: EdgeInsets.zero,
-        color: Colors.orange.shade50,
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Text(
-            '.env 에 OPENAI_API_KEY 가 없어 개인화 리포트를 사용할 수 없습니다.',
-            style: TextStyle(color: Colors.orange.shade800, fontSize: 12),
-          ),
-        ),
-      );
-    }
-
-    final rec = _rec;
-
-    // 첫 분석 중 — 결과가 아직 없을 때.
-    if (rec == null && _recError == null) {
-      return Card(
-        margin: EdgeInsets.zero,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 28),
-          child: Center(
-            child: Column(
-              children: const [
-                SizedBox(
-                  width: 26,
-                  height: 26,
-                  child: CircularProgressIndicator(strokeWidth: 2.4),
-                ),
-                SizedBox(height: 12),
-                Text('누적 기록으로 개인화 분석 중…',
-                    style: TextStyle(color: Colors.black54, fontSize: 12)),
-              ],
-            ),
-          ),
-        ),
-      );
-    }
-
-    if (_recError != null) {
-      return Card(
-        margin: EdgeInsets.zero,
-        color: Colors.red.shade50,
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Text('개인화 분석 실패\n$_recError',
-              style: TextStyle(color: Colors.red.shade700, fontSize: 12)),
-        ),
-      );
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        if (_recommending)
-          const Padding(
-            padding: EdgeInsets.only(bottom: 8),
-            child: LinearProgressIndicator(minHeight: 2),
-          ),
-        if (rec!.intensity != null) ...[
-          Center(child: _gauge(rec.intensity!)),
-          const SizedBox(height: 12),
-        ],
-        _personalCard(rec),
-      ],
-    );
-  }
-
-  Widget _personalCard(AiRecommendation r) {
-    final items = <(String, String?)>[
-      ('피로 판단 기준', r.fatigueCriteria),
-      ('운동 강도', r.exerciseIntensity),
-      ('자극 수준', r.stimulationLevel),
-      ('휴식 타이밍', r.restTiming),
-    ].where((e) => e.$2 != null && e.$2!.trim().isNotEmpty).toList();
-
-    return Card(
-      margin: EdgeInsets.zero,
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('개인화 권고',
-                style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
-            const SizedBox(height: 8),
-            for (final reason in r.reasons)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Icon(Icons.check, size: 16, color: _accent),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(reason,
-                          style: const TextStyle(
-                              fontSize: 12, color: Colors.black87)),
-                    ),
-                  ],
-                ),
-              ),
-            if (items.isNotEmpty) ...[
-              const Divider(height: 16, color: Colors.black12),
-              for (final e in items)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 6),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(e.$1,
-                          style: TextStyle(
-                              color: _accent,
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600)),
-                      const SizedBox(height: 1),
-                      Text(e.$2!,
-                          style: const TextStyle(
-                              fontSize: 12, color: Colors.black87)),
-                    ],
-                  ),
-                ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
   // ---------- 공통 빌더 ----------
   Widget _sectionLabel(String t) => Text(t,
       style: const TextStyle(
@@ -435,12 +247,7 @@ class _WorkoutSetupSheetState extends State<_WorkoutSetupSheet> {
   Widget _conditionChip(TodayCondition c) {
     final selected = _condition == c;
     return GestureDetector(
-      onTap: () {
-        if (_condition == c) return;
-        setState(() => _condition = c);
-        // 컨디션 변경 시 개인화 리포트 자동 갱신.
-        if (AiAnalysisService.hasKey) _runRecommend();
-      },
+      onTap: () => setState(() => _condition = c),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 150),
         margin: const EdgeInsets.symmetric(horizontal: 4),
@@ -466,35 +273,4 @@ class _WorkoutSetupSheetState extends State<_WorkoutSetupSheet> {
       ),
     );
   }
-
-  Widget _gauge(int pct) => SizedBox(
-        width: 150,
-        height: 150,
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            SizedBox(
-              width: 150,
-              height: 150,
-              child: CircularProgressIndicator(
-                value: pct / 100,
-                strokeWidth: 11,
-                backgroundColor: _accent.withValues(alpha: 0.15),
-                color: _accent,
-                strokeCap: StrokeCap.round,
-              ),
-            ),
-            Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text('권장 강도',
-                    style: TextStyle(color: Colors.black54, fontSize: 12)),
-                Text('$pct%',
-                    style: const TextStyle(
-                        fontSize: 36, fontWeight: FontWeight.bold)),
-              ],
-            ),
-          ],
-        ),
-      );
 }

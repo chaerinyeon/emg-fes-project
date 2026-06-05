@@ -31,15 +31,36 @@ class EmgFesApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'EMG-FES Monitor',
+      title: 'RE-FIT',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
+        // 포인트(버튼 등 primary/secondary)만 초록. 표면(카드·앱바·네비)은 중립.
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF2E7D32), // 브랜드 초록 (운동 시작 바텀시트와 통일)
+          seedColor: const Color(0xFF2E7D32),
           brightness: Brightness.light,
-        ),
+        ).copyWith(surfaceTint: Colors.transparent),
         scaffoldBackgroundColor: const Color(0xFFF5F6FA),
         useMaterial3: true,
+        // 카드(차트 박스 등): 초록기 없는 흰 배경
+        cardTheme: const CardThemeData(
+          color: Colors.white,
+          surfaceTintColor: Colors.transparent,
+          shadowColor: Colors.black26,
+        ),
+        // 앱바: 중립 배경 + 스크롤 틴트 제거
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color(0xFFF5F6FA),
+          surfaceTintColor: Colors.transparent,
+          elevation: 0,
+          scrolledUnderElevation: 0,
+          foregroundColor: Colors.black87,
+        ),
+        // 하단 네비게이션: 흰 배경(초록기 제거), 선택 표시(인디케이터)만 초록 유지
+        navigationBarTheme: const NavigationBarThemeData(
+          backgroundColor: Colors.white,
+          surfaceTintColor: Colors.transparent,
+          elevation: 1,
+        ),
       ),
       home: const SplashScreen(),
     );
