@@ -576,10 +576,17 @@ class _HomePageState extends State<HomePage> {
     if (_connState == 'connected') {
       await _disconnect();
     }
+    // 자발 수축 EMG 크기 — 마비 정도가 클수록 작음 (자극 응답은 영향 없음).
+    final voluntaryScale = switch (gProfileService.active?.category) {
+      SubjectCategory.incomplete => 0.45,
+      SubjectCategory.complete => 0.12,
+      _ => 1.0,
+    };
     final sim = SimulatorService(
       onMessage: (msg) {
         _onCharData(utf8.encode(jsonEncode(msg)));
       },
+      voluntaryScale: voluntaryScale,
     );
     sim.start();
     setState(() {

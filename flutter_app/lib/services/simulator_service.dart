@@ -24,10 +24,15 @@ enum SimPhase {
 /// rt, mt, ct, b, rr, st, mk, mwa, mwc, mwl, mwn, cs, cd, lt, ld, lp, bc, sc, tc)
 /// 로 메시지를 만들어 [onMessage] 로 전달한다.
 class SimulatorService {
-  SimulatorService({required this.onMessage});
+  SimulatorService({required this.onMessage, this.voluntaryScale = 1.0});
 
   /// 한 패킷이 만들어질 때마다 호출. home_page는 utf8 인코딩 후 _onCharData 로 흘림.
   final void Function(Map<String, dynamic>) onMessage;
+
+  /// 자발적 수축(직접 힘 주기) EMG 크기 배수 — 마비 정도에 따라 작아짐.
+  ///   healthy 1.0 · 불완전마비 ~0.45 · 완전마비 ~0.12
+  /// 자극(FES) 응답은 외부 구동이라 이 배수의 영향을 받지 않는다.
+  final double voluntaryScale;
 
   // ---- 펌웨어와 동일한 임계값/파라미터 ----
   static const double _rmsThreshold = 20.0;
@@ -285,10 +290,11 @@ class SimulatorService {
     if (!_running) {
       _env = 3 + _rng.nextDouble() * 3;
     } else if (_phase == SimPhase.measure) {
-      // 측정 창: 사용자가 동작 → 자발적 EMG burst (bell curve)
+      // 측정 창: 사용자가 직접 힘 → 자발적 EMG burst (bell curve).
+      // 자극(stim) 보다 작고, 마비 정도(voluntaryScale)에 따라 더 작아진다.
       final mP = (phaseElapMs / _measureMs).clamp(0.0, 1.0);
       final bell = (1.0 - 4.0 * (mP - 0.5) * (mP - 0.5)).clamp(0.0, 1.0);
-      _env = 30 + 220 * bell + _rng.nextDouble() * 25;
+      _env = (25 + 130 * bell + _rng.nextDouble() * 15) * voluntaryScale;
     } else if (_phase == SimPhase.cooldown) {
       _env = 10 + _rng.nextDouble() * 6;                 // 휴식
     } else if (_phase == SimPhase.done) {
@@ -298,7 +304,8 @@ class SimulatorService {
       // ON 구간 동안 envelope 가 sustained high, OFF 구간엔 빠르게 baseline 으로.
       final phaseMs = (tSinceRunS * 1000.0) % _fesPeriodMs;
       final cycleIdx = (tSinceRunS * 1000.0 / _fesPeriodMs).floor();
-      final peakHigh = 156 + 12 * sin(cycleIdx * 1.27);   // 144~168, 사이클별 고정
+      // 마사지기(FES) 반복 자극 시 EMG(ENV) 가 자발 수축보다 크다 → 높은 피크.
+      final peakHigh = 200 + 16 * sin(cycleIdx * 1.27);   // 184~216, 사이클별 고정
       const baselineLevel = 32.0;
       double pulse;
       if (phaseMs < _fesOnMs) {
@@ -324,7 +331,7 @@ class SimulatorService {
           pulse = baselineLevel + 4 * sin(2 * pi * 0.4 * tSinceRunS);
         }
       }
-      _env = (pulse + (_rng.nextDouble() - 0.5) * 12).clamp(18.0, 185.0);
+      _env = (pulse + (_rng.nextDouble() - 0.5) * 12).clamp(18.0, 235.0);
     }
 
     // ---- M-wave: FES burst (3초 duty cycle) 마다 한 번 ----
@@ -427,11 +434,11 @@ class SimulatorService {
       _rms = 12 + _rng.nextDouble() * 4;                    // 휴식 수준
       _mdf = 80 + _rng.nextDouble() * 3;
     } else if (_phase == SimPhase.measure) {
-      // 자발적 수축 (사용자 동작) — RMS 강하게 ↑, MDF 살짝 ↓
+      // 자발적 수축 (사용자 동작) — 자극보다 작고 마비 정도로 축소.
       final mElapMs = _tsMs - _phaseStartMs;
       final mP = (mElapMs / _measureMs).clamp(0.0, 1.0);
       final bell = (1.0 - 4.0 * (mP - 0.5) * (mP - 0.5)).clamp(0.0, 1.0);
-      _rms = 30 + 200 * bell + _rng.nextDouble() * 10;
+      _rms = (25 + 130 * bell + _rng.nextDouble() * 10) * voluntaryScale;
       _mdf = 75 + _rng.nextDouble() * 3;
     } else if (_phase == SimPhase.done) {
       _rms = 10 + _rng.nextDouble() * 3;
