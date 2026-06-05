@@ -73,6 +73,9 @@ class AppStatus {
   // 오늘의 컨디션 (세션 시작 셋업에서 설정)
   TodayCondition todayCondition = TodayCondition.normal;
 
+  // 운동 전 플로우 결과 (표시·기록용 — 장치 제어 안 함)
+  int? recommendedIntensity; // AI 권장 강도 % (40~90)
+
   // ===== 관리도(SPC) — 개인화 RMS/MDF 임계치 =====
   // FatigueEngine 이 매 update 시 채움. mean / UCL / LCL 은 8점 모이면 확정.
   double? rmsCcMean;

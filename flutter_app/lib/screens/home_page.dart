@@ -27,7 +27,7 @@ import '../widgets/fatigue/fatigue_banner.dart';
 import '../widgets/fatigue/fatigue_dialog.dart';
 import '../widgets/fatigue/fatigue_trigger_panel.dart';
 import '../widgets/measurement/measurement_request_dialog.dart';
-import '../widgets/setup/session_setup_dialog.dart';
+import '../widgets/setup/workout_setup_sheet.dart';
 import '../widgets/pipeline/contraction_panel.dart';
 import '../widgets/pipeline/pipeline_diagram.dart';
 import '../widgets/mwave/algorithm_badge.dart';
@@ -576,14 +576,17 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _startSession() async {
-    // 1) 세션 시작 전 개인화 셋업 다이얼로그 — 과거 기록 + 오늘 컨디션 입력
-    final cond = await showSessionSetupDialog(
+    // 1) 운동 전 바텀시트 — 기록 요약 · 컨디션 · 초기 EMG · AI 권장 강도
+    final result = await showWorkoutSetupSheet(
       context,
       profile: gProfileService.active,
+      status: _st,
       initial: _st.todayCondition,
+      onRecommend: _recommendIntensity,
     );
-    if (cond == null) return;                              // 사용자가 취소
-    _st.todayCondition = cond;
+    if (result == null) return;                            // 사용자가 취소/닫음
+    _st.todayCondition = result.condition;
+    _st.recommendedIntensity = result.recommendedIntensity;
 
     // 새 세션 시작 — 차트/큐/마지막 값 모두 깨끗이 초기화
     _env.clear();
@@ -610,7 +613,7 @@ class _HomePageState extends State<HomePage> {
       rmsThreshold: _st.rmsThreshold,
       mdfThreshold: _st.mdfThreshold,
       consecutiveTrigger: _st.consecutiveTrigger,
-      sigmaMultiplier: cond.sigma,                          // 컨디션별 ±kσ
+      sigmaMultiplier: result.condition.sigma,              // 컨디션별 ±kσ
     );
     _st.engineFatigueDetected = false;
     _st.engineConsecutive = 0;
@@ -658,8 +661,52 @@ class _HomePageState extends State<HomePage> {
     _send({'cmd': 'marker', 'label': label});
   }
 
-  // ---------- AI 분석 요청 ----------
-  // 현재 세션 지표를 스냅샷으로 만들어 OpenAI 로 보내고 자연어 해석을 받는다.
+  // ---------- AI 누적 기록 스냅샷 ----------
+  // 반복 측정으로 쌓인 개인 기록 — AI 개인화(피로 패턴 학습)의 입력.
+  Map<String, dynamic> _historySnapshot() {
+    final p = gProfileService.active;
+    String? lastRel;
+    if (p?.lastSessionAt != null) {
+      try {
+        final d = DateTime.now().difference(DateTime.parse(p!.lastSessionAt!));
+        lastRel = d.inDays > 0
+            ? '${d.inDays}일 전'
+            : (d.inHours > 0 ? '${d.inHours}시간 전' : '${d.inMinutes}분 전');
+      } catch (_) {}
+    }
+    return {
+      'sessionCount': p?.sessionCount ?? 0,
+      'lastSessionAt': p?.lastSessionAt,
+      'lastSessionRelative': lastRel,
+      'restingRms': p?.restingRms,
+      'mvcRms': p?.mvcRms,
+      'mdfBaseline': p?.mdfBaseline,
+      // 직전 세션들의 피로 시점 slope 이력 — 개인 피로 패턴의 핵심 단서
+      'recentFatigueRmsSlopes': p?.recentFatigueRmsSlopes ?? const [],
+      'recentFatigueMdfSlopes': p?.recentFatigueMdfSlopes ?? const [],
+    };
+  }
+
+  // ---------- AI 권장 강도 (운동 전 바텀시트) ----------
+  // 누적 기록 + 오늘 컨디션 + 초기 EMG → 개인화 권장 강도/제안.
+  Future<AiRecommendation> _recommendIntensity(
+    TodayCondition condition,
+    double? initEmg,
+  ) {
+    final p = gProfileService.active;
+    final data = <String, dynamic>{
+      'profile': {'name': p?.name, 'category': p?.category?.label},
+      'today': {
+        'condition': condition.label,
+        'initialRestingEmg': initEmg,
+      },
+      'history': _historySnapshot(),
+    };
+    return _ai.recommend(data);
+  }
+
+  // ---------- AI 분석 요청 (AI분석 탭) ----------
+  // 현재 세션 지표 + 누적 기록을 보내 개인화된 자연어 해석을 받는다.
   Future<String> _requestAiAnalysis() {
     final p = gProfileService.active;
     final data = <String, dynamic>{
@@ -667,7 +714,9 @@ class _HomePageState extends State<HomePage> {
         'name': p?.name,
         'category': p?.category?.label,
         'todayCondition': _st.todayCondition.label,
+        'recommendedIntensity': _st.recommendedIntensity,
       },
+      'history': _historySnapshot(),
       'session': {
         'isRunning': _st.isRunning,
         'isStimulating': _st.isStimulating,
