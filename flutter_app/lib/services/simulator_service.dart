@@ -3,13 +3,24 @@ import 'dart:math';
 
 /// 자극 → 안정화 → 측정창 순으로 진행되는 임상 프로토콜의 단계.
 enum SimPhase {
-  idle,         // 세션 전
-  prep,         // (불완전마비) 시작 직후 자발 수축으로 baseline 측정
-  baseline,     // 0~10s, FES 자극 시작, baseline 수집
-  stim,         // 10s~, FES 자극 지속 (피로 진행)
-  cooldown,     // 피로 감지 후 stim OFF 직후의 안정화 (3s)
-  measure,      // 측정 창 — 사용자에게 동작 요청 (5s)
-  done,         // 측정 완료
+  idle, // 세션 전
+  prep, // (불완전마비) 시작 직후 자발 수축으로 baseline 측정
+  baseline, // 0~10s, FES 자극 시작, baseline 수집
+  stim, // 10s~, FES 자극 지속 (피로 진행)
+  cooldown, // 피로 감지 후 stim OFF 직후의 안정화 (3s)
+  measure, // 측정 창 — 사용자에게 동작 요청 (5s)
+  done, // 측정 완료
+}
+
+/// 시뮬레이터가 재생할 시나리오.
+enum SimScenario {
+  /// 기존 임상 프로토콜 — baseline→자극→측정 팝업을 3사이클 반복 후 피로 검출.
+  clinical,
+
+  /// 연속 자연 피로 폐루프 — 자발 수축으로 FES 트리거 → FES 지속 →
+  /// 근육이 점진적으로 지쳐 RMS↑(UCL 초과)·MDF↓(LCL 미만) → 엔진이 감지하면
+  /// home_page 가 'stop' 을 보내 FES(세션)가 자동 정지된다.
+  continuousFatigue,
 }
 
 /// EMG-FES 펌웨어 BLE 패킷을 흉내내는 인앱 시뮬레이터.
@@ -29,6 +40,7 @@ class SimulatorService {
     required this.onMessage,
     this.voluntaryScale = 1.0,
     this.voluntaryBaselineFirst = false,
+    this.scenario = SimScenario.clinical,
   });
 
   /// 한 패킷이 만들어질 때마다 호출. home_page는 utf8 인코딩 후 _onCharData 로 흘림.
@@ -41,6 +53,9 @@ class SimulatorService {
 
   /// 시작 직후 자발 수축으로 baseline 을 먼저 측정할지 (불완전마비용).
   final bool voluntaryBaselineFirst;
+
+  /// 재생할 시나리오 — 기본은 기존 임상 3사이클 프로토콜.
+  final SimScenario scenario;
 
   // ---- 펌웨어와 동일한 임계값/파라미터 ----
   static const double _rmsThreshold = 20.0;
@@ -102,32 +117,54 @@ class SimulatorService {
 
   // 송신 제어
   String _pendingMarker = '';
-  int _tickCount = 0;            // 100ms tick (= 10Hz)
+  int _tickCount = 0; // 100ms tick (= 10Hz)
 
   // Phase 머신 / 사이클
   SimPhase _phase = SimPhase.idle;
   int _phaseStartMs = 0;
-  int _cycle = 1;                                  // 현재 사이클 (1..3)
+  int _cycle = 1; // 현재 사이클 (1..3)
   String _pendingReq = '';
   bool _pendingReqEnd = false;
+
+  // 연속 피로: 자극 중 주기적 클렌치 측정창 상태
+  int _lastClenchAtMs = 0;
+  bool _clenchActive = false;
+
+  // FES 두드림 탭 위상 기준점 — Easy 마커로 리셋해 탭 타이밍을 맞춘다.
+  int _tapAnchorMs = 0;
   // 데모 친화 타이밍 (실측 프로토콜 1분/사이클 → 20초/사이클로 단축).
   // 총 세션 길이: 10s baseline + (20+3+5)*3 ≈ 94s
-  static const int _stimMaxMs = 20000;             // 각 사이클 자극 20초
+  static const int _stimMaxMs = 20000; // 각 사이클 자극 20초
   static const int _cooldownMs = 3000;
   static const int _measureMs = 5000;
-  static const int _maxCycles = 3;                 // 3번째 측정에서 fd 발화
-  // FES duty cycle — 1.5초 ON + 1.5초 OFF 반복 (총 주기 3.0초)
-  static const double _fesOnMs = 1500;
-  static const double _fesOffMs = 1500;
-  static const double _fesPeriodMs = _fesOnMs + _fesOffMs;
+  static const int _maxCycles = 3; // 3번째 측정에서 fd 발화
+  // FES 두드림(tapping) 모드 — 1.5초마다 1탭(날카로운 타격성 펄스).
+  // M-wave 도 탭마다(=주기마다) 1회 생성된다.
+  static const double _fesPeriodMs = 1600; // 탭 간격
+  static const int _tapRiseMs = 30; // 탭 상승(급)
+  static const int _tapHoldMs = 350; // 탭 정점 유지(plateau) — 최고 강도 머무름
+  static const int _tapDecayMs = 500; // 탭 하강 시정수 — 천천히 감쇠
+
+  // 연속 피로 시나리오 — 자극 시작 후 완만히 진행하다 후반에 가속(피로 붕괴).
+  // RMS↑/MDF↓ 가 후반 가속 구간에서 관리도(UCL/LCL)를 돌파 → ~3분경 검출.
+  //   진행도 q = stim경과 / _contSpanMs, 가속항은 q>_contAccelStart 부터 부드럽게.
+  static const int _contSpanMs = 205000; // 진행 정규화 기준
+  static const double _contAccelStart = 0.75; // 가속 시작(span의 75% ≈ 154s)
+
+  // 클렌치(자발 수축) 측정창 — 자극 중 40초마다 5초간 "손을 꽉 쥐어주세요".
+  static const int _clenchIntervalMs = 40000;
+  static const int _clenchDurMs = 5000;
   static const String _prompt = '손을 꽉 쥐어주세요';
-  static const String _voluntaryPrompt = '손에 힘을 주세요';   // 시작 baseline 측정
+  static const String _voluntaryPrompt = '손에 힘을 주세요'; // 시작 baseline 측정
 
   bool get isRunning => _tickTimer != null;
 
   void start() {
     if (_tickTimer != null) return;
-    _tickTimer = Timer.periodic(const Duration(milliseconds: 100), (_) => _tick());
+    _tickTimer = Timer.periodic(
+      const Duration(milliseconds: 100),
+      (_) => _tick(),
+    );
   }
 
   void stop() {
@@ -145,11 +182,17 @@ class SimulatorService {
         _runStartMs = _tsMs;
         _muscleState = 'calibrating';
         _pendingMarker = 'session_start';
-        if (voluntaryBaselineFirst) {
+        if (scenario == SimScenario.continuousFatigue) {
+          // 연속 피로 폐루프: 카테고리와 무관하게 자발 수축으로 FES 트리거 후
+          // FES 지속 → 점진 피로. (자극 OFF 로 시작, prep 에서 자발 baseline)
+          _stimulating = false;
+          _setPhase(SimPhase.prep);
+          _pendingReq = _voluntaryPrompt;
+        } else if (voluntaryBaselineFirst) {
           // 불완전마비: 시작 즉시 자발 수축으로 baseline 측정 (자극 OFF)
           _stimulating = false;
           _setPhase(SimPhase.prep);
-          _pendingReq = _voluntaryPrompt;            // 첫 팝업 "손에 힘을 주세요"
+          _pendingReq = _voluntaryPrompt; // 첫 팝업 "손에 힘을 주세요"
         } else {
           // 그 외: 마사지기(FES) 켜진 상태로 baseline 수집
           _stimulating = true;
@@ -183,7 +226,14 @@ class SimulatorService {
         _stimulating = on;
         break;
       case 'marker':
-        _pendingMarker = (cmd['label'] as String?) ?? '';
+        final label = (cmd['label'] as String?) ?? '';
+        _pendingMarker = label;
+        // 'easy' 마커: FES 두드림 탭(EMG 스파이크) 위상을 지금 시점으로 리셋해
+        // 누른 즉시 탭이 한 번 튀고 1.5초 주기가 그 시점부터 다시 시작된다(타이밍용).
+        if (label == 'easy' && _running) {
+          _tapAnchorMs = _tsMs; // 탭 위상 리셋 → 즉시 탭
+          _lastMwAtMs = _tsMs - _fesPeriodMs.toInt(); // M-wave 도 탭에 맞춰 발화
+        }
         break;
       case 'set_thresholds':
         // 시뮬에선 임계값을 펌웨어처럼 따라가도록 무시 (UI는 자체 표시)
@@ -224,11 +274,24 @@ class SimulatorService {
     _cycle = 1;
     _pendingReq = '';
     _pendingReqEnd = false;
+    _lastClenchAtMs = 0;
+    _clenchActive = false;
+    _tapAnchorMs = _tsMs;
   }
 
   void _setPhase(SimPhase p) {
     _phase = p;
     _phaseStartMs = _tsMs;
+  }
+
+  // 연속 피로 진행 인자 — 자극 경과(ms) 기준.
+  //   drift: 0→1 선형(완만한 상시 피로 진행), late: 후반 부드러운 가속(0→1).
+  double _contDrift(int stimElapMs) =>
+      (stimElapMs / _contSpanMs).clamp(0.0, 1.0);
+  double _contLate(int stimElapMs) {
+    final q = _contDrift(stimElapMs);
+    final r = ((q - _contAccelStart) / (1.0 - _contAccelStart)).clamp(0.0, 1.0);
+    return r * r; // 시작 기울기 0 → 코너 없이 부드럽게 가속
   }
 
   /// _tick 안에서 매번 호출 — phase 사이 전환을 시간/이벤트 기반으로 진행.
@@ -247,18 +310,44 @@ class SimulatorService {
           _pendingReqEnd = true;
           _pendingMarker = 'baseline_voluntary';
           if (_voluntaryBaselinePeak > 0) {
-            _baseline = _voluntaryBaselinePeak;       // 자발 수축이 baseline
+            _baseline = _voluntaryBaselinePeak; // 자발 수축이 baseline
             _baselineReady = true;
           }
-          _runStartMs = _tsMs;                        // 자극 baseline 10초 재계산 기준
+          _runStartMs = _tsMs; // 자극 baseline 10초 재계산 기준
           _stimulating = true;
           _setPhase(SimPhase.baseline);
         }
         break;
       case SimPhase.baseline:
-        if (tSinceRunS >= 10) _setPhase(SimPhase.stim);
+        if (tSinceRunS >= 10) {
+          _setPhase(SimPhase.stim);
+          _lastClenchAtMs = _tsMs; // 첫 클렌치는 stim 시작 +40s
+        }
         break;
       case SimPhase.stim:
+        if (scenario == SimScenario.continuousFatigue) {
+          // 자극을 계속 유지 — 피로는 _updatePerSecond 의 RMS↑/MDF↓ 진행으로
+          // 자연 발생하고, home_page 의 fatigue 엔진이 감지하면 외부에서 'stop'
+          // 이 들어와 종료된다. 엔진이 끝내 못 잡는 경우의 안전장치 — 의도한
+          // 검출(~stim 165s)보다 한참 뒤(220s)에만 fd 강제.
+          if (!_fd && phaseElapMs >= 220000) {
+            _fd = true;
+            _fdLatchUntilMs = _tsMs + _fdLatchMs;
+          }
+          // 40초마다 자발 수축 측정창 팝업("손을 꽉 쥐어주세요"), 5초간 유지.
+          if (!_clenchActive &&
+              (_tsMs - _lastClenchAtMs) >= _clenchIntervalMs) {
+            _clenchActive = true;
+            _lastClenchAtMs = _tsMs;
+            _pendingReq = _prompt;
+            _pendingMarker = 'clench_check';
+          } else if (_clenchActive &&
+              (_tsMs - _lastClenchAtMs) >= _clenchDurMs) {
+            _clenchActive = false;
+            _pendingReqEnd = true;
+          }
+          break;
+        }
         // 60s 경과 시 강제 자극 OFF → cooldown
         if (_stimulating && phaseElapMs >= _stimMaxMs) {
           _stimulating = false;
@@ -328,42 +417,31 @@ class SimulatorService {
       final bell = (1.0 - 4.0 * (mP - 0.5) * (mP - 0.5)).clamp(0.0, 1.0);
       _env = (25 + 130 * bell + _rng.nextDouble() * 15) * voluntaryScale;
     } else if (_phase == SimPhase.cooldown) {
-      _env = 10 + _rng.nextDouble() * 6;                 // 휴식
+      _env = 10 + _rng.nextDouble() * 6; // 휴식
     } else if (_phase == SimPhase.done) {
       _env = 8 + _rng.nextDouble() * 4;
     } else {
-      // baseline / stim — FES duty cycle: 1.5s ON + 1.5s OFF 반복.
-      // ON 구간 동안 envelope 가 sustained high, OFF 구간엔 빠르게 baseline 으로.
-      final phaseMs = (tSinceRunS * 1000.0) % _fesPeriodMs;
-      final cycleIdx = (tSinceRunS * 1000.0 / _fesPeriodMs).floor();
-      // 마사지기(FES) 반복 자극 시 EMG(ENV) 가 자발 수축보다 크다 → 높은 피크.
-      final peakHigh = 200 + 16 * sin(cycleIdx * 1.27);   // 184~216, 사이클별 고정
-      const baselineLevel = 32.0;
+      // baseline / stim — FES 두드림(tapping): 1.5초마다 1탭.
+      // 급상승(_tapRiseMs) → 정점 유지(_tapHoldMs) → 지수 감쇠(_tapDecayMs) → 휴지.
+      // 탭 위상은 _tapAnchorMs 기준 — Easy 마커로 리셋하면 그 시점부터 다시 시작.
+      final tapMs = (_tsMs - _tapAnchorMs).toDouble();
+      final phaseMs = tapMs % _fesPeriodMs;
+      final tapIdx = (tapMs / _fesPeriodMs).floor();
+      final peak = 200 + 16 * sin(tapIdx * 1.27); // 탭별 살짝 변동
+      const rest = 26.0; // 탭 사이 휴지 레벨
       double pulse;
-      if (phaseMs < _fesOnMs) {
-        // ----- ON 구간 (0 ~ 1500ms) -----
-        if (phaseMs < 80) {
-          // 빠른 상승 — baseline → peak
-          pulse = baselineLevel +
-              (peakHigh - baselineLevel) * (phaseMs / 80.0);
-        } else {
-          // sustained plateau — peak 부근에서 small ripple
-          pulse = peakHigh +
-              7 * sin(2 * pi * 6.0 * (phaseMs - 80) / 1000.0);
-        }
+      if (phaseMs < _tapRiseMs) {
+        pulse = rest + (peak - rest) * (phaseMs / _tapRiseMs); // 급상승
+      } else if (phaseMs < _tapRiseMs + _tapHoldMs) {
+        // 정점 유지(plateau) — 최고 강도에서 머무름 (작은 ripple)
+        pulse = peak + 4 * sin(2 * pi * 8.0 * (phaseMs - _tapRiseMs) / 1000.0);
       } else {
-        // ----- OFF 구간 (1500 ~ 3000ms) -----
-        final offMs = phaseMs - _fesOnMs;
-        if (offMs < 150) {
-          // 자극 종료 직후 빠른 하강
-          pulse = baselineLevel +
-              (peakHigh - baselineLevel) * exp(-offMs / 60.0);
-        } else {
-          // baseline 휴식
-          pulse = baselineLevel + 4 * sin(2 * pi * 0.4 * tSinceRunS);
-        }
+        pulse =
+            rest +
+            (peak - rest) *
+                exp(-(phaseMs - _tapRiseMs - _tapHoldMs) / _tapDecayMs);
       }
-      _env = (pulse + (_rng.nextDouble() - 0.5) * 12).clamp(18.0, 235.0);
+      _env = (pulse + (_rng.nextDouble() - 0.5) * 8).clamp(12.0, 235.0);
     }
 
     // ---- M-wave: FES burst (3초 duty cycle) 마다 한 번 ----
@@ -372,17 +450,22 @@ class SimulatorService {
     //   사이클 2: 8 → 22%
     //   사이클 3: 22 → 42%  ← 30% 임계 통과 → Cat C/B 환자에서 M-wave 경로로 fd 자연 발화
     // (Cat A 는 RMS/MDF UCL/LCL 위반만 사용 → M-wave 변화는 표시만 됨)
-    if (_running && _stimulating &&
+    if (_running &&
+        _stimulating &&
         (_tsMs - _lastMwAtMs) >= _fesPeriodMs.toInt()) {
       _lastMwAtMs = _tsMs;
       double declineP = 0;
-      if (_phase == SimPhase.stim) {
+      if (scenario == SimScenario.continuousFatigue &&
+          _phase == SimPhase.stim) {
+        // 연속 피로: 후반 가속 구간에서 M-wave 진폭·면적 0 → 50% 감소(잠복기↑).
+        declineP = _contLate(phaseElapMs) * 0.5;
+      } else if (_phase == SimPhase.stim) {
         final stimP = (phaseElapMs / _stimMaxMs).clamp(0.0, 1.0);
         const startsByCycle = [0.0, 0.08, 0.22];
-        const endsByCycle   = [0.08, 0.22, 0.42];
+        const endsByCycle = [0.08, 0.22, 0.42];
         final i = (_cycle - 1).clamp(0, _maxCycles - 1);
-        declineP = startsByCycle[i] +
-                   (endsByCycle[i] - startsByCycle[i]) * stimP;
+        declineP =
+            startsByCycle[i] + (endsByCycle[i] - startsByCycle[i]) * stimP;
       }
       final ampBase = 1000 + _rng.nextDouble() * 60;
       _mwAmp = ampBase * (1.0 - declineP);
@@ -471,7 +554,7 @@ class SimulatorService {
       _mdf = 75 + _rng.nextDouble() * 3;
       if (_rms > _voluntaryBaselinePeak) _voluntaryBaselinePeak = _rms;
     } else if (_phase == SimPhase.cooldown) {
-      _rms = 12 + _rng.nextDouble() * 4;                    // 휴식 수준
+      _rms = 12 + _rng.nextDouble() * 4; // 휴식 수준
       _mdf = 80 + _rng.nextDouble() * 3;
     } else if (_phase == SimPhase.measure) {
       // 자발적 수축 (사용자 동작) — 자극보다 작고 마비 정도로 축소.
@@ -486,8 +569,17 @@ class SimulatorService {
     } else if (_phase == SimPhase.baseline) {
       // 학습 구간 — 아직 안 지친 상태의 안정적 baseline.
       // 관리도(mean/σ)가 여기서 확정되므로 변동을 작게 유지(σ↓ → UCL/LCL 타이트).
-      _rms = 120 + (_rng.nextDouble() - 0.5) * 12;        // ~114~126
-      _mdf = 185 + (_rng.nextDouble() - 0.5) * 12;        // ~179~191
+      _rms = 120 + (_rng.nextDouble() - 0.5) * 12; // ~114~126
+      _mdf = 185 + (_rng.nextDouble() - 0.5) * 12; // ~179~191
+    } else if (scenario == SimScenario.continuousFatigue) {
+      // 연속 피로: 완만한 상시 진행(drift) + 후반 부드러운 가속(late).
+      // RMS 가 UCL 을, MDF 가 LCL 을 후반 가속 구간에서 돌파 → 엔진 5연속 검출 →
+      // home_page 가 'stop' 자동 발화 (검출 ≈ 세션 시작 후 3분). 코너 없이 자연스러움.
+      final stimMs = _tsMs - _phaseStartMs;
+      final drift = _contDrift(stimMs);
+      final late = _contLate(stimMs);
+      _rms = 120 + 8 * drift + 110 * late + (_rng.nextDouble() - 0.5) * 8;
+      _mdf = 185 - 8 * drift - 105 * late + (_rng.nextDouble() - 0.5) * 8;
     } else {
       // stim phase — 사이클 1·2 는 baseline 수준 유지(피로 전),
       // 마지막 사이클에서 실제 근피로 진행:
@@ -496,8 +588,8 @@ class SimulatorService {
         final stimP = ((_tsMs - _phaseStartMs) / _stimMaxMs).clamp(0.0, 1.0);
         // 자극 시작 2초 후부터 ~10초까지 선형 진행, 이후 plateau.
         final ramp = ((stimP - 0.1) / 0.4).clamp(0.0, 1.0);
-        _rms = 120 + 100 * ramp + (_rng.nextDouble() - 0.5) * 8;  // 120 → ~220
-        _mdf = 185 - 85 * ramp + (_rng.nextDouble() - 0.5) * 8;   // 185 → ~100
+        _rms = 120 + 100 * ramp + (_rng.nextDouble() - 0.5) * 8; // 120 → ~220
+        _mdf = 185 - 85 * ramp + (_rng.nextDouble() - 0.5) * 8; // 185 → ~100
       } else {
         _rms = 120 + (_rng.nextDouble() - 0.5) * 12;
         _mdf = 185 + (_rng.nextDouble() - 0.5) * 12;
@@ -551,7 +643,7 @@ class SimulatorService {
     // 수축 상태머신 (베이스라인 종료 + 활성 시 진입)
     final active = _baselineReady && _rms > _baseline * 1.2;
     if (_cs == 0 && active) {
-      _cs = 1;                                      // onset
+      _cs = 1; // onset
       _contractStartMs = _tsMs;
       _contractPeak = _rms;
     } else if (_cs != 0) {
@@ -574,7 +666,7 @@ class SimulatorService {
         _cs = 0;
         _contractPeak = 0;
       } else if (_cs == 1 && (_tsMs - _contractStartMs > 2000)) {
-        _cs = 2;                                    // sustained
+        _cs = 2; // sustained
       }
     }
   }

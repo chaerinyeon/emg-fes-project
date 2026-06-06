@@ -17,14 +17,16 @@ class FatigueResult {
   });
 }
 
-/// 환자 분류별 fatigue 판정 엔진.
+/// fatigue 판정 엔진.
 ///
-/// RMS / MDF 임계치는 운동 초반 8점으로 학습한 관리도(SPC)의 UCL / LCL.
+/// RMS / MDF / M-wave 임계치는 운동 초반 표본으로 학습한 관리도(SPC)의 UCL / LCL.
 /// (기존 +20% / -3% 같은 하드코딩 슬로프 임계는 사용하지 않음)
 ///
-/// - A (건강): RMS > UCL  AND  MDF < LCL
-/// - B (불완전마비): {RMS > UCL, MDF < LCL, M-wave 이상} 중 2개 이상
-/// - C (완전마비): M-wave 변화 단독
+/// 통일 판정 규칙 (모든 환자 분류 동일):
+///   피로 = (RMS > UCL  AND  MDF < LCL)
+///          OR
+///          (M-wave 진폭 < LCL  AND  면적 < LCL  AND  잠복기 > UCL)
+/// — 각 그룹 내부는 AND, 두 그룹 사이는 OR.
 ///
 /// 5x 연속 카운터로 노이즈 방지. 펌웨어의 fd 필드와 독립적으로 동작.
 class FatigueEngine {
@@ -118,20 +120,25 @@ class FatigueEngine {
     }
   }
 
-  /// M-wave 관리도 위반 판정:
-  ///   진폭·면적 동반 LCL 미만  OR  잠복기 UCL 초과
+  /// M-wave 관리도 위반 판정 (그룹 내부 AND):
+  ///   진폭 < LCL  AND  면적 < LCL  AND  잠복기 > UCL  (셋 다 위반해야 성립)
   bool _mwFatigue(List<String> reasons) {
-    if (!mwAmpChart.isEstablished) return false;
+    if (!mwAmpChart.isEstablished ||
+        !mwAreaChart.isEstablished ||
+        !mwLatChart.isEstablished) {
+      return false;
+    }
     final amp = _lastMwAmp;
     final area = _lastMwArea;
     final lat = _lastMwLat;
     final ampBelow = amp != null && mwAmpChart.belowLower(amp);
     final areaBelow = area != null && mwAreaChart.belowLower(area);
     final latAbove = lat != null && mwLatChart.exceedsUpper(lat);
-    final triggered = (ampBelow && areaBelow) || latAbove;
+    final triggered = ampBelow && areaBelow && latAbove;
     if (triggered) {
-      if (ampBelow && areaBelow) reasons.add('M-wave 진폭·면적 < LCL');
-      if (latAbove) reasons.add('M-wave 잠복기 > UCL');
+      reasons.add('M-wave 진폭 < LCL');
+      reasons.add('M-wave 면적 < LCL');
+      reasons.add('M-wave 잠복기 > UCL');
     }
     return triggered;
   }
@@ -186,33 +193,16 @@ class FatigueEngine {
     final mdfLow = mdfChart.isEstablished &&
         isStimulating && mdf != null && mdfChart.belowLower(mdf);
 
-    bool fatigueCond;
-    switch (category) {
-      case SubjectCategory.healthy:
-        // A: RMS UCL 초과 AND MDF LCL 미만 (둘 다 관리도 위반)
-        fatigueCond = rmsHigh && mdfLow;
-        if (rmsHigh) reasons.add('RMS > UCL');
-        if (mdfLow) reasons.add('MDF < LCL');
-        break;
-      case SubjectCategory.incomplete:
-        // B: {RMS UCL 초과, MDF LCL 미만, M-wave 이상} 중 2개 이상
-        int positives = 0;
-        if (rmsHigh) {
-          positives++;
-          reasons.add('RMS > UCL');
-        }
-        if (mdfLow) {
-          positives++;
-          reasons.add('MDF < LCL');
-        }
-        if (_mwFatigue(reasons)) positives++;
-        fatigueCond = positives >= 2;
-        break;
-      case SubjectCategory.complete:
-        // C: M-wave 변화 단독
-        fatigueCond = _mwFatigue(reasons);
-        break;
+    // ---- 통일 판정 규칙 (모든 환자 분류 동일) ----
+    //   (RMS>UCL AND MDF<LCL)  OR  (진폭<LCL AND 면적<LCL AND 잠복기>UCL)
+    //   두 그룹 각각은 내부 AND, 두 그룹 사이는 OR.
+    final rmsMdfGroup = rmsHigh && mdfLow;
+    final mwGroup = _mwFatigue(reasons);     // 성립 시 reasons 에 M-wave 항목 추가
+    if (rmsMdfGroup) {
+      reasons.add('RMS > UCL');
+      reasons.add('MDF < LCL');
     }
+    final fatigueCond = rmsMdfGroup || mwGroup;
 
     bool justTriggered = false;
     if (fatigueCond) {

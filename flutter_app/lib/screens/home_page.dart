@@ -572,6 +572,10 @@ class _HomePageState extends State<HomePage> {
       }
       return;
     }
+    // 시나리오 선택 — 임상 3사이클 vs 연속 자연 피로 폐루프
+    final scenario = await _pickSimScenario();
+    if (scenario == null) return;                 // 취소
+
     // 켜기 전에 실제 BLE 가 연결돼 있으면 끊기
     if (_connState == 'connected') {
       await _disconnect();
@@ -590,6 +594,7 @@ class _HomePageState extends State<HomePage> {
       voluntaryScale: voluntaryScale,
       // 불완전마비: 시작 직후 자발 수축으로 baseline 측정
       voluntaryBaselineFirst: cat == SubjectCategory.incomplete,
+      scenario: scenario,
     );
     sim.start();
     setState(() {
@@ -597,6 +602,37 @@ class _HomePageState extends State<HomePage> {
       _connState = 'connected';                 // 스캔→연결 완료처럼 보이기
       _lastError = null;
     });
+  }
+
+  // 시뮬레이터 시나리오 선택 다이얼로그.
+  Future<SimScenario?> _pickSimScenario() {
+    return showDialog<SimScenario>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('시뮬레이터 시나리오'),
+        children: [
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, SimScenario.continuousFatigue),
+            child: const ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.trending_down, color: Colors.redAccent),
+              title: Text('연속 자연 피로 → FES 자동 정지'),
+              subtitle: Text('자발 수축으로 FES 시작 → 자극 지속 중 근육이 점진적으로 '
+                  '지쳐 RMS↑/MDF↓ → 피로 감지 시 FES 자동 종료'),
+            ),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, SimScenario.clinical),
+            child: const ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.repeat),
+              title: Text('임상 프로토콜 (3사이클)'),
+              subtitle: Text('baseline → 자극 → 측정 팝업을 3회 반복 후 피로 검출'),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _startSession() async {
