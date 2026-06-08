@@ -132,6 +132,9 @@ class SimulatorService {
 
   // FES 두드림 탭 위상 기준점 — Easy 마커로 리셋해 탭 타이밍을 맞춘다.
   int _tapAnchorMs = 0;
+
+  // 마사지기 강도(0~10, 기본 5) — up/down 명령으로 조절, 탭 높이에 반영.
+  int _massagerLevel = 5;
   // 데모 친화 타이밍 (실측 프로토콜 1분/사이클 → 20초/사이클로 단축).
   // 총 세션 길이: 10s baseline + (20+3+5)*3 ≈ 94s
   static const int _stimMaxMs = 20000; // 각 사이클 자극 20초
@@ -224,6 +227,13 @@ class SimulatorService {
       case 'trigger_stim':
         final on = cmd['on'] as bool? ?? false;
         _stimulating = on;
+        break;
+      case 'up':
+        // 마사지기 강도 ↑ (릴레이 컨트롤러 — EMG 무관). 탭 높이로 반영.
+        _massagerLevel = (_massagerLevel + 1).clamp(0, 10);
+        break;
+      case 'down':
+        _massagerLevel = (_massagerLevel - 1).clamp(0, 10);
         break;
       case 'marker':
         final label = (cmd['label'] as String?) ?? '';
@@ -427,7 +437,9 @@ class SimulatorService {
       final tapMs = (_tsMs - _tapAnchorMs).toDouble();
       final phaseMs = tapMs % _fesPeriodMs;
       final tapIdx = (tapMs / _fesPeriodMs).floor();
-      final peak = 200 + 16 * sin(tapIdx * 1.27); // 탭별 살짝 변동
+      // 강도(_massagerLevel 0~10) 배수: 레벨5=1.0, 10=1.5, 0=0.5.
+      final intensity = 0.5 + 0.1 * _massagerLevel;
+      final peak = (200 + 16 * sin(tapIdx * 1.27)) * intensity; // 탭별 변동 × 강도
       const rest = 26.0; // 탭 사이 휴지 레벨
       double pulse;
       if (phaseMs < _tapRiseMs) {
@@ -489,6 +501,7 @@ class SimulatorService {
       'run': _running,
       'stim': _stimulating,
       'fd': _fd,
+      'ml': _massagerLevel,
     };
     if (_pendingMarker.isNotEmpty) {
       msg['mk'] = _pendingMarker;

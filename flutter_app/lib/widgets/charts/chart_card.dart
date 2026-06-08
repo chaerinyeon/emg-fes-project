@@ -64,6 +64,15 @@ class ChartCard extends StatelessWidget {
     return lines;
   }
 
+  // 축 라벨 숫자 포맷: 값 크기에 따라 자릿수 조정 (1.1K 중복·소수점 잘림 방지).
+  static String _fmtY(double v) {
+    final a = v.abs();
+    if (a >= 100) return v.toStringAsFixed(0);
+    if (a >= 10) return v.toStringAsFixed(0);
+    if (a >= 1) return v.toStringAsFixed(1);
+    return v.toStringAsFixed(2);
+  }
+
   @override
   Widget build(BuildContext context) {
     final spots = queue.map((s) => FlSpot(s.t, s.value)).toList();
@@ -71,6 +80,7 @@ class ChartCard extends StatelessWidget {
     if (spots.isNotEmpty) {
       maxX = spots.last.x + 0.5;
       minX = maxX - kWindowSec;
+      if (minX < 0) minX = 0; // 데이터가 60초 미만이면 음수 시간 라벨 방지
     }
     double minY = 0, maxY = 1;
     if (fixedRange != null) {
@@ -94,6 +104,14 @@ class ChartCard extends StatelessWidget {
         if (v > maxY) maxY = v + pad;
       }
     }
+
+    // 축 간격: 라벨 충돌(같은 값 중복) 방지용으로 균등 분할.
+    final yInterval = ((maxY - minY) / 4).abs() < 1e-9
+        ? 1.0
+        : (maxY - minY) / 4;
+    final xInterval = ((maxX - minX) / 6).abs() < 1e-9
+        ? 1.0
+        : (maxX - minX) / 6;
 
     return Card(
       margin: EdgeInsets.zero,
@@ -146,24 +164,52 @@ class ChartCard extends StatelessWidget {
                           maxX: maxX,
                           minY: minY,
                           maxY: maxY,
-                          gridData: const FlGridData(show: true),
-                          titlesData: const FlTitlesData(
+                          gridData: FlGridData(
+                            show: true,
+                            horizontalInterval: yInterval,
+                            verticalInterval: xInterval,
+                          ),
+                          titlesData: FlTitlesData(
                             leftTitles: AxisTitles(
                               sideTitles: SideTitles(
                                 showTitles: true,
-                                reservedSize: 38,
+                                reservedSize: 42,
+                                interval: yInterval,
+                                getTitlesWidget: (value, meta) {
+                                  if (value <= minY || value >= maxY) {
+                                    return const SizedBox.shrink();
+                                  }
+                                  return Padding(
+                                    padding: const EdgeInsets.only(right: 2),
+                                    child: Text(
+                                      _fmtY(value),
+                                      style: const TextStyle(
+                                        color: Colors.black45,
+                                        fontSize: 9,
+                                      ),
+                                    ),
+                                  );
+                                },
                               ),
                             ),
                             bottomTitles: AxisTitles(
                               sideTitles: SideTitles(
                                 showTitles: true,
-                                reservedSize: 20,
+                                reservedSize: 18,
+                                interval: xInterval,
+                                getTitlesWidget: (value, meta) => Text(
+                                  value.toStringAsFixed(0),
+                                  style: const TextStyle(
+                                    color: Colors.black45,
+                                    fontSize: 9,
+                                  ),
+                                ),
                               ),
                             ),
-                            topTitles: AxisTitles(
+                            topTitles: const AxisTitles(
                               sideTitles: SideTitles(showTitles: false),
                             ),
-                            rightTitles: AxisTitles(
+                            rightTitles: const AxisTitles(
                               sideTitles: SideTitles(showTitles: false),
                             ),
                           ),

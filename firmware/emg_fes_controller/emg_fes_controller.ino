@@ -158,6 +158,44 @@ float rmsRatio = 1.0;
 String muscleState = "idle";
 String sessionMarker = "";
 
+// ===== 관리도(SPC ControlChart) — 앱 Dart FatigueEngine 과 동일 =====
+// 운동 초반(아직 안 지친 상태) 표본으로 mean·σ 를 잡고 UCL=mean+kσ, LCL=mean-kσ.
+// RMS·MDF 는 8표본(=8초), M-wave 는 6표본(=버스트 6회) 으로 baseline 확정.
+struct CChart {
+  float samples[16];
+  int   n = 0;
+  int   baselineSamples = 8;
+  float sigmaMult = 3.0f;
+  bool  established = false;
+  float mean = 0, sd = 0;
+};
+CChart rmsChart, mdfChart, mwAmpChart, mwAreaChart, mwLatChart;
+
+void ccInit(CChart& c, int bs, float sm) {
+  c.baselineSamples = bs; c.sigmaMult = sm;
+  c.n = 0; c.established = false; c.mean = 0; c.sd = 0;
+}
+void ccReset(CChart& c) { c.n = 0; c.established = false; c.mean = 0; c.sd = 0; }
+void ccIngest(CChart& c, float v) {
+  if (c.established) return;
+  if (c.n < 16) c.samples[c.n++] = v;
+  if (c.n >= c.baselineSamples) {
+    float s = 0; for (int i = 0; i < c.n; i++) s += c.samples[i];
+    c.mean = s / c.n;
+    float var = 0;
+    for (int i = 0; i < c.n; i++) { float d = c.samples[i] - c.mean; var += d * d; }
+    c.sd = sqrtf(var / c.n);
+    c.established = true;
+  }
+}
+bool ccAbove(CChart& c, float v) { return c.established && v > c.mean + c.sigmaMult * c.sd; }
+bool ccBelow(CChart& c, float v) { return c.established && v < c.mean - c.sigmaMult * c.sd; }
+
+void resetFatigueCharts() {
+  ccReset(rmsChart); ccReset(mdfChart);
+  ccReset(mwAmpChart); ccReset(mwAreaChart); ccReset(mwLatChart);
+}
+
 // ===== 타이머 =====
 hw_timer_t* sampleTimer = nullptr;
 portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
@@ -290,6 +328,13 @@ void setup() {
   digitalWrite(PIN_MASSAGER_UP, LOW);
   digitalWrite(PIN_MASSAGER_DOWN, LOW);
 
+  // 관리도 초기화 — RMS/MDF 8표본, M-wave 6표본, ±3σ
+  ccInit(rmsChart, 8, 3.0f);
+  ccInit(mdfChart, 8, 3.0f);
+  ccInit(mwAmpChart, 6, 3.0f);
+  ccInit(mwAreaChart, 6, 3.0f);
+  ccInit(mwLatChart, 6, 3.0f);
+
   analogReadResolution(12);
 
   // BLE 초기화
@@ -382,38 +427,54 @@ void loop() {
     historyIdx = (historyIdx + 1) % HISTORY_SIZE;
     if (historyCount < HISTORY_SIZE) historyCount++;
 
-    // 30초치 모이면 slope + 임계값 검사
+    // slope 는 표시용으로만 계산 (30초치 모이면 갱신) — 판정엔 미사용
     if (historyCount >= 30) {
       currentRMSSlope = calculateSlopePercent(rmsHistory, historyCount, true);
       currentMDFSlope = calculateSlopePercent(mdfHistory, historyCount, true);
+    }
 
-      bool fatigueCondition = (currentRMSSlope > RMS_THRESHOLD) &&
-                              (currentMDFSlope < MDF_THRESHOLD);
+    // ---- 관리도 baseline 학습 (자극 중 RMS/MDF 표본, 8개면 확정) ----
+    if (systemRunning && isStimulating) {
+      ccIngest(rmsChart, currentRMS);
+      ccIngest(mdfChart, currentMDF);
+    }
 
-      if (systemRunning && fatigueCondition) {
-        consecutiveCount++;
-        if (consecutiveCount >= CONSECUTIVE_TRIGGER && !currentFatigueDetected) {
-          Serial.printf("⚠️ 근피로 감지! RMS:+%.1f%%, MDF:%.1f%% (FES %s)\n",
-                        currentRMSSlope, currentMDFSlope,
-                        isStimulating ? "ON→OFF" : "미가동");
-          currentFatigueDetected = true;
-          fatigueDetectedAtMs = millis();
-          // 다음 BLE 송신을 즉시 full로 → Flutter에서 fd 상승 에지 놓치지 않음
-          sendFullNext = true;
-          // FES가 켜져 있을 때만 자동 정지
-          if (isStimulating) {
-            triggerStimulation(false);
-          }
+    // ---- 통일 판정 규칙 (앱 FatigueEngine 과 동일) ----
+    //   (RMS>UCL AND MDF<LCL)  OR  (M-wave 진폭<LCL AND 면적<LCL AND 잠복기>UCL)
+    bool rmsHigh = isStimulating && ccAbove(rmsChart, currentRMS);
+    bool mdfLow  = isStimulating && ccBelow(mdfChart, currentMDF);
+    bool rmsMdfGroup = rmsHigh && mdfLow;
+    bool mwGroup = mwAmpChart.established && mwAreaChart.established &&
+                   mwLatChart.established &&
+                   ccBelow(mwAmpChart, currentMwAmp) &&
+                   ccBelow(mwAreaChart, currentMwArea) &&
+                   ccAbove(mwLatChart, currentMwLatency);
+    bool fatigueCondition = rmsMdfGroup || mwGroup;
+
+    if (systemRunning && fatigueCondition) {
+      consecutiveCount++;
+      if (consecutiveCount >= CONSECUTIVE_TRIGGER && !currentFatigueDetected) {
+        Serial.printf("⚠️ 근피로 감지! [%s] RMS %.0f(UCL %.0f) MDF %.0f(LCL %.0f)\n",
+                      rmsMdfGroup ? "RMS·MDF" : "M-wave",
+                      currentRMS, rmsChart.mean + rmsChart.sigmaMult * rmsChart.sd,
+                      currentMDF, mdfChart.mean - mdfChart.sigmaMult * mdfChart.sd);
+        currentFatigueDetected = true;
+        fatigueDetectedAtMs = millis();
+        // 다음 BLE 송신을 즉시 full로 → Flutter에서 fd 상승 에지 놓치지 않음
+        sendFullNext = true;
+        // FES가 켜져 있을 때만 자동 정지
+        if (isStimulating) {
+          triggerStimulation(false);
         }
-      } else {
-        consecutiveCount = 0;
       }
+    } else {
+      consecutiveCount = 0;
+    }
 
-      // 피로 플래그는 FATIGUE_LATCH_MS 동안 유지 (UI 다이얼로그/배너 안정용)
-      if (currentFatigueDetected &&
-          (millis() - fatigueDetectedAtMs > FATIGUE_LATCH_MS)) {
-        currentFatigueDetected = false;
-      }
+    // 피로 플래그는 FATIGUE_LATCH_MS 동안 유지 (UI 다이얼로그/배너 안정용)
+    if (currentFatigueDetected &&
+        (millis() - fatigueDetectedAtMs > FATIGUE_LATCH_MS)) {
+      currentFatigueDetected = false;
     }
 
     // 베이스라인 수집
@@ -472,6 +533,12 @@ void loop() {
       currentMwLatency = (float)(MW_WINDOW_START_MS + peakIdx);
       mwDirty = true;
       mwCount++;
+      // 관리도 baseline 학습 (자극 중 초반 M-wave 6회 → mean·σ 확정)
+      if (systemRunning && isStimulating) {
+        ccIngest(mwAmpChart, currentMwAmp);
+        ccIngest(mwAreaChart, currentMwArea);
+        ccIngest(mwLatChart, currentMwLatency);
+      }
     }
   }
 
@@ -518,6 +585,7 @@ void handleCommand(JsonDocument& doc) {
     currentMwAmp = 0;
     currentMwArea = 0;
     currentMwLatency = 0;
+    resetFatigueCharts();          // 관리도 baseline 재학습
     muscleState = "calibrating";
     // 수축 상태머신 리셋
     contractState = CS_REST;
@@ -556,6 +624,7 @@ void handleCommand(JsonDocument& doc) {
     baselineReady = false;
     baselineRMS = 0;
     rmsRatio = 1.0;
+    resetFatigueCharts();          // 관리도 baseline 재학습
     muscleState = systemRunning ? "calibrating" : "idle";
     // 수축 상태머신도 리셋
     contractState = CS_REST;

@@ -23,6 +23,7 @@ import '../widgets/charts/chart_card.dart';
 import '../widgets/charts/slopes_chart.dart';
 import '../widgets/common/section_title.dart';
 import '../widgets/controls/controls.dart';
+import '../widgets/controls/massager_control.dart';
 import '../widgets/fatigue/fatigue_banner.dart';
 import '../widgets/fatigue/fatigue_dialog.dart';
 import '../widgets/fatigue/fatigue_trigger_panel.dart';
@@ -34,6 +35,7 @@ import '../widgets/mwave/algorithm_badge.dart';
 import '../widgets/mwave/mwave_panel.dart';
 import '../widgets/profile/profile_bar.dart';
 import '../widgets/readout/live_readout.dart';
+import 'monitor_screen.dart';
 import 'splash_screen.dart';
 
 class HomePage extends StatefulWidget {
@@ -66,6 +68,9 @@ class _HomePageState extends State<HomePage> {
   final Queue<Sample> _mdf = Queue();
   final Queue<Sample> _rmsSlope = Queue();
   final Queue<Sample> _mdfSlope = Queue();
+  final Queue<Sample> _mwAmpSeries = Queue(); // M-wave 진폭 시계열
+  final Queue<Sample> _mwAreaSeries = Queue(); // M-wave 면적 시계열
+  final Queue<Sample> _mwLatSeries = Queue(); // M-wave 잠복기 시계열
   double _t0 = 0;
   bool _t0Init = false; // _t0가 첫 메시지에서 설정됐는지
   double _envLast = 0;
@@ -83,6 +88,9 @@ class _HomePageState extends State<HomePage> {
   // 시뮬레이터 (EMG 센서 없이 UI 검증) — null 이면 BLE 모드
   SimulatorService? _sim;
   bool get _simOn => _sim != null;
+
+  // 마사지기 강도(0~10) — 시뮬레이터가 'ml' 로 보고 (BLE 모드에선 null)
+  int? _massagerLevel;
 
   // 측정창 팝업이 현재 떠 있는지 — 같은 세션 동안 중복 표시 방지
   bool _measureDialogShown = false;
@@ -262,6 +270,9 @@ class _HomePageState extends State<HomePage> {
     _mdf.clear();
     _rmsSlope.clear();
     _mdfSlope.clear();
+    _mwAmpSeries.clear();
+    _mwAreaSeries.clear();
+    _mwLatSeries.clear();
     _t0 = 0;
     _t0Init = false;
     _lastEnvPushT = -1.0;
@@ -298,6 +309,9 @@ class _HomePageState extends State<HomePage> {
         _mdf.clear();
         _rmsSlope.clear();
         _mdfSlope.clear();
+        _mwAmpSeries.clear();
+        _mwAreaSeries.clear();
+        _mwLatSeries.clear();
         _lastEnvPushT = -1.0;
       }
       final t = ts - _t0;
@@ -352,12 +366,15 @@ class _HomePageState extends State<HomePage> {
         // M-wave 메트릭 (새 검출이 있을 때만 펌웨어가 송신)
         if (msg['mwa'] != null) {
           _st.mwAmp = (msg['mwa'] as num).toDouble();
+          _push(_mwAmpSeries, Sample(t, _st.mwAmp)); // 진폭 시계열 → 차트
         }
         if (msg['mwc'] != null) {
           _st.mwArea = (msg['mwc'] as num).toDouble();
+          _push(_mwAreaSeries, Sample(t, _st.mwArea)); // 면적 시계열 → 차트
         }
         if (msg['mwl'] != null) {
           _st.mwLatency = (msg['mwl'] as num).toDouble();
+          _push(_mwLatSeries, Sample(t, _st.mwLatency)); // 잠복기 시계열 → 차트
         }
         if (msg['mwn'] != null) {
           _st.mwCount = (msg['mwn'] as num).toInt();
@@ -391,6 +408,8 @@ class _HomePageState extends State<HomePage> {
           _pendingMarker = null;
         }
       }
+
+      _massagerLevel = (msg['ml'] as num?)?.toInt() ?? _massagerLevel;
 
       final wasStimulating = _st.isStimulating;
       _st.isRunning = running;
@@ -559,6 +578,9 @@ class _HomePageState extends State<HomePage> {
       _mdf.clear();
       _rmsSlope.clear();
       _mdfSlope.clear();
+      _mwAmpSeries.clear();
+      _mwAreaSeries.clear();
+      _mwLatSeries.clear();
       _t0 = 0;
       _t0Init = false;
       _lastEnvPushT = -1.0;
@@ -652,6 +674,9 @@ class _HomePageState extends State<HomePage> {
     _mdf.clear();
     _rmsSlope.clear();
     _mdfSlope.clear();
+    _mwAmpSeries.clear();
+    _mwAreaSeries.clear();
+    _mwLatSeries.clear();
     _envLast = 0;
     _rmsLast = 0;
     _mdfLast = 0;
@@ -899,6 +924,13 @@ class _HomePageState extends State<HomePage> {
             onPressed: _toggleSimulator,
           ),
           IconButton(
+            tooltip: '모니터 화면 (데스크탑/태블릿)',
+            icon: const Icon(Icons.desktop_windows_outlined),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const MonitorScreen()),
+            ),
+          ),
+          IconButton(
             tooltip: '처음 화면',
             icon: const Icon(Icons.home_outlined),
             onPressed: _goToSplash,
@@ -1033,6 +1065,15 @@ class _HomePageState extends State<HomePage> {
             onMarker: _sendMarker,
             onEmergency: () => _send({'cmd': 'emergency'}),
           ),
+          const SizedBox(height: 14),
+          const SectionTitle('마사지기 조절 (릴레이 컨트롤러)'),
+          const SizedBox(height: 6),
+          MassagerControl(
+            canSend: canSend,
+            onUp: () => _send({'cmd': 'up'}),
+            onDown: () => _send({'cmd': 'down'}),
+            level: _massagerLevel,
+          ),
           const SizedBox(height: 8),
         ],
       ),
@@ -1095,6 +1136,41 @@ class _HomePageState extends State<HomePage> {
                         _st.mdfCcMean! > 0.01)
                     ? (_st.mdfCcLcl! - _st.mdfCcMean!) / _st.mdfCcMean! * 100
                     : null,
+          ),
+          const SizedBox(height: 6),
+          ChartCard(
+            title: 'M-wave 진폭 (자극 응답 EMG)',
+            queue: _mwAmpSeries,
+            color: Colors.amber.shade800,
+            hint:
+                'FES burst마다 peak-to-peak 진폭(ADC). 자극 중에만 갱신. '
+                '초기 6점으로 관리도 학습 → LCL 미만 시 피로 신호.',
+            baselineY: _st.mwAmpBaseline,
+            centerY: _st.mwAmpCcMean,
+            lowerLimitY: _st.mwAmpCcLcl,
+            height: 140,
+          ),
+          const SizedBox(height: 6),
+          ChartCard(
+            title: 'M-wave 면적 (정류 AUC)',
+            queue: _mwAreaSeries,
+            color: Colors.deepOrange.shade400,
+            hint: 'Σ|sample| — 자극 응답 면적. LCL 미만 시 피로 신호.',
+            baselineY: _st.mwAreaBaseline,
+            centerY: _st.mwAreaCcMean,
+            lowerLimitY: _st.mwAreaCcLcl,
+            height: 140,
+          ),
+          const SizedBox(height: 6),
+          ChartCard(
+            title: 'M-wave 잠복기 (latency)',
+            queue: _mwLatSeries,
+            color: Colors.brown.shade400,
+            hint: '자극 후 peak까지 ms. 증가(UCL 초과)가 피로 신호 — 다른 둘과 방향 반대.',
+            baselineY: _st.mwLatBaseline,
+            centerY: _st.mwLatCcMean,
+            upperLimitY: _st.mwLatCcUcl,
+            height: 140,
           ),
           const SizedBox(height: 8),
         ],
