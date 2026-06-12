@@ -53,6 +53,21 @@ class AiReport {
     this.recommendations = const [],
   });
 
+  AiReport copyWith({
+    ReportStatus? status,
+    String? headline,
+    List<AiSignal>? signals,
+    List<String>? observations,
+    List<String>? recommendations,
+  }) =>
+      AiReport(
+        status: status ?? this.status,
+        headline: headline ?? this.headline,
+        signals: signals ?? this.signals,
+        observations: observations ?? this.observations,
+        recommendations: recommendations ?? this.recommendations,
+      );
+
   static List<String> _strList(Object? v) =>
       (v as List?)
           ?.map((e) => '$e')
@@ -144,11 +159,16 @@ class AiAnalysisService {
         '한쪽만 피로로 나타날 수 있습니다. 각 신호의 상태를 개별적으로 판정하고, '
         '신호 간 불일치가 있으면 headline 과 observations 에 분명히 명시하세요. '
         '종합 status 는 가장 심각한 신호와 전체 맥락을 함께 고려해 정하세요. '
-        '입력에 todayResult 가 있으면 이번 운동 결과를 평소와 비교해 구체적으로 서술하세요. '
-        '예: timeToFatigueSec 가 usualTimeToFatigueSec 보다 작으면 "평소보다 약 N분 빨리 피로해졌어요", '
-        '크면 "평소보다 오래 버텼어요"; today*SlopePct 절대값이 usual* 보다 크게 차이나면 '
-        '"평소보다 큰 폭으로 피로해졌어요" 처럼 분(分) 단위로 환산해 headline 과 observations 에 넣으세요. '
-        'priorSessionCount 가 0~1 이면 비교 대상이 부족하다고 명시하세요. '
+        '매우 중요: 입력의 fatigue.detected 가 true 이면, 시스템이 이미 근피로로 '
+        '판단해 세션을 자동 중단한 것입니다. 이 경우 종합 status 를 절대 "ok"(양호)로 '
+        '내지 말고 반드시 "fatigued" 로 하고, headline 에 근피로가 감지돼 운동을 멈췄다는 '
+        '사실을 분명히 쓰세요. fatigue.reasons 에 근거가 들어있으면 그대로 활용하세요. '
+        '비교 서술 규칙: todayResult.comparison 에는 앱이 미리 계산한 "평소 대비 비교 문구"가 들어있습니다. '
+        '직접 분(分)이나 배수를 계산하지 말고, comparison 의 문구를 그대로(또는 자연스럽게 다듬어) '
+        'headline 과 observations 에 반영하세요. comparison 에 없는 숫자는 새로 지어내지 마세요. '
+        'comparison 이 비어있거나 "부족"을 말하면 비교 대상이 부족하다고만 쓰세요. '
+        '신호 블록(mwave 등)이 "측정 안 됨" 문자열이면 그 신호는 측정되지 않은 것이니, '
+        '해당 신호의 변화·감소·피로를 절대 서술하지 말고 "측정 안 됨"으로만 표시하세요. '
         '의학적 확정 진단은 피하고, 값이 0/null 이면 측정 전이거나 데이터 부족으로 간주하세요. '
         '반드시 아래 JSON 형식으로만, 한국어로, 짧고 직관적으로 답하세요:\n'
         '{\n'
@@ -207,7 +227,8 @@ class AiAnalysisService {
   }) async {
     final body = <String, dynamic>{
       'model': _model,
-      'temperature': 0.4,
+      // 분석은 사실 기반 작업 — 무작위성을 낮춰 매번 일관된 해석을 내게 한다.
+      'temperature': 0.2,
       'messages': [
         {'role': 'system', 'content': systemPrompt},
         {'role': 'user', 'content': userPrompt},

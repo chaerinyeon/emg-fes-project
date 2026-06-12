@@ -96,6 +96,10 @@ class _HomePageState extends State<HomePage> {
   bool _measureDialogShown = false;
   // 근피로 다이얼로그 — 한 세션에 한 번만 띄우기
   bool _fatigueDialogShown = false;
+  // 이번 세션에 근피로가 한 번이라도 감지됐는지 — 래치(latch).
+  // engineFatigueDetected 는 매 틱 덮어써져 정지 후 false 로 돌아갈 수 있으므로,
+  // '세션에 피로가 있었다'는 사실은 이 플래그로 고정해 AI 판정/교정에 쓴다.
+  bool _sessionFatigued = false;
 
   // 운동 결과 분석용 — 세션 시작 시각 + 피로 검출까지 걸린 시간(초)
   DateTime? _sessionStart;
@@ -489,6 +493,7 @@ class _HomePageState extends State<HomePage> {
           (result.justTriggered || _st.fatigueDetected);
       if (shouldShowFatigue) {
         _fatigueDialogShown = true;
+        _sessionFatigued = true; // 세션 피로 래치 — 이후 틱에 덮어써지지 않음
         // 세션 시작~피로 검출까지 걸린 시간 기록 (운동 결과 분석용)
         if (_sessionStart != null) {
           _timeToFatigueSec =
@@ -691,6 +696,7 @@ class _HomePageState extends State<HomePage> {
     _timeToFatigueSec = null;
     _measureDialogShown = false;
     _fatigueDialogShown = false;
+    _sessionFatigued = false;
     // 활성 환자 카테고리로 엔진 재생성 (미지정 시 healthy로 기본)
     final cat = gProfileService.active?.category ?? SubjectCategory.healthy;
     _engine = FatigueEngine(
@@ -720,20 +726,51 @@ class _HomePageState extends State<HomePage> {
     _send({'cmd': 'stop'});
 
     // 오늘 vs 평소 비교 스냅샷 — recordSession 이 오늘 값을 이력에 넣기 '전'에 캡처.
-    final fatigued = _st.fatigueDetected || _st.engineFatigueDetected;
+    // 비교/환산(분·배수)은 여기서 Dart 로 미리 계산해 '완성된 문구'로 넘긴다.
+    // (LLM 에게 직접 산수를 시키면 gpt-4o-mini 가 자주 틀려 엉뚱한 숫자를 낸다.)
+    final fatigued =
+        _sessionFatigued || _st.fatigueDetected || _st.engineFatigueDetected;
     if (fatigued) {
       final p = gProfileService.active;
       double? mean(List<double>? xs) =>
           (xs == null || xs.isEmpty) ? null : xs.reduce((a, b) => a + b) / xs.length;
+      var usualTime = mean(p?.recentTimeToFatigueSec);
+      var usualRms = mean(p?.recentFatigueRmsSlopes);
+      var usualMdf = mean(p?.recentFatigueMdfSlopes);
+      var priorCount = p?.sessionCount ?? 0;
+      final todayTime = _timeToFatigueSec?.toDouble();
+
+      // 시뮬레이터: 누적 기록이 없어도 '평소보다 N분 빨리' 데모가 나오도록
+      // 합성 평소값을 주입한다. (실기기 세션엔 영향 없음)
+      if (_simOn) {
+        priorCount = priorCount < 2 ? 5 : priorCount;
+        // 평소엔 오늘보다 ~1.5분 늦게 피로한 것처럼 → "평소보다 약 1.5분 빨리"
+        usualTime = (todayTime ?? 150) + 90;
+        // 평소 slope 의 1.5배로 오늘 피로 → "평소보다 큰 폭으로 진행"
+        if (_st.rmsSlope.abs() > 0.01) usualRms = _st.rmsSlope / 1.5;
+        if (_st.mdfSlope.abs() > 0.01) usualMdf = _st.mdfSlope / 1.5;
+      }
+
       _lastWorkoutSummary = {
         'fatigueDetected': true,
+        // 원본 값 (참고용)
         'timeToFatigueSec': _timeToFatigueSec,
-        'usualTimeToFatigueSec': mean(p?.recentTimeToFatigueSec),
+        'usualTimeToFatigueSec': usualTime,
         'todayFatigueRmsSlopePct': _st.rmsSlope,
-        'usualFatigueRmsSlopePct': mean(p?.recentFatigueRmsSlopes),
+        'usualFatigueRmsSlopePct': usualRms,
         'todayFatigueMdfSlopePct': _st.mdfSlope,
-        'usualFatigueMdfSlopePct': mean(p?.recentFatigueMdfSlopes),
-        'priorSessionCount': p?.sessionCount ?? 0,
+        'usualFatigueMdfSlopePct': usualMdf,
+        'priorSessionCount': priorCount,
+        // 미리 계산한 비교 문구 — AI 는 이걸 그대로 활용
+        'comparison': _buildComparison(
+          priorCount: priorCount,
+          todayTimeSec: todayTime,
+          usualTimeSec: usualTime,
+          todayRmsSlope: _st.rmsSlope,
+          usualRmsSlope: usualRms,
+          todayMdfSlope: _st.mdfSlope,
+          usualMdfSlope: usualMdf,
+        ),
       };
     } else {
       _lastWorkoutSummary = {'fatigueDetected': false};
@@ -775,6 +812,56 @@ class _HomePageState extends State<HomePage> {
     _send({'cmd': 'marker', 'label': label});
   }
 
+  // ---------- 오늘 vs 평소 비교 문구 (Dart 선계산) ----------
+  // 분 환산·배수 비교를 여기서 끝내고 완성된 한국어 문구를 만든다.
+  // LLM 은 산수 없이 이 문구를 그대로 쓰기만 하면 돼 엉뚱한 숫자가 안 나온다.
+  List<String> _buildComparison({
+    required int priorCount,
+    required double? todayTimeSec,
+    required double? usualTimeSec,
+    required double todayRmsSlope,
+    required double? usualRmsSlope,
+    required double todayMdfSlope,
+    required double? usualMdfSlope,
+  }) {
+    final out = <String>[];
+    if (priorCount <= 1) {
+      out.add('누적 기록이 부족해(이전 $priorCount회) 평소와 비교하기 어렵습니다.');
+      return out;
+    }
+
+    // 1) 피로까지 걸린 시간 — 분 단위로 환산
+    if (todayTimeSec != null && usualTimeSec != null && usualTimeSec > 0) {
+      final diffSec = usualTimeSec - todayTimeSec; // +면 평소보다 빨리 피로
+      final absMin = diffSec.abs() / 60.0;
+      if (absMin < 0.5) {
+        out.add('평소와 비슷한 시점에 피로해졌습니다.');
+      } else {
+        final m = absMin < 1 ? absMin.toStringAsFixed(1) : absMin.toStringAsFixed(0);
+        out.add(diffSec > 0
+            ? '평소보다 약 $m분 빨리 피로해졌습니다.'
+            : '평소보다 약 $m분 더 오래 버텼습니다.');
+      }
+    }
+
+    // 2) 피로 진행 속도(slope) — 평소 대비 폭
+    String slopeText(String label, double today, double? usual) {
+      if (usual == null) return '';
+      final t = today.abs(), u = usual.abs();
+      if (u < 0.01) return '';
+      final ratio = t / u;
+      if (ratio > 1.3) return '$label 피로가 평소보다 큰 폭으로 진행됐습니다.';
+      if (ratio < 0.7) return '$label 피로가 평소보다 완만했습니다.';
+      return '$label 피로 진행 폭은 평소와 비슷했습니다.';
+    }
+
+    final rms = slopeText('근활성도(RMS)', todayRmsSlope, usualRmsSlope);
+    final mdf = slopeText('주파수(MDF)', todayMdfSlope, usualMdfSlope);
+    if (rms.isNotEmpty) out.add(rms);
+    if (mdf.isNotEmpty) out.add(mdf);
+    return out;
+  }
+
   // ---------- AI 누적 기록 스냅샷 ----------
   // 반복 측정으로 쌓인 개인 기록 — AI 개인화(피로 패턴 학습)의 입력.
   Map<String, dynamic> _historySnapshot() {
@@ -805,7 +892,7 @@ class _HomePageState extends State<HomePage> {
 
   // ---------- AI 분석 요청 (AI분석 탭) ----------
   // 현재 세션 지표 + 누적 기록을 보내 구조화된 개인화 리포트를 받는다.
-  Future<AiReport> _requestAiAnalysis() {
+  Future<AiReport> _requestAiAnalysis() async {
     final p = gProfileService.active;
     final data = <String, dynamic>{
       'profile': {
@@ -829,7 +916,8 @@ class _HomePageState extends State<HomePage> {
         'mdfSlopePct': _st.mdfSlope,
       },
       'fatigue': {
-        'detected': _st.engineFatigueDetected || _st.fatigueDetected,
+        'detected':
+            _sessionFatigued || _st.engineFatigueDetected || _st.fatigueDetected,
         'consecutive': '${_st.engineConsecutive}/${_st.consecutiveTrigger}',
         'reasons': _st.engineReasons,
       },
@@ -848,17 +936,34 @@ class _HomePageState extends State<HomePage> {
         'lastType': _st.lastContractType,
         'lastPeak': _st.lastContractPeak,
       },
-      'mwave': {
-        'amp': _st.mwAmp,
-        'area': _st.mwArea,
-        'latencyMs': _st.mwLatency,
-        'count': _st.mwCount,
-        'ampDeclinePct': _st.mwAmpDeclinePct,
-        'areaDeclinePct': _st.mwAreaDeclinePct,
-        'latencyDeltaMs': _st.mwLatencyDeltaMs,
-      },
+      // M-wave 는 자극 응답이 검출된 세션에서만 보낸다. 미검출(count==0)이면
+      // 0/null 을 보내지 않고 '측정 안 됨'으로 명시해 AI 가 없는 걸 분석하지 않게 한다.
+      'mwave': _st.mwCount > 0
+          ? {
+              'amp': _st.mwAmp,
+              'area': _st.mwArea,
+              'latencyMs': _st.mwLatency,
+              'count': _st.mwCount,
+              'ampDeclinePct': _st.mwAmpDeclinePct,
+              'areaDeclinePct': _st.mwAreaDeclinePct,
+              'latencyDeltaMs': _st.mwLatencyDeltaMs,
+            }
+          : '측정 안 됨 (자극 응답 미검출)',
     };
-    return _ai.analyze(data);
+
+    final report = await _ai.analyze(data);
+
+    // 안전장치: 앱이 이미 근피로로 세션을 중단했는데 AI 가 'ok'(양호)로 내면
+    // 명백한 오판 — 코드가 강제로 fatigued 로 교정한다. (LLM 할루시네이션 방지)
+    final fatiguedNow =
+        _sessionFatigued || _st.engineFatigueDetected || _st.fatigueDetected;
+    if (fatiguedNow && report.status != ReportStatus.fatigued) {
+      final hl = report.headline.contains('피로')
+          ? report.headline
+          : '근피로가 감지돼 운동을 중단했습니다';
+      return report.copyWith(status: ReportStatus.fatigued, headline: hl);
+    }
+    return report;
   }
 
   void _toast(String msg, Color color) {
