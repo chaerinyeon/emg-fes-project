@@ -53,7 +53,7 @@ const int HISTORY_SIZE = 60;               // 60초 분량 RMS/MDF 히스토리
 float RMS_THRESHOLD = 20.0;                // RMS slope +20% 이상
 float MDF_THRESHOLD = -3.0;                // MDF slope -3% 이하 (노이즈 감안 완화)
 const int CONSECUTIVE_TRIGGER = 5;
-const int DC_OFFSET = 1900;                // 본인 베이스라인으로 조정
+const int DC_OFFSET = 1862;                // 실측 휴식 mean (DIAG 로그 기준)
 
 // 베이스라인
 const int BASELINE_SAMPLES = 10;
@@ -67,7 +67,7 @@ const unsigned long DATA_THROTTLE_MS = 100;     // 데이터 송신 최소 간�
 // ===== M-wave 검출 파라미터 =====
 // 자극 artifact 검출 임계 (DC 보정된 centered 값의 절대값).
 // 실측에서 normal EMG burst 최대보다 충분히 커야 함. 일반적으로 1000~2000 범위.
-const int MW_ARTIFACT_THRESHOLD = 1500;
+const int MW_ARTIFACT_THRESHOLD = 1000;
 const int MW_WINDOW_START_MS = 5;             // 자극 후 ms (artifact 제외용 dead-zone)
 const int MW_WINDOW_END_MS = 30;              // 자극 후 ms
 const int MW_WINDOW_LEN = (MW_WINDOW_END_MS - MW_WINDOW_START_MS) + 1;  // 26 샘플 (1kHz)
@@ -237,11 +237,12 @@ void samplingTask(void* /*param*/) {
     envLPF = ENV_LPF_ALPHA * (float)absVal + (1.0f - ENV_LPF_ALPHA) * envLPF;
 
     // ===== M-wave: 자극 artifact 감지 + 윈도우 캡처 =====
-    // 자극 중에만, refractory 경과 후 큰 스파이크가 들어오면 artifact로 간주.
-    // artifact 시점부터 5~30ms 동안 centered 샘플을 버퍼에 모음 → loop에서 메트릭 계산.
+    // FES는 외부에서 수동 제어 → ESP는 자극 켜짐을 모르므로, 세션 동작 중
+    // (systemRunning)이면 항상 artifact를 탐지한다. refractory 경과 후 큰
+    // 스파이크가 들어오면 artifact로 간주, 5~30ms 동안 centered 샘플 수집.
     {
       unsigned long nowMs = millis();
-      if (isStimulating && !mwCapturing &&
+      if (systemRunning && !mwCapturing &&
           absVal > MW_ARTIFACT_THRESHOLD &&
           (nowMs - mwArtifactAtMs) > MW_REFRACTORY_MS) {
         mwArtifactAtMs = nowMs;
@@ -351,11 +352,10 @@ void setup() {
     1
   );
 
-  // 1kHz ADC 타이머 (ESP32 core 2.0.x API)
-  sampleTimer = timerBegin(0, 80, true);                  // timer0, prescaler 80 → 1MHz tick
-  timerAttachInterrupt(sampleTimer, &onSampleTimer, true);
-  timerAlarmWrite(sampleTimer, 1000, true);               // 1000us = 1kHz
-  timerAlarmEnable(sampleTimer);
+  // 1kHz ADC 타이머 (ESP32 core 3.x API)
+  sampleTimer = timerBegin(1000000);                      // 1MHz tick (1us 해상도)
+  timerAttachInterrupt(sampleTimer, &onSampleTimer);
+  timerAlarm(sampleTimer, 1000, true, 0);                 // 1000us=1kHz, autoreload
 
   digitalWrite(PIN_STATUS_LED, HIGH);
   Serial.println("=== 준비 완료 (BLE 광고 중) ===\n");
@@ -433,16 +433,18 @@ void loop() {
       currentMDFSlope = calculateSlopePercent(mdfHistory, historyCount, true);
     }
 
-    // ---- 관리도 baseline 학습 (자극 중 RMS/MDF 표본, 8개면 확정) ----
-    if (systemRunning && isStimulating) {
+    // ---- 관리도 baseline 학습 (세션 동작 중 RMS/MDF 표본, 8개면 확정) ----
+    // FES 외부 수동 제어 → systemRunning 기준. (FES를 켠 뒤 start 를 눌러야
+    // 초반 8표본이 '자극 중·미피로' 상태로 학습됨)
+    if (systemRunning) {
       ccIngest(rmsChart, currentRMS);
       ccIngest(mdfChart, currentMDF);
     }
 
     // ---- 통일 판정 규칙 (앱 FatigueEngine 과 동일) ----
     //   (RMS>UCL AND MDF<LCL)  OR  (M-wave 진폭<LCL AND 면적<LCL AND 잠복기>UCL)
-    bool rmsHigh = isStimulating && ccAbove(rmsChart, currentRMS);
-    bool mdfLow  = isStimulating && ccBelow(mdfChart, currentMDF);
+    bool rmsHigh = systemRunning && ccAbove(rmsChart, currentRMS);
+    bool mdfLow  = systemRunning && ccBelow(mdfChart, currentMDF);
     bool rmsMdfGroup = rmsHigh && mdfLow;
     bool mwGroup = mwAmpChart.established && mwAreaChart.established &&
                    mwLatChart.established &&
@@ -533,8 +535,8 @@ void loop() {
       currentMwLatency = (float)(MW_WINDOW_START_MS + peakIdx);
       mwDirty = true;
       mwCount++;
-      // 관리도 baseline 학습 (자극 중 초반 M-wave 6회 → mean·σ 확정)
-      if (systemRunning && isStimulating) {
+      // 관리도 baseline 학습 (세션 동작 중 초반 M-wave 6회 → mean·σ 확정)
+      if (systemRunning) {
         ccIngest(mwAmpChart, currentMwAmp);
         ccIngest(mwAreaChart, currentMwArea);
         ccIngest(mwLatChart, currentMwLatency);
@@ -775,7 +777,8 @@ void sendDataUpdate() {
   doc["ts"]   = now;
   doc["env"]  = envLPF;
   doc["run"]  = systemRunning;
-  doc["stim"] = isStimulating;
+  // FES 외부 수동 제어 → 세션 동작 중을 '자극 중'으로 보고 (앱 엔진·CSV 일관성).
+  doc["stim"] = systemRunning;
   doc["fd"]   = currentFatigueDetected;
   if (hasMarker) {
     doc["mk"] = sessionMarker;

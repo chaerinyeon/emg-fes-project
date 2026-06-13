@@ -5,15 +5,15 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../core/constants.dart';
 import '../core/models.dart';
 import '../core/subject_category.dart';
 import '../services/ai_analysis_service.dart';
 import '../services/csv_exporter.dart';
+import '../services/env_logger.dart';
 import '../services/fatigue_engine.dart';
-import '../services/csv_save_stub.dart'
-    if (dart.library.html) '../services/csv_save_web.dart';
 import '../services/profile_service.dart';
 import '../services/simulator_service.dart';
 import '../widgets/ai/ai_analysis_panel.dart';
@@ -111,6 +111,11 @@ class _HomePageState extends State<HomePage> {
   final List<Map<String, dynamic>> _log = [];
   String? _pendingMarker;
   int? _lastLoggedSec;
+
+  // ENV 고해상도 로깅 — BLE 수신 전량(10Hz) 기록 → Time(ms),ENV_Value CSV
+  final EnvLogRecorder _envLog = EnvLogRecorder();
+  String? _lastEnvCsvPath; // 마지막 저장 경로 — 재공유용
+  String? _pendingEnvMarker; // ENV 로그용 마커 (_pendingMarker는 1Hz 로그가 소비)
 
   @override
   void initState() {
@@ -339,9 +344,11 @@ class _HomePageState extends State<HomePage> {
 
       if (running) {
         final envVal = msg['env'] ?? msg['raw'];
+        double? envForLog;
         if (envVal != null) {
           final e = (envVal as num).toDouble();
           _envLast = e;
+          envForLog = e;
           // 시간 기반 5Hz 데시메이션 — 토글보다 hot reload/누락에 강건
           if (_lastEnvPushT < 0 || (t - _lastEnvPushT) >= kEnvPushIntervalSec) {
             _lastEnvPushT = t;
@@ -382,6 +389,22 @@ class _HomePageState extends State<HomePage> {
         }
         if (msg['mwn'] != null) {
           _st.mwCount = (msg['mwn'] as num).toInt();
+        }
+
+        // ENV CSV 로거 — 데시메이션 없이 수신 전량(10Hz) 누적.
+        // RMS/MDF/M-wave는 매 샘플 들어오지 않으므로 최신값(zero-order hold)을 동봉.
+        if (envForLog != null) {
+          _envLog.add(
+            tsMs.toInt(),
+            envForLog,
+            marker: _pendingEnvMarker ?? '',
+            rms: _rmsLast, // 1Hz 갱신값 유지(ZOH)
+            mdf: _mdfLast, // 1Hz 갱신값 유지(ZOH)
+            mwAmp: _st.mwAmp, // M-wave는 이벤트성 → 최근 검출값 유지(ZOH)
+            mwArea: _st.mwArea,
+            mwLatency: _st.mwLatency,
+          );
+          _pendingEnvMarker = null;
         }
 
         // 1Hz 다운샘플: ts 초 단위가 바뀔 때만 로그 (펌웨어 BLE 10Hz → CSV 1Hz)
@@ -690,7 +713,9 @@ class _HomePageState extends State<HomePage> {
     _t0Init = false;
 
     _log.clear();
+    _envLog.start(); // ENV 10Hz 전량 기록 시작
     _pendingMarker = null;
+    _pendingEnvMarker = null;
     _st.sessionMaxRms = 0;
     _sessionStart = DateTime.now();
     _timeToFatigueSec = null;
@@ -724,6 +749,7 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _stopSession() async {
     _send({'cmd': 'stop'});
+    _envLog.stop();
 
     // 오늘 vs 평소 비교 스냅샷 — recordSession 이 오늘 값을 이력에 넣기 '전'에 캡처.
     // 비교/환산(분·배수)은 여기서 Dart 로 미리 계산해 '완성된 문구'로 넘긴다.
@@ -791,11 +817,19 @@ class _HomePageState extends State<HomePage> {
       _toast('저장할 데이터 없음', Colors.orange);
       return;
     }
-    if (isWebCsvSupported) {
-      final filename = downloadCsv(_log);
-      _toast('CSV 저장: $filename (${_log.length} rows)', Colors.green);
+    final saved = await downloadCsv(_log, subjectId: gProfileService.active?.id);
+    if (saved != null) {
+      _toast('CSV 저장: $saved (${_log.length} rows)', Colors.green);
     } else {
-      _toast('세션 기록됨 (모바일 CSV 저장은 PC 로거 사용)', Colors.green);
+      _toast('CSV 저장 실패', Colors.orange);
+    }
+
+    // ENV 고해상도 CSV (Time(ms),ENV_Value) 저장 + 공유 시트
+    final envSaved = await _envLog.save(subjectId: gProfileService.active?.id);
+    if (envSaved != null) {
+      _lastEnvCsvPath = envSaved;
+      _toast('ENV CSV 저장: $envSaved (${_envLog.length} samples)', Colors.green);
+      await _shareEnvCsv();
     }
 
     // 운동 종료 → AI분석 탭으로 이동해 오늘의 운동을 자동 분석.
@@ -809,7 +843,36 @@ class _HomePageState extends State<HomePage> {
 
   void _sendMarker(String label) {
     _pendingMarker = label;
+    _pendingEnvMarker = label;
     _send({'cmd': 'marker', 'label': label});
+    // 기록 여부 즉시 피드백 — 세션 중이 아니면 CSV에 안 남는다는 경고
+    if (_st.isRunning) {
+      _toast('마커 기록됨: $label', Colors.green);
+    } else {
+      _toast('세션 중이 아님 — $label 마커는 CSV에 기록되지 않습니다', Colors.orange);
+    }
+  }
+
+  // ENV CSV 공유 — iOS/Android 공유 시트(이메일·메신저 등)로 내보내기.
+  // 웹은 saveCsvFile 이 이미 브라우저 다운로드를 수행하므로 생략.
+  Future<void> _shareEnvCsv() async {
+    final path = _lastEnvCsvPath;
+    if (kIsWeb || path == null) return;
+    try {
+      final box = context.findRenderObject() as RenderBox?;
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(path, mimeType: 'text/csv')],
+          subject: 'EMG ENV 데이터',
+          // iPad 공유 팝오버 anchor (iPhone/Android에선 무시됨)
+          sharePositionOrigin: box != null
+              ? box.localToGlobal(Offset.zero) & box.size
+              : null,
+        ),
+      );
+    } catch (e) {
+      _toast('공유 실패: $e', Colors.orange);
+    }
   }
 
   // ---------- 오늘 vs 평소 비교 문구 (Dart 선계산) ----------

@@ -20,9 +20,14 @@ const List<String> kCsvHeaders = [
   'marker',
 ];
 
-/// 세션 로그를 CSV 문자열로 직렬화 후 브라우저 다운로드 트리거.
-/// 반환값: 저장한 파일명 (호출자가 토스트 등에 사용).
-String downloadCsv(List<Map<String, dynamic>> log) {
+/// 세션 로그를 CSV 문자열로 직렬화 후 저장한다.
+/// 모바일/데스크톱: 앱 문서 디렉토리 `data/<subjectId>/` 하위에 파일 생성.
+/// 웹: 브라우저 다운로드.
+/// 반환값: 저장된 경로(모바일) 또는 파일명(웹), 실패 시 null.
+Future<String?> downloadCsv(
+  List<Map<String, dynamic>> log, {
+  String? subjectId,
+}) async {
   final sb = StringBuffer()..writeln(kCsvHeaders.join(','));
   for (final row in log) {
     sb.writeln(
@@ -41,6 +46,5 @@ String downloadCsv(List<Map<String, dynamic>> log) {
       '${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}'
       '_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}${now.second.toString().padLeft(2, '0')}';
   final filename = 'emg_$stamp.csv';
-  saveCsvFile(filename, sb.toString());
-  return filename;
+  return saveCsvFile(filename, sb.toString(), subjectId: subjectId);
 }
