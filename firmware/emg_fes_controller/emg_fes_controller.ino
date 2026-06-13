@@ -25,6 +25,7 @@
 #include <NimBLEDevice.h>
 #include <ArduinoJson.h>
 #include <arduinoFFT.h>
+#include <math.h>
 
 // ===== BLE UUID (Nordic UART Service 호환) ====
 
@@ -78,10 +79,36 @@ NimBLECharacteristic* dataChar = nullptr;
 NimBLECharacteristic* cmdChar  = nullptr;
 volatile bool deviceConnected = false;
 
-// ===== ADC 버퍼 (샘플링 태스크가 채움) =====
+// ===== ADC 버퍼 / 10Hz 메트릭 생성 =====
+// 1kHz로 샘플링하되, CSV/BLE 행은 ENV와 같은 100ms 간격(10Hz)으로 만든다.
+// RMS는 최근 1초(1000표본) 슬라이딩 윈도우를 100ms마다 다시 계산한다.
+// MDF는 최근 FFT_SIZE(256표본) 윈도우를 100ms마다 다시 계산한다.
 volatile int rawBuffer[RMS_WINDOW];
-volatile int bufferIdx = 0;
-volatile bool bufferReady = false;
+volatile int writeIdx = 0;                 // 다음 기록 위치 (RMS_WINDOW로 wrap)
+volatile int windowCount = 0;              // 현재 RMS 윈도우에 들어있는 표본 수, 최대 1000
+volatile int64_t windowSum = 0;            // 최근 1초 centered 값 합
+volatile int64_t windowSumSq = 0;          // 최근 1초 centered 값 제곱합
+volatile bool bufferFilled = false;        // 1초치(1000표본)가 한 번이라도 채워졌는지
+
+const int COMPUTE_INTERVAL = 100;          // 100표본 @1kHz = 100ms → 10Hz
+volatile int samplesSinceCompute = 0;      // 마지막 10Hz 계산 이후 누적 표본 수
+volatile bool metricReady = false;         // 100표본마다 true → loop에서 10Hz 계산
+int metricCycle = 0;                        // 10Hz 사이클 카운터 (10회=1초 → 느린 로직)
+
+// 100ms 블록 대표값: CSV에서 EMG/ENV/RMS/MDF를 모두 같은 10Hz 시간축으로 보기 위한 값
+volatile int blockCount = 0;
+volatile int64_t blockRawSum = 0;
+volatile int64_t blockCenteredSum = 0;
+volatile int64_t blockAbsSum = 0;
+volatile int blockPeakAbs = 0;
+volatile int blockMinCentered = 32767;
+volatile int blockMaxCentered = -32768;
+volatile float latestRaw10Hz = 0;           // 100ms 평균 ADC 원값
+volatile float latestEmg10Hz = 0;           // 100ms 평균 |centered|, CSV용 EMG 대표값
+volatile float latestCenteredMean10Hz = 0;  // 100ms centered 평균, DC 흔들림 진단용
+volatile int latestPeakAbs10Hz = 0;         // 100ms peak |centered|
+volatile int latestMinCentered10Hz = 0;
+volatile int latestMaxCentered10Hz = 0;
 
 // 실시간 envelope (|raw - DC| 의 1차 IIR LPF, 1kHz로 갱신)
 // alpha=0.03 → 1kHz에서 약 5Hz LPF, 힘 줄 때 100~200ms 안에 따라옴
@@ -107,7 +134,8 @@ unsigned long stimStartTime = 0;
 unsigned long lastNotifyMs = 0;
 unsigned long fatigueDetectedAtMs = 0;
 const unsigned long FATIGUE_LATCH_MS = 10000;   // fd=true를 10초간 유지
-bool sendFullNext = true;   // 다음 송신을 "full"로 (1초마다 RMS/MDF 등 포함)
+bool sendFullNext = true;   // 다음 송신을 "full"로 (1초마다 slope/state 등 포함)
+bool sendRmsMdfNext = false; // 다음 송신에 rms/mdf 포함 (10Hz 갱신 시 set)
 
 // ===== 수축 상태머신 =====
 enum ContractionState { CS_REST = 0, CS_ONSET = 1, CS_SUSTAINED = 2 };
@@ -146,8 +174,15 @@ bool mwDirty = false;                          // 새 M-wave가 있어 다음 �
 uint32_t mwCount = 0;                          // 세션 누적 M-wave 검출 수
 
 // ===== 최신 계산값 =====
-float currentRMS = 0;
-float currentMDF = 0;
+float currentRaw10Hz = 0;        // 100ms 평균 ADC 원값
+float currentEmg10Hz = 0;        // 100ms 평균 |centered|
+float currentCenteredMean10Hz = 0;
+int   currentPeakAbs10Hz = 0;
+int   currentMinCentered10Hz = 0;
+int   currentMaxCentered10Hz = 0;
+float currentRMS = 0;            // 최근 1초 sliding RMS, 10Hz 갱신
+float currentMDF = 0;            // 최근 256ms MDF, 10Hz 갱신
+bool  metricsValid = false;      // RMS 1초 윈도우가 채워진 뒤 true
 float currentRMSSlope = 0;
 float currentMDFSlope = 0;
 bool  currentFatigueDetected = false;
@@ -206,6 +241,8 @@ void triggerStimulation(bool on);
 void handleCommand(JsonDocument& doc);
 void updateContractionState();
 void samplingTask(void* param);
+float calculateRMS(int64_t sum, int64_t sumSq, int n);
+float calculateMDF(int localWriteIdx);
 
 // ============================================================
 // 1ms 타이머 ISR — analogRead는 IRAM-safe가 아니므로
@@ -263,14 +300,57 @@ void samplingTask(void* /*param*/) {
       }
     }
 
-    if (bufferIdx >= RMS_WINDOW) continue;
-
+    // 슬라이딩 윈도우 + 100ms 블록 통계
     portENTER_CRITICAL(&timerMux);
-    if (bufferIdx < RMS_WINDOW) {
-      rawBuffer[bufferIdx] = centered;
-      bufferIdx++;
-      if (bufferIdx >= RMS_WINDOW) bufferReady = true;
+
+    // 1초 RMS 윈도우: 오래된 표본을 빼고 새 표본을 더해 running sum 유지
+    int old = rawBuffer[writeIdx];
+    rawBuffer[writeIdx] = centered;
+    if (windowCount < RMS_WINDOW) {
+      windowCount++;
+      windowSum += centered;
+      windowSumSq += (int64_t)centered * centered;
+    } else {
+      windowSum += (int64_t)centered - old;
+      windowSumSq += (int64_t)centered * centered - (int64_t)old * old;
     }
+
+    writeIdx++;
+    if (writeIdx >= RMS_WINDOW) writeIdx = 0;
+    bufferFilled = (windowCount >= RMS_WINDOW);
+
+    // 100ms 블록 대표값 누적: raw/emg를 ENV와 같은 10Hz 행에 맞춘다.
+    blockRawSum += raw;
+    blockCenteredSum += centered;
+    blockAbsSum += absVal;
+    if (absVal > blockPeakAbs) blockPeakAbs = absVal;
+    if (centered < blockMinCentered) blockMinCentered = centered;
+    if (centered > blockMaxCentered) blockMaxCentered = centered;
+    blockCount++;
+
+    samplesSinceCompute++;
+    if (samplesSinceCompute >= COMPUTE_INTERVAL) {
+      int n = blockCount > 0 ? blockCount : 1;
+      latestRaw10Hz = (float)blockRawSum / n;
+      latestEmg10Hz = (float)blockAbsSum / n;
+      latestCenteredMean10Hz = (float)blockCenteredSum / n;
+      latestPeakAbs10Hz = blockPeakAbs;
+      latestMinCentered10Hz = blockMinCentered;
+      latestMaxCentered10Hz = blockMaxCentered;
+
+      // 다음 100ms 블록 시작
+      blockRawSum = 0;
+      blockCenteredSum = 0;
+      blockAbsSum = 0;
+      blockPeakAbs = 0;
+      blockMinCentered = 32767;
+      blockMaxCentered = -32768;
+      blockCount = 0;
+
+      samplesSinceCompute = 0;
+      metricReady = true;          // 100ms마다 RMS/MDF 재계산 신호
+    }
+
     portEXIT_CRITICAL(&timerMux);
   }
 }
@@ -409,105 +489,128 @@ void loop() {
   // 연결 상태 LED (연결 시 ON, 미연결 시 1Hz 블링크)
   digitalWrite(PIN_STATUS_LED, deviceConnected ? HIGH : ((millis() / 500) % 2));
 
-  if (bufferReady) {
+  if (metricReady) {
+    // samplingTask가 만든 100ms 대표값과 RMS running sum을 한 번에 스냅샷
+    int localWriteIdx;
+    int localWindowCount;
+    int64_t localWindowSum;
+    int64_t localWindowSumSq;
+
     portENTER_CRITICAL(&timerMux);
-    bufferReady = false;
-    bufferIdx = 0;
+    metricReady = false;
+    localWriteIdx = writeIdx;
+    localWindowCount = windowCount;
+    localWindowSum = windowSum;
+    localWindowSumSq = windowSumSq;
+    currentRaw10Hz = latestRaw10Hz;
+    currentEmg10Hz = latestEmg10Hz;
+    currentCenteredMean10Hz = latestCenteredMean10Hz;
+    currentPeakAbs10Hz = latestPeakAbs10Hz;
+    currentMinCentered10Hz = latestMinCentered10Hz;
+    currentMaxCentered10Hz = latestMaxCentered10Hz;
     portEXIT_CRITICAL(&timerMux);
 
-    // RMS 계산
-    currentRMS = calculateRMS();
+    // ===== 10Hz: ENV와 같은 시간축으로 RMS/MDF 재계산 =====
+    // RMS는 최근 1초 sliding window, MDF는 최근 256ms FFT window.
+    bool rmsReady = (localWindowCount >= RMS_WINDOW);
+    bool mdfReady = (localWindowCount >= FFT_SIZE);
 
-    // MDF 계산
-    currentMDF = calculateMDF();
-
-    // 히스토리 추가
-    rmsHistory[historyIdx] = currentRMS;
-    mdfHistory[historyIdx] = currentMDF;
-    historyIdx = (historyIdx + 1) % HISTORY_SIZE;
-    if (historyCount < HISTORY_SIZE) historyCount++;
-
-    // slope 는 표시용으로만 계산 (30초치 모이면 갱신) — 판정엔 미사용
-    if (historyCount >= 30) {
-      currentRMSSlope = calculateSlopePercent(rmsHistory, historyCount, true);
-      currentMDFSlope = calculateSlopePercent(mdfHistory, historyCount, true);
+    if (rmsReady) {
+      currentRMS = calculateRMS(localWindowSum, localWindowSumSq, localWindowCount);
     }
-
-    // ---- 관리도 baseline 학습 (세션 동작 중 RMS/MDF 표본, 8개면 확정) ----
-    // FES 외부 수동 제어 → systemRunning 기준. (FES를 켠 뒤 start 를 눌러야
-    // 초반 8표본이 '자극 중·미피로' 상태로 학습됨)
-    if (systemRunning) {
-      ccIngest(rmsChart, currentRMS);
-      ccIngest(mdfChart, currentMDF);
+    if (mdfReady) {
+      currentMDF = calculateMDF(localWriteIdx);
     }
+    metricsValid = rmsReady && mdfReady;
+    sendRmsMdfNext = true;          // 다음 100ms BLE 행에 rms/mdf를 반드시 포함
 
-    // ---- 통일 판정 규칙 (앱 FatigueEngine 과 동일) ----
-    //   (RMS>UCL AND MDF<LCL)  OR  (M-wave 진폭<LCL AND 면적<LCL AND 잠복기>UCL)
-    bool rmsHigh = systemRunning && ccAbove(rmsChart, currentRMS);
-    bool mdfLow  = systemRunning && ccBelow(mdfChart, currentMDF);
-    bool rmsMdfGroup = rmsHigh && mdfLow;
-    bool mwGroup = mwAmpChart.established && mwAreaChart.established &&
-                   mwLatChart.established &&
-                   ccBelow(mwAmpChart, currentMwAmp) &&
-                   ccBelow(mwAreaChart, currentMwArea) &&
-                   ccAbove(mwLatChart, currentMwLatency);
-    bool fatigueCondition = rmsMdfGroup || mwGroup;
+    // ===== 1Hz: 느린 로직 (히스토리·관리도·판정·상태머신) =====
+    // 피로 판정과 baseline은 초 단위 표본 기준으로 유지한다.
+    if (metricsValid) {
+      metricCycle++;
+      if (metricCycle >= 10) {
+        metricCycle = 0;
 
-    if (systemRunning && fatigueCondition) {
-      consecutiveCount++;
-      if (consecutiveCount >= CONSECUTIVE_TRIGGER && !currentFatigueDetected) {
-        Serial.printf("⚠️ 근피로 감지! [%s] RMS %.0f(UCL %.0f) MDF %.0f(LCL %.0f)\n",
-                      rmsMdfGroup ? "RMS·MDF" : "M-wave",
-                      currentRMS, rmsChart.mean + rmsChart.sigmaMult * rmsChart.sd,
-                      currentMDF, mdfChart.mean - mdfChart.sigmaMult * mdfChart.sd);
-        currentFatigueDetected = true;
-        fatigueDetectedAtMs = millis();
-        // 다음 BLE 송신을 즉시 full로 → Flutter에서 fd 상승 에지 놓치지 않음
-        sendFullNext = true;
-        // FES가 켜져 있을 때만 자동 정지
-        if (isStimulating) {
-          triggerStimulation(false);
+        // 히스토리 추가
+        rmsHistory[historyIdx] = currentRMS;
+        mdfHistory[historyIdx] = currentMDF;
+        historyIdx = (historyIdx + 1) % HISTORY_SIZE;
+        if (historyCount < HISTORY_SIZE) historyCount++;
+
+        // slope 는 표시용으로만 계산 (30초치 모이면 갱신) — 판정엔 미사용
+        if (historyCount >= 30) {
+          currentRMSSlope = calculateSlopePercent(rmsHistory, historyCount, true);
+          currentMDFSlope = calculateSlopePercent(mdfHistory, historyCount, true);
         }
+
+        // ---- 관리도 baseline 학습 (세션 동작 중 RMS/MDF 표본, 8개면 확정) ----
+        if (systemRunning) {
+          ccIngest(rmsChart, currentRMS);
+          ccIngest(mdfChart, currentMDF);
+        }
+
+        // ---- 통일 판정 규칙 (앱 FatigueEngine 과 동일) ----
+        bool rmsHigh = systemRunning && ccAbove(rmsChart, currentRMS);
+        bool mdfLow  = systemRunning && ccBelow(mdfChart, currentMDF);
+        bool rmsMdfGroup = rmsHigh && mdfLow;
+        bool mwGroup = mwAmpChart.established && mwAreaChart.established &&
+                       mwLatChart.established &&
+                       ccBelow(mwAmpChart, currentMwAmp) &&
+                       ccBelow(mwAreaChart, currentMwArea) &&
+                       ccAbove(mwLatChart, currentMwLatency);
+        bool fatigueCondition = rmsMdfGroup || mwGroup;
+
+        if (systemRunning && fatigueCondition) {
+          consecutiveCount++;
+          if (consecutiveCount >= CONSECUTIVE_TRIGGER && !currentFatigueDetected) {
+            Serial.printf("⚠️ 근피로 감지! [%s] RMS %.0f(UCL %.0f) MDF %.0f(LCL %.0f)\n",
+                          rmsMdfGroup ? "RMS·MDF" : "M-wave",
+                          currentRMS, rmsChart.mean + rmsChart.sigmaMult * rmsChart.sd,
+                          currentMDF, mdfChart.mean - mdfChart.sigmaMult * mdfChart.sd);
+            currentFatigueDetected = true;
+            fatigueDetectedAtMs = millis();
+            sendFullNext = true;
+            if (isStimulating) {
+              triggerStimulation(false);
+            }
+          }
+        } else {
+          consecutiveCount = 0;
+        }
+
+        if (currentFatigueDetected &&
+            (millis() - fatigueDetectedAtMs > FATIGUE_LATCH_MS)) {
+          currentFatigueDetected = false;
+        }
+
+        // 베이스라인 수집
+        if (systemRunning && !baselineReady && historyCount >= BASELINE_SAMPLES) {
+          float sum = 0;
+          for (int i = 0; i < BASELINE_SAMPLES; i++) sum += rmsHistory[i];
+          baselineRMS = sum / BASELINE_SAMPLES;
+          baselineReady = true;
+          Serial.printf("✅ Baseline RMS: %.1f (%ds 평균)\n", baselineRMS, BASELINE_SAMPLES);
+        }
+
+        // 상태 분류
+        if (!systemRunning) {
+          muscleState = "idle";
+          rmsRatio = 1.0;
+        } else if (!baselineReady) {
+          muscleState = "calibrating";
+          rmsRatio = 1.0;
+        } else {
+          rmsRatio = (baselineRMS > 0.01) ? (currentRMS / baselineRMS) : 1.0;
+          if (currentFatigueDetected)              muscleState = "fatigue";
+          else if (rmsRatio > MUSCLE_HIGH_RATIO)   muscleState = "high";
+          else if (rmsRatio < MUSCLE_LOW_RATIO)    muscleState = "low";
+          else                                     muscleState = "normal";
+        }
+
+        updateContractionState();
+        sendFullNext = true;
       }
-    } else {
-      consecutiveCount = 0;
     }
-
-    // 피로 플래그는 FATIGUE_LATCH_MS 동안 유지 (UI 다이얼로그/배너 안정용)
-    if (currentFatigueDetected &&
-        (millis() - fatigueDetectedAtMs > FATIGUE_LATCH_MS)) {
-      currentFatigueDetected = false;
-    }
-
-    // 베이스라인 수집
-    if (systemRunning && !baselineReady && historyCount >= BASELINE_SAMPLES) {
-      float sum = 0;
-      for (int i = 0; i < BASELINE_SAMPLES; i++) sum += rmsHistory[i];
-      baselineRMS = sum / BASELINE_SAMPLES;
-      baselineReady = true;
-      Serial.printf("✅ Baseline RMS: %.1f (%ds 평균)\n", baselineRMS, BASELINE_SAMPLES);
-    }
-
-    // 상태 분류
-    if (!systemRunning) {
-      muscleState = "idle";
-      rmsRatio = 1.0;
-    } else if (!baselineReady) {
-      muscleState = "calibrating";
-      rmsRatio = 1.0;
-    } else {
-      rmsRatio = (baselineRMS > 0.01) ? (currentRMS / baselineRMS) : 1.0;
-      if (currentFatigueDetected)              muscleState = "fatigue";
-      else if (rmsRatio > MUSCLE_HIGH_RATIO)   muscleState = "high";
-      else if (rmsRatio < MUSCLE_LOW_RATIO)    muscleState = "low";
-      else                                     muscleState = "normal";
-    }
-
-    // 수축 상태머신 업데이트 (RMS·MDF 계산 직후)
-    updateContractionState();
-
-    // 다음 BLE 송신은 1Hz 갱신값 전부 포함하는 "full" 메시지로
-    sendFullNext = true;
   }
 
   // ===== M-wave 메트릭 계산 (sampling task가 mwReady=true 신호) =====
@@ -544,8 +647,7 @@ void loop() {
     }
   }
 
-  // BLE 송신은 100ms마다 (DATA_THROTTLE_MS 내부 체크 사용)
-  // → env(실시간 LPF)는 10Hz로, rms/mdf는 매번 같은 값(1Hz 갱신)으로 송신
+  // BLE 송신은 100ms마다. raw/emg/env/rms/mdf 모두 같은 10Hz 행으로 송신.
   sendDataUpdate();
 
   // FES 타임아웃 안전장치
@@ -567,6 +669,7 @@ void handleCommand(JsonDocument& doc) {
   if (cmd == "start") {
     systemRunning = true;
     consecutiveCount = 0;
+    metricCycle = 0;           // 1Hz 느린 로직 사이클을 세션 시작에 정렬
     historyIdx = 0;
     historyCount = 0;
     currentFatigueDetected = false;
@@ -577,6 +680,25 @@ void handleCommand(JsonDocument& doc) {
     baselineRMS = 0;
     rmsRatio = 1.0;
     envLPF = 0;
+    metricsValid = false;
+    currentRMS = 0;
+    currentMDF = 0;
+    // 10Hz 블록/윈도우 리셋
+    portENTER_CRITICAL(&timerMux);
+    writeIdx = 0;
+    windowCount = 0;
+    windowSum = 0;
+    windowSumSq = 0;
+    bufferFilled = false;
+    samplesSinceCompute = 0;
+    metricReady = false;
+    blockCount = 0;
+    blockRawSum = blockCenteredSum = blockAbsSum = 0;
+    blockPeakAbs = 0;
+    blockMinCentered = 32767;
+    blockMaxCentered = -32768;
+    for (int i = 0; i < RMS_WINDOW; i++) rawBuffer[i] = 0;
+    portEXIT_CRITICAL(&timerMux);
     // M-wave 카운터/상태 리셋
     mwCount = 0;
     mwCapturing = false;
@@ -679,54 +801,73 @@ void triggerStimulation(bool on) {
 // RMS 계산 (RAW 1초치, 평균 자동 제거)
 // DC_OFFSET이 정확하지 않아도 흡수되도록 윈도우 평균을 빼고 RMS.
 // ============================================================
-float calculateRMS() {
-  // 1) 윈도우 평균 (남은 DC 성분 제거용)
-  long sum = 0;
-  int rawMin = 4095, rawMax = -4095;
-  for (int i = 0; i < RMS_WINDOW; i++) {
-    int v = rawBuffer[i];
-    sum += v;
-    if (v < rawMin) rawMin = v;
-    if (v > rawMax) rawMax = v;
-  }
-  double mean = (double)sum / RMS_WINDOW;
+float calculateRMS(int64_t sum, int64_t sumSq, int n) {
+  if (n <= 0) return 0;
 
-  // 2) 평균 제거 후 RMS
-  double sumSq = 0;
-  for (int i = 0; i < RMS_WINDOW; i++) {
-    double d = (double)rawBuffer[i] - mean;
-    sumSq += d * d;
-  }
-  double rms = sqrt(sumSq / RMS_WINDOW);
+  // variance = E[x²] - E[x]²
+  double mean = (double)sum / n;
+  double meanSq = (double)sumSq / n;
+  double variance = meanSq - mean * mean;
+  if (variance < 0) variance = 0;
+  double rms = sqrt(variance);
 
-  Serial.printf("[DIAG] RAW min=%d max=%d mean=%.0f | RMS=%.1f env=%.1f\n",
-                rawMin + DC_OFFSET, rawMax + DC_OFFSET,
-                mean + DC_OFFSET, rms, envLPF);
+  // 10Hz로 계산하되 진단 로그는 1Hz로만 출력
+  static int diagCnt = 0;
+  if (++diagCnt >= 10) {
+    diagCnt = 0;
+    Serial.printf("[DIAG] raw100=%.0f emg100=%.1f cMean100=%.1f cMin=%d cMax=%d peak100=%d | RMS=%.1f MDF=%.1f ENV=%.1f\n",
+                  currentRaw10Hz, currentEmg10Hz, currentCenteredMean10Hz,
+                  currentMinCentered10Hz, currentMaxCentered10Hz, currentPeakAbs10Hz,
+                  rms, currentMDF, envLPF);
+  }
   return (float)rms;
 }
 
 // ============================================================
 // MDF 계산 (RAW 핀 FFT)
 // ============================================================
-float calculateMDF() {
+float calculateMDF(int localWriteIdx) {
+  // 원형 버퍼에서 "가장 최근 FFT_SIZE개"를 시간순으로 읽는다.
+  int start = (localWriteIdx - FFT_SIZE + RMS_WINDOW) % RMS_WINDOW;
+
+  // FFT 윈도우 평균 제거: DC 흔들림이 MDF를 낮은 주파수로 끌고 가는 문제 완화
+  double mean = 0;
   for (int i = 0; i < FFT_SIZE; i++) {
-    vReal[i] = (double)rawBuffer[i];
+    int idx = (start + i) % RMS_WINDOW;
+    mean += rawBuffer[idx];
+  }
+  mean /= FFT_SIZE;
+
+  for (int i = 0; i < FFT_SIZE; i++) {
+    int idx = (start + i) % RMS_WINDOW;
+    vReal[i] = (double)rawBuffer[idx] - mean;
     vImag[i] = 0;
   }
+
   FFT.windowing(FFTWindow::Hamming, FFTDirection::Forward);
   FFT.compute(FFTDirection::Forward);
   FFT.complexToMagnitude();
 
-  float totalPower = 0;
-  for (int i = 1; i < FFT_SIZE / 2; i++) {
-    totalPower += vReal[i];
+  const float BIN_HZ = (float)SAMPLE_RATE / FFT_SIZE;
+  const float MDF_MIN_HZ = 20.0f;
+  const float MDF_MAX_HZ = 450.0f;
+  int firstBin = max(1, (int)ceil(MDF_MIN_HZ / BIN_HZ));
+  int lastBin  = min((FFT_SIZE / 2) - 1, (int)floor(MDF_MAX_HZ / BIN_HZ));
+
+  double totalPower = 0;
+  for (int i = firstBin; i <= lastBin; i++) {
+    double power = vReal[i] * vReal[i];
+    totalPower += power;
   }
-  float halfPower = totalPower / 2.0;
-  float cumPower = 0;
-  for (int i = 1; i < FFT_SIZE / 2; i++) {
-    cumPower += vReal[i];
+  if (totalPower <= 0.000001) return 0;
+
+  double halfPower = totalPower / 2.0;
+  double cumPower = 0;
+  for (int i = firstBin; i <= lastBin; i++) {
+    double power = vReal[i] * vReal[i];
+    cumPower += power;
     if (cumPower >= halfPower) {
-      return (float)i * SAMPLE_RATE / FFT_SIZE;
+      return (float)i * BIN_HZ;
     }
   }
   return 0;
@@ -755,10 +896,9 @@ float calculateSlopePercent(float* history, int count, bool circular) {
 // ============================================================
 // BLE Notify로 데이터 송신 (기본 10Hz, 그중 1Hz는 full)
 // ----------------------------------------------------------
-// 매 100ms마다 호출되지만 메시지 종류는 두 가지:
-//   - partial (9/sec): env + 빠르게 바뀔 수 있는 상태만
-//   - full    (1/sec): partial + 1Hz 갱신값(RMS/MDF/slope/state machine 등)
-// Flutter는 null 필드를 스킵하므로 partial 메시지는 큐 중복을 만들지 않음.
+// 매 100ms마다 한 줄씩 보낸다.
+// raw/emg/env/rms/mdf/valid 는 모든 행에 들어가므로 CSV가 10Hz로 정렬된다.
+// full 메시지는 여기에 1Hz 상태값(slope/baseline/state machine 등)만 추가된다.
 // ============================================================
 void sendDataUpdate() {
   if (!deviceConnected || dataChar == nullptr) return;
@@ -769,13 +909,19 @@ void sendDataUpdate() {
 
   bool full = sendFullNext;
   sendFullNext = false;
+  sendRmsMdfNext = false;
   bool hasMarker = sessionMarker.length() > 0;
 
   StaticJsonDocument<512> doc;
 
   // ===== 항상 보내는 필드 (10Hz) =====
   doc["ts"]   = now;
-  doc["env"]  = envLPF;
+  doc["raw"]  = currentRaw10Hz;          // 100ms 평균 ADC 원값
+  doc["emg"]  = currentEmg10Hz;          // 100ms 평균 |centered|
+  doc["env"]  = envLPF;                  // envelope LPF, 10Hz 송신
+  doc["rms"]  = currentRMS;              // 최근 1초 sliding RMS, 10Hz 계산
+  doc["mdf"]  = currentMDF;              // 최근 256ms MDF, 10Hz 계산
+  doc["v"]    = metricsValid;            // 초기 1초 전에는 false
   doc["run"]  = systemRunning;
   // FES 외부 수동 제어 → 세션 동작 중을 '자극 중'으로 보고 (앱 엔진·CSV 일관성).
   doc["stim"] = systemRunning;
@@ -794,10 +940,10 @@ void sendDataUpdate() {
     mwDirty = false;
   }
 
+  // rms/mdf는 위에서 모든 10Hz 행에 항상 포함한다.
+
   // ===== full 메시지에만 (1Hz) =====
   if (full) {
-    doc["rms"]  = currentRMS;
-    doc["mdf"]  = currentMDF;
     doc["rs"]   = currentRMSSlope;
     doc["ms"]   = currentMDFSlope;
     doc["hc"]   = historyCount;
@@ -805,6 +951,8 @@ void sendDataUpdate() {
     doc["b"]    = baselineRMS;
     doc["rr"]   = rmsRatio;
     doc["st"]   = muscleState;
+    doc["cm"]   = currentCenteredMean10Hz;
+    doc["pk"]   = currentPeakAbs10Hz;
 
     // 수축 상태머신
     doc["cs"]   = (int)contractState;

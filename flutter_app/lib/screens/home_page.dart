@@ -205,6 +205,7 @@ class _HomePageState extends State<HomePage> {
       });
 
       final device = found!.device;
+      await _connSub?.cancel();   // 재연결 시 이전 연결-상태 리스너 누수 방지
       _connSub = device.connectionState.listen((s) {
         if (s == BluetoothConnectionState.disconnected) {
           setState(() {
@@ -249,6 +250,9 @@ class _HomePageState extends State<HomePage> {
       }
 
       await dataChar.setNotifyValue(true);
+      // 재연결 시 이전 리스너가 살아있으면 같은 패킷을 2번 수신해 CSV 행이
+      // 그대로 2배로 쌓인다. 새 구독 전에 반드시 이전 구독을 취소한다.
+      await _dataSub?.cancel();
       _dataSub = dataChar.lastValueStream.listen(_onCharData);
 
       setState(() {
@@ -392,14 +396,14 @@ class _HomePageState extends State<HomePage> {
         }
 
         // ENV CSV 로거 — 데시메이션 없이 수신 전량(10Hz) 누적.
-        // RMS/MDF/M-wave는 매 샘플 들어오지 않으므로 최신값(zero-order hold)을 동봉.
+        // RMS/MDF도 이제 10Hz로 도착(최신값 동봉). M-wave는 이벤트성 → ZOH.
         if (envForLog != null) {
           _envLog.add(
             tsMs.toInt(),
             envForLog,
             marker: _pendingEnvMarker ?? '',
-            rms: _rmsLast, // 1Hz 갱신값 유지(ZOH)
-            mdf: _mdfLast, // 1Hz 갱신값 유지(ZOH)
+            rms: _rmsLast, // 10Hz 갱신값
+            mdf: _mdfLast, // 10Hz 갱신값
             mwAmp: _st.mwAmp, // M-wave는 이벤트성 → 최근 검출값 유지(ZOH)
             mwArea: _st.mwArea,
             mwLatency: _st.mwLatency,

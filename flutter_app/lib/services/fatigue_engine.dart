@@ -146,7 +146,8 @@ class FatigueEngine {
   /// 매 BLE 메시지마다 호출. raw 메트릭을 받아 카테고리별로 판정.
   /// rmsSlope/mdfSlope는 historyCount >= 30 일 때만 의미 있음.
   /// mw* 값이 null이면 M-wave 부분은 건너뜀.
-  /// rms/mdf 값은 1Hz 갱신 시점에만 non-null — 관리도(SPC) 학습/체크에 사용.
+  /// rms/mdf 값은 이제 10Hz 로 도착(매 메시지 non-null 가능)하지만, 관리도(SPC)
+  /// 학습/판정·연속카운터는 [isFullTick](1Hz full 메시지)에서만 수행한다.
   /// 자극(FES) 중에만 관리도 표본을 수집하고, 자극 중 위반 시 fatigue 후보.
   FatigueResult update({
     required double rmsSlope,
@@ -155,6 +156,7 @@ class FatigueEngine {
     double? rms,
     double? mdf,
     bool isStimulating = false,
+    bool isFullTick = false,
     double? mwAmp,
     double? mwArea,
     double? mwLatency,
@@ -165,16 +167,16 @@ class FatigueEngine {
 
     // ---- 관리도 — 자극 중 RMS/MDF 값(절대값) 표본 학습 ----
     // (slope SPC 는 baseline 이 거의 0 이라 band 가 너무 좁게 학습됨 → 사용 안 함)
-    if (isStimulating) {
+    // rms/mdf 가 10Hz 로 와도 학습은 1Hz(full tick)에서만 → 8표본=8초 가정 유지.
+    if (isStimulating && isFullTick) {
       if (rms != null) rmsChart.ingest(rms);
       if (mdf != null) mdfChart.ingest(mdf);
     }
 
-    // 판정·연속카운터는 1Hz full 샘플(rms/mdf 동반)에서만 갱신한다.
-    // 중간 10Hz(M-wave/env) 메시지가 consecutive 를 리셋하면 5연속이 누적되지
-    // 않아 RMS/MDF 경로 검출이 영영 발화하지 못한다.
-    final isDecisionTick = rms != null || mdf != null;
-    if (!isDecisionTick) {
+    // 판정·연속카운터는 1Hz full 메시지에서만 갱신한다.
+    // 중간 10Hz(rms/mdf/M-wave/env) 메시지가 consecutive 를 리셋하면 5연속이
+    // 누적되지 않아 RMS/MDF 경로 검출이 영영 발화하지 못한다.
+    if (!isFullTick) {
       return FatigueResult(
         detected: _latched,
         justTriggered: false,

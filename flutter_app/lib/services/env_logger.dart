@@ -1,15 +1,15 @@
 // FES 코스(약 5분) 동안 BLE로 수신한 ENV(Envelope) 샘플을 전량 누적하는 레코더.
 // 기존 _log(1Hz 다운샘플)와 달리 펌웨어 송신 주기(100ms, 10Hz) 그대로 기록해
 // 엑셀 시계열 분석용 고해상도 CSV(Time(ms),ENV_Value,...)를 만든다.
-// RMS/MDF(1Hz)·M-wave(검출 시)는 매 샘플마다 들어오지 않으므로,
+// RMS/MDF(10Hz)는 매 샘플마다 들어온다. M-wave(검출 시)는 이벤트성이라
 // 각 행에는 그 시점까지 수신된 "가장 최근" 값을 동봉한다(zero-order hold).
 import 'csv_save_stub.dart' if (dart.library.html) 'csv_save_web.dart';
 
 class EnvLogRecorder {
   final List<int> _timesMs = [];
   final List<double> _envValues = [];
-  final List<double> _rms = []; // 최근 RMS (1Hz 갱신)
-  final List<double> _mdf = []; // 최근 MDF (1Hz 갱신)
+  final List<double> _rms = []; // RMS (10Hz 갱신)
+  final List<double> _mdf = []; // MDF (10Hz 갱신)
   final List<double> _mwAmp = []; // 최근 M-wave 진폭 (검출 시 갱신)
   final List<double> _mwArea = []; // 최근 M-wave 면적
   final List<double> _mwLatency = []; // 최근 M-wave 잠복기

@@ -179,6 +179,8 @@ class SessionController extends ChangeNotifier {
         return;
       }
       await dataChar.setNotifyValue(true);
+      // 재연결 시 이전 리스너가 남아 같은 패킷을 중복 수신하는 것 방지
+      await _dataSub?.cancel();
       _dataSub = dataChar.lastValueStream.listen(_onCharData);
       _device = device;
       _cmdChar = cmdChar;
@@ -332,6 +334,8 @@ class SessionController extends ChangeNotifier {
 
       // ---- 피로 엔진 ----
       final hasMw = msg['mwa'] != null;
+      // rms/mdf 는 10Hz 로 도착. 1Hz full 메시지에만 들어오는 hc 로 full tick 판별.
+      final isFullTick = msg['hc'] != null;
       final result = engine.update(
         rmsSlope: st.rmsSlope,
         mdfSlope: st.mdfSlope,
@@ -339,6 +343,7 @@ class SessionController extends ChangeNotifier {
         rms: msg['rms'] != null ? (msg['rms'] as num).toDouble() : null,
         mdf: msg['mdf'] != null ? (msg['mdf'] as num).toDouble() : null,
         isStimulating: st.isStimulating,
+        isFullTick: isFullTick,
         mwAmp: hasMw ? (msg['mwa'] as num).toDouble() : null,
         mwArea: hasMw ? (msg['mwc'] as num).toDouble() : null,
         mwLatency: hasMw ? (msg['mwl'] as num).toDouble() : null,

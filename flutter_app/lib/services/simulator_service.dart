@@ -523,9 +523,10 @@ class SimulatorService {
       msg['mwn'] = _mwCount;
       _mwDirty = false;
     }
+    // rms/mdf 는 펌웨어와 동일하게 매 tick(10Hz) 송신 (값은 1Hz 갱신 → ZOH).
+    msg['rms'] = double.parse(_rms.toStringAsFixed(2));
+    msg['mdf'] = double.parse(_mdf.toStringAsFixed(2));
     if (isFullBoundary) {
-      msg['rms'] = double.parse(_rms.toStringAsFixed(2));
-      msg['mdf'] = double.parse(_mdf.toStringAsFixed(2));
       msg['rs'] = double.parse(_rmsSlope.toStringAsFixed(2));
       msg['ms'] = double.parse(_mdfSlope.toStringAsFixed(2));
       msg['hc'] = _rmsHist.length;
