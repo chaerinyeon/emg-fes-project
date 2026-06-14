@@ -402,6 +402,7 @@ class _HomePageState extends State<HomePage> {
             tsMs.toInt(),
             envForLog,
             marker: _pendingEnvMarker ?? '',
+            raw: (msg['raw'] as num?)?.toDouble() ?? 0, // 100ms 평균 ADC 원값
             rms: _rmsLast, // 10Hz 갱신값
             mdf: _mdfLast, // 10Hz 갱신값
             mwAmp: _st.mwAmp, // M-wave는 이벤트성 → 최근 검출값 유지(ZOH)

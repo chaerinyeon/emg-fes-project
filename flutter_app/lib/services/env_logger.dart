@@ -8,6 +8,7 @@ import 'csv_save_stub.dart' if (dart.library.html) 'csv_save_web.dart';
 class EnvLogRecorder {
   final List<int> _timesMs = [];
   final List<double> _envValues = [];
+  final List<double> _raw = []; // 100ms 평균 ADC 원값 (펌웨어 raw, 10Hz)
   final List<double> _rms = []; // RMS (10Hz 갱신)
   final List<double> _mdf = []; // MDF (10Hz 갱신)
   final List<double> _mwAmp = []; // 최근 M-wave 진폭 (검출 시 갱신)
@@ -24,6 +25,7 @@ class EnvLogRecorder {
   void start() {
     _timesMs.clear();
     _envValues.clear();
+    _raw.clear();
     _rms.clear();
     _mdf.clear();
     _mwAmp.clear();
@@ -38,11 +40,12 @@ class EnvLogRecorder {
 
   /// BLE 메시지 1건 기록. [timeMs]는 펌웨어 millis() 타임스탬프.
   /// [marker]는 그 시점에 누른 체감 강도 버튼(easy/medium/hard) 라벨.
-  /// [rms]/[mdf]/[mwAmp]/[mwArea]/[mwLatency]는 그 시점의 최근 값(없으면 0).
+  /// [raw]는 100ms 평균 ADC 원값. [rms]/[mdf]/[mwAmp]/[mwArea]/[mwLatency]는 그 시점의 최근 값(없으면 0).
   void add(
     int timeMs,
     double env, {
     String marker = '',
+    double raw = 0,
     double rms = 0,
     double mdf = 0,
     double mwAmp = 0,
@@ -52,6 +55,7 @@ class EnvLogRecorder {
     if (!_recording) return;
     _timesMs.add(timeMs);
     _envValues.add(env);
+    _raw.add(raw);
     _rms.add(rms);
     _mdf.add(mdf);
     _mwAmp.add(mwAmp);
@@ -60,14 +64,16 @@ class EnvLogRecorder {
     _markers.add(marker);
   }
 
-  /// `Time(ms),ENV_Value,RMS,MDF,MW_Amp,MW_Area,MW_Latency,Marker` 헤더의 CSV 문자열 생성.
+  /// `Time(ms),Raw_ADC,ENV_Value,RMS,MDF,MW_Amp,MW_Area,MW_Latency,Marker` 헤더의 CSV 문자열 생성.
   /// Time은 세션 첫 샘플 기준 상대 경과시간(ms)으로 변환해 0부터 시작.
   String toCsv() {
     final sb = StringBuffer()
-      ..writeln('Time(ms),ENV_Value,RMS,MDF,MW_Amp,MW_Area,MW_Latency,Marker');
+      ..writeln(
+          'Time(ms),Raw_ADC,ENV_Value,RMS,MDF,MW_Amp,MW_Area,MW_Latency,Marker');
     final t0 = _timesMs.isEmpty ? 0 : _timesMs.first;
     for (var i = 0; i < _timesMs.length; i++) {
       sb.writeln('${_timesMs[i] - t0},'
+          '${_raw[i].toStringAsFixed(1)},'
           '${_envValues[i].toStringAsFixed(1)},'
           '${_rms[i].toStringAsFixed(1)},'
           '${_mdf[i].toStringAsFixed(1)},'

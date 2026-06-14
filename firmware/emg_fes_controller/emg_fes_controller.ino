@@ -46,7 +46,7 @@ const int PIN_MASSAGER_DOWN   = 26;
 
 // ===== 신호처리 파라미터 =====
 const int SAMPLE_RATE = 1000;              // 1kHz 샘플링
-const int FFT_SIZE = 256;                  // FFT 윈도우 (256ms 분량)
+const int FFT_SIZE = 512;                  // FFT 윈도우 (256ms 분량)
 const int RMS_WINDOW = 1000;               // RMS 윈도우 (1초)
 const int HISTORY_SIZE = 60;               // 60초 분량 RMS/MDF 히스토리
 
@@ -802,24 +802,32 @@ void triggerStimulation(bool on) {
 // DC_OFFSET이 정확하지 않아도 흡수되도록 윈도우 평균을 빼고 RMS.
 // ============================================================
 float calculateRMS(int64_t sum, int64_t sumSq, int n) {
+
   if (n <= 0) return 0;
 
-  // variance = E[x²] - E[x]²
-  double mean = (double)sum / n;
   double meanSq = (double)sumSq / n;
-  double variance = meanSq - mean * mean;
-  if (variance < 0) variance = 0;
-  double rms = sqrt(variance);
 
-  // 10Hz로 계산하되 진단 로그는 1Hz로만 출력
+  double rms = sqrt(meanSq);
+
   static int diagCnt = 0;
+
   if (++diagCnt >= 10) {
     diagCnt = 0;
-    Serial.printf("[DIAG] raw100=%.0f emg100=%.1f cMean100=%.1f cMin=%d cMax=%d peak100=%d | RMS=%.1f MDF=%.1f ENV=%.1f\n",
-                  currentRaw10Hz, currentEmg10Hz, currentCenteredMean10Hz,
-                  currentMinCentered10Hz, currentMaxCentered10Hz, currentPeakAbs10Hz,
-                  rms, currentMDF, envLPF);
+
+    Serial.printf(
+      "[DIAG] raw100=%.0f emg100=%.1f cMean100=%.1f cMin=%d cMax=%d peak100=%d | RMS=%.1f MDF=%.1f ENV=%.1f\n",
+      currentRaw10Hz,
+      currentEmg10Hz,
+      currentCenteredMean10Hz,
+      currentMinCentered10Hz,
+      currentMaxCentered10Hz,
+      currentPeakAbs10Hz,
+      rms,
+      currentMDF,
+      envLPF
+    );
   }
+
   return (float)rms;
 }
 
