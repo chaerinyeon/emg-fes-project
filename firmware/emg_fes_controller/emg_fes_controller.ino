@@ -33,6 +33,7 @@
 #define SERVICE_UUID     "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
 #define CHAR_DATA_UUID   "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 #define CHAR_CMD_UUID    "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
+#define CHAR_RAW_UUID    "6E400004-B5A3-F393-E0A9-E50E24DCCA9E"  // RAW 1kHz 파형 (binary notify)
 #define BLE_DEVICE_NAME  "EMG-FES-01"
 
 // ===== 핀 설정 =====
@@ -78,6 +79,7 @@ const unsigned long MW_REFRACTORY_MS = 40;    // 같은 자극 중복 트리거 
 // ===== BLE 핸들 =====
 NimBLECharacteristic* dataChar = nullptr;
 NimBLECharacteristic* cmdChar  = nullptr;
+NimBLECharacteristic* rawChar  = nullptr;   // RAW 1kHz 파형 스트리밍 (binary)
 volatile bool deviceConnected = false;
 
 // ===== ADC 버퍼 / 10Hz 메트릭 생성 =====
@@ -115,6 +117,19 @@ volatile int latestMaxCentered10Hz = 0;
 // alpha=0.03 → 1kHz에서 약 5Hz LPF, 힘 줄 때 100~200ms 안에 따라옴
 volatile float envLPF = 0;
 const float ENV_LPF_ALPHA = 0.03f;
+
+// ===== RAW 1kHz 파형 스트리밍 (바이너리, 전용 캐릭터리스틱) =====
+// 매 샘플의 raw ADC를 100개(=100ms)씩 묶어 바이너리 패킷으로 보낸다.
+// 패킷 포맷 (little-endian):
+//   [uint32 firstSampleMs][uint16 count][int16 raw × count]
+// firstSampleMs = 세션 시작 후 첫 샘플의 ms 인덱스 (1kHz라 1샘플=1ms).
+//   → 폰에서 1ms 해상도 타임라인 복원 + 인덱스 불연속으로 패킷 누락 감지.
+volatile int16_t rawBatchFill[COMPUTE_INTERVAL];   // ISR 태스크가 채우는 중인 블록
+volatile int16_t rawBatchOut[COMPUTE_INTERVAL];    // 완성되어 송신 대기 중인 블록
+volatile uint32_t rawSampleCounter = 0;            // 세션 시작 후 누적 샘플 수
+volatile uint32_t rawBatchFirstIdx = 0;            // rawBatchOut 첫 샘플의 인덱스(ms)
+volatile int  rawBatchCount = 0;                    // rawBatchOut 유효 샘플 수
+volatile bool rawBatchReady = false;               // loop()에서 송신할 블록 대기 플래그
 
 // ===== FFT 버퍼 =====
 double vReal[FFT_SIZE];
@@ -244,6 +259,7 @@ void updateContractionState();
 void samplingTask(void* param);
 float calculateRMS(int64_t sum, int64_t sumSq, int n);
 float calculateMDF(int localWriteIdx);
+void sendRawBatch();
 
 // ============================================================
 // 1ms 타이머 ISR — analogRead는 IRAM-safe가 아니므로
@@ -327,7 +343,9 @@ void samplingTask(void* /*param*/) {
     if (absVal > blockPeakAbs) blockPeakAbs = absVal;
     if (centered < blockMinCentered) blockMinCentered = centered;
     if (centered > blockMaxCentered) blockMaxCentered = centered;
+    if (blockCount < COMPUTE_INTERVAL) rawBatchFill[blockCount] = (int16_t)raw;  // RAW 1kHz 캡처
     blockCount++;
+    rawSampleCounter++;          // 세션 시작 후 누적 샘플 인덱스 (1kHz=1ms)
 
     samplesSinceCompute++;
     if (samplesSinceCompute >= COMPUTE_INTERVAL) {
@@ -347,6 +365,14 @@ void samplingTask(void* /*param*/) {
       blockMinCentered = 32767;
       blockMaxCentered = -32768;
       blockCount = 0;
+
+      // RAW 1kHz 블록(100표본) 완성 → 송신 대기 버퍼로 스냅샷 (세션 동작 중에만)
+      if (systemRunning) {
+        for (int i = 0; i < COMPUTE_INTERVAL; i++) rawBatchOut[i] = rawBatchFill[i];
+        rawBatchCount = COMPUTE_INTERVAL;
+        rawBatchFirstIdx = rawSampleCounter - COMPUTE_INTERVAL;
+        rawBatchReady = true;
+      }
 
       samplesSinceCompute = 0;
       metricReady = true;          // 100ms마다 RMS/MDF 재계산 신호
@@ -458,6 +484,12 @@ void setupBLE() {
   // DATA characteristic (ESP32 → Phone, notify)
   dataChar = pService->createCharacteristic(
     CHAR_DATA_UUID,
+    NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
+  );
+
+  // RAW characteristic (ESP32 → Phone, notify) — 1kHz 파형 바이너리 스트림
+  rawChar = pService->createCharacteristic(
+    CHAR_RAW_UUID,
     NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
   );
 
@@ -651,6 +683,9 @@ void loop() {
   // BLE 송신은 100ms마다. raw/emg/env/rms/mdf 모두 같은 10Hz 행으로 송신.
   sendDataUpdate();
 
+  // RAW 1kHz 파형 바이너리 패킷 송신 (100ms마다 100표본씩, 전용 캐릭터리스틱).
+  sendRawBatch();
+
   // FES 타임아웃 안전장치
   if (isStimulating && (millis() - stimStartTime > STIM_TIMEOUT_MS)) {
     Serial.println("⏰ 자극 시간 초과 → OFF");
@@ -699,6 +734,11 @@ void handleCommand(JsonDocument& doc) {
     blockMinCentered = 32767;
     blockMaxCentered = -32768;
     for (int i = 0; i < RMS_WINDOW; i++) rawBuffer[i] = 0;
+    // RAW 1kHz 스트리밍 상태 리셋 — 인덱스를 세션 시작에 0으로 정렬
+    rawSampleCounter = 0;
+    rawBatchFirstIdx = 0;
+    rawBatchCount = 0;
+    rawBatchReady = false;
     portEXIT_CRITICAL(&timerMux);
     // M-wave 카운터/상태 리셋
     mwCount = 0;
@@ -987,6 +1027,46 @@ void sendDataUpdate() {
 
   dataChar->setValue((uint8_t*)json.c_str(), json.length());
   dataChar->notify();
+}
+
+// ============================================================
+// RAW 1kHz 파형 바이너리 송신
+// ----------------------------------------------------------
+// 완성된 100표본 블록을 [uint32 firstSampleMs][uint16 count][int16 raw×count]
+// 형식(little-endian)으로 rawChar에 notify. 한 패킷 = 6 + 200 = 206바이트.
+// (MTU 247 협상 기준. 폰에서 count/길이를 검증하므로 잘린 패킷은 폐기됨)
+// ============================================================
+void sendRawBatch() {
+  if (!deviceConnected || rawChar == nullptr) return;
+  if (!rawBatchReady) return;
+
+  uint32_t firstIdx;
+  int cnt;
+  int16_t local[COMPUTE_INTERVAL];
+
+  portENTER_CRITICAL(&timerMux);
+  if (!rawBatchReady) { portEXIT_CRITICAL(&timerMux); return; }
+  rawBatchReady = false;
+  firstIdx = rawBatchFirstIdx;
+  cnt = rawBatchCount;
+  for (int i = 0; i < cnt && i < COMPUTE_INTERVAL; i++) local[i] = rawBatchOut[i];
+  portEXIT_CRITICAL(&timerMux);
+
+  uint8_t buf[6 + 2 * COMPUTE_INTERVAL];
+  buf[0] = firstIdx & 0xFF;
+  buf[1] = (firstIdx >> 8) & 0xFF;
+  buf[2] = (firstIdx >> 16) & 0xFF;
+  buf[3] = (firstIdx >> 24) & 0xFF;
+  buf[4] = cnt & 0xFF;
+  buf[5] = (cnt >> 8) & 0xFF;
+  for (int i = 0; i < cnt; i++) {
+    int16_t v = local[i];
+    buf[6 + 2 * i]     = v & 0xFF;
+    buf[6 + 2 * i + 1] = (v >> 8) & 0xFF;
+  }
+
+  rawChar->setValue(buf, 6 + 2 * cnt);
+  rawChar->notify();
 }
 
 // ============================================================

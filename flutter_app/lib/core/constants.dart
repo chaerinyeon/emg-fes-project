@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 const String kServiceUuid = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
 const String kDataCharUuid = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
 const String kCmdCharUuid = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
+const String kRawCharUuid =
+    '6e400004-b5a3-f393-e0a9-e50e24dcca9e'; // RAW 1kHz 파형 (binary notify)
 const String kDeviceName = 'EMG-FES-01';
 
 // ===== 색상 =====

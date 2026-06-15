@@ -15,6 +15,7 @@ import '../services/csv_exporter.dart';
 import '../services/env_logger.dart';
 import '../services/fatigue_engine.dart';
 import '../services/profile_service.dart';
+import '../services/raw_logger.dart';
 import '../services/simulator_service.dart';
 import '../widgets/ai/ai_analysis_panel.dart';
 import '../widgets/ble/ble_bar.dart';
@@ -49,6 +50,7 @@ class _HomePageState extends State<HomePage> {
   BluetoothDevice? _device;
   BluetoothCharacteristic? _cmdChar;
   StreamSubscription<List<int>>? _dataSub;
+  StreamSubscription<List<int>>? _rawSub; // RAW 1kHz 바이너리 스트림 구독
   StreamSubscription<BluetoothConnectionState>? _connSub;
   StreamSubscription<List<ScanResult>>? _scanSub;
   bool _scanning = false;
@@ -115,6 +117,9 @@ class _HomePageState extends State<HomePage> {
   // ENV 고해상도 로깅 — BLE 수신 전량(10Hz) 기록 → Time(ms),ENV_Value CSV
   final EnvLogRecorder _envLog = EnvLogRecorder();
   String? _lastEnvCsvPath; // 마지막 저장 경로 — 재공유용
+
+  // RAW 고해상도 로깅 — 1kHz 원신호 전량 기록 → Time(ms),Raw_ADC CSV (raw_*.csv)
+  final RawLogRecorder _rawLog = RawLogRecorder();
   String? _pendingEnvMarker; // ENV 로그용 마커 (_pendingMarker는 1Hz 로그가 소비)
 
   @override
@@ -231,12 +236,14 @@ class _HomePageState extends State<HomePage> {
       final services = await device.discoverServices();
       BluetoothCharacteristic? dataChar;
       BluetoothCharacteristic? cmdChar;
+      BluetoothCharacteristic? rawChar; // RAW 1kHz (구버전 펌웨어엔 없을 수 있음 → optional)
       for (final s in services) {
         if (s.uuid.toString().toLowerCase() != kServiceUuid) continue;
         for (final c in s.characteristics) {
           final u = c.uuid.toString().toLowerCase();
           if (u == kDataCharUuid) dataChar = c;
           if (u == kCmdCharUuid) cmdChar = c;
+          if (u == kRawCharUuid) rawChar = c;
         }
       }
       if (dataChar == null || cmdChar == null) {
@@ -254,6 +261,14 @@ class _HomePageState extends State<HomePage> {
       // 그대로 2배로 쌓인다. 새 구독 전에 반드시 이전 구독을 취소한다.
       await _dataSub?.cancel();
       _dataSub = dataChar.lastValueStream.listen(_onCharData);
+
+      // RAW 1kHz 바이너리 스트림 — 펌웨어가 지원할 때만 구독 (JSON 채널과 분리).
+      await _rawSub?.cancel();
+      _rawSub = null;
+      if (rawChar != null) {
+        await rawChar.setNotifyValue(true);
+        _rawSub = rawChar.lastValueStream.listen(_onRawData);
+      }
 
       setState(() {
         _device = device;
@@ -274,6 +289,8 @@ class _HomePageState extends State<HomePage> {
     try {
       await _dataSub?.cancel();
       _dataSub = null;
+      await _rawSub?.cancel();
+      _rawSub = null;
       await _connSub?.cancel();
       _connSub = null;
       await _device?.disconnect();
@@ -299,6 +316,12 @@ class _HomePageState extends State<HomePage> {
         _connState = 'disconnected';
       });
     }
+  }
+
+  // ---------- RAW 1kHz 바이너리 수신 ----------
+  // JSON이 아닌 바이너리 패킷. 세션 기록 중일 때만 raw 로거에 누적된다.
+  void _onRawData(List<int> bytes) {
+    _rawLog.addPacket(bytes);
   }
 
   // ---------- 메시지 수신 ----------
@@ -719,6 +742,7 @@ class _HomePageState extends State<HomePage> {
 
     _log.clear();
     _envLog.start(); // ENV 10Hz 전량 기록 시작
+    _rawLog.start(); // RAW 1kHz 원신호 전량 기록 시작
     _pendingMarker = null;
     _pendingEnvMarker = null;
     _st.sessionMaxRms = 0;
@@ -755,6 +779,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> _stopSession() async {
     _send({'cmd': 'stop'});
     _envLog.stop();
+    _rawLog.stop();
 
     // 오늘 vs 평소 비교 스냅샷 — recordSession 이 오늘 값을 이력에 넣기 '전'에 캡처.
     // 비교/환산(분·배수)은 여기서 Dart 로 미리 계산해 '완성된 문구'로 넘긴다.
@@ -835,6 +860,14 @@ class _HomePageState extends State<HomePage> {
       _lastEnvCsvPath = envSaved;
       _toast('ENV CSV 저장: $envSaved (${_envLog.length} samples)', Colors.green);
       await _shareEnvCsv();
+    }
+
+    // RAW 1kHz 원신호 CSV (Time(ms),Raw_ADC) 저장 — 필터링·주파수 재분석·딥러닝용
+    final rawSaved = await _rawLog.save(subjectId: gProfileService.active?.id);
+    if (rawSaved != null) {
+      final dropMsg = _rawLog.dropped > 0 ? ', ~${_rawLog.dropped} dropped' : '';
+      _toast('RAW CSV 저장: $rawSaved (${_rawLog.length} samples$dropMsg)',
+          _rawLog.dropped > 0 ? Colors.orange : Colors.green);
     }
 
     // 운동 종료 → AI분석 탭으로 이동해 오늘의 운동을 자동 분석.
