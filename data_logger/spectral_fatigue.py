@@ -37,6 +37,35 @@ BAND_HIGH = 450.0          # 대역 상한 Hz
 NOTCH_HZ = (60.0, 120.0, 180.0)   # 전원 노이즈 + 하모닉
 NOTCH_BW = 2.0             # notch 반폭 Hz (±2Hz bin 제거)
 
+ARTIFACT_THRESHOLD = 1000.0  # |centered| 가 이 값 초과면 FES 자극 스파이크로 간주 (펌웨어와 동일)
+BLANK_MS = 5                 # 자극 검출 후 blanking 할 시간(ms)
+
+
+def blank_artifacts(samples: np.ndarray, threshold: float, blank_ms: int):
+    """FES 자극 스파이크 구간을 선형보간으로 제거(blanking). (blanked 배열, 제거 샘플 수) 반환.
+
+    펌웨어는 실시간이라 'hold' 로 대체하지만, 오프라인에선 양끝 깨끗한 표본으로
+    선형보간해 불연속을 줄인다(스펙트럼 누설 최소화 → MDF/SMR 신뢰도↑).
+    """
+    s = samples.astype(np.float64)
+    dc = np.median(s)                       # 견고한 DC 추정
+    centered = s - dc
+    n = len(s)
+    blank_n = max(1, int(blank_ms * SAMPLE_RATE / 1000))
+
+    blanked = np.abs(centered) > threshold
+    # 각 검출 지점을 앞으로 blank_n 만큼 확장 (자극 스파이크 꼬리 포함)
+    for idx in np.where(blanked)[0]:
+        blanked[idx:min(n, idx + blank_n + 1)] = True
+
+    clean_idx = np.where(~blanked)[0]
+    if clean_idx.size < 2:
+        return s, int(blanked.sum())        # 거의 다 자극이면 보간 포기
+
+    out = s.copy()
+    out[blanked] = np.interp(np.where(blanked)[0], clean_idx, s[clean_idx])
+    return out, int(blanked.sum())
+
 
 def _band_mask(freqs: np.ndarray) -> np.ndarray:
     """20~450Hz 대역 + 60/120/180Hz notch 를 적용한 bin 마스크(True=사용)."""
@@ -126,6 +155,12 @@ def main():
     ap.add_argument("--k", type=int, default=5, help="SMR 차수 (FInsm_k, 기본 5)")
     ap.add_argument("--plot", action="store_true", help="시계열 그래프 표시")
     ap.add_argument("--out", type=Path, help="지표 시계열 CSV 저장 경로(선택)")
+    ap.add_argument("--no-blank", action="store_true",
+                    help="FES 자극 blanking 끄기 (오염 비교용)")
+    ap.add_argument("--artifact-thresh", type=float, default=ARTIFACT_THRESHOLD,
+                    help=f"자극 스파이크 임계 |centered| (기본 {ARTIFACT_THRESHOLD:.0f})")
+    ap.add_argument("--blank-ms", type=int, default=BLANK_MS,
+                    help=f"자극 검출 후 blanking 시간 ms (기본 {BLANK_MS})")
     args = ap.parse_args()
 
     for path in args.csv:
@@ -138,10 +173,21 @@ def main():
             print(f"⚠️ {path.name}: 샘플 부족({len(samples)} < {FFT_SIZE})")
             continue
 
+        blanked_n = 0
+        if not args.no_blank:
+            samples, blanked_n = blank_artifacts(
+                samples, args.artifact_thresh, args.blank_ms)
+
         t, mdf, mnf, smr = analyze(samples, args.k)
 
         print(f"\n=== {path.name} ===")
         print(f"  길이: {len(samples)} samples ({dur:.1f}s), 윈도우 {len(t)}개")
+        if args.no_blank:
+            print("  blanking: OFF (자극 오염 포함)")
+        else:
+            pct = 100.0 * blanked_n / max(1, len(samples))
+            print(f"  blanking: {blanked_n} samples 제거 ({pct:.1f}%), "
+                  f"thresh={args.artifact_thresh:.0f}, {args.blank_ms}ms")
         print(f"  MDF : {mdf.mean():6.1f} Hz  (변화 {pct_change(mdf):+5.1f}%)  ← 피로 시 감소")
         print(f"  MNF : {mnf.mean():6.1f} Hz  (변화 {pct_change(mnf):+5.1f}%)  ← 피로 시 감소")
         print(f"  SMR : {smr.mean():8.3g}  (변화 {pct_change(smr):+5.1f}%)  ← 피로 시 증가 (FInsm{args.k})")

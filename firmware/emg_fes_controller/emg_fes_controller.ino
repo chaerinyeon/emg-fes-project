@@ -76,6 +76,14 @@ const int MW_WINDOW_END_MS = 30;              // 자극 후 ms
 const int MW_WINDOW_LEN = (MW_WINDOW_END_MS - MW_WINDOW_START_MS) + 1;  // 26 샘플 (1kHz)
 const unsigned long MW_REFRACTORY_MS = 40;    // 같은 자극 중복 트리거 방지 (FES ≤ 25Hz 가정)
 
+// ===== FES 자극 blanking =====
+// 자극 검출 직후 이 시간(ms)만큼 표본을 RMS/MDF/ENV 계산에서 제외(직전 깨끗한 값으로 hold).
+// 기본 5ms = 자극 스파이크 + 증폭기 회복 구간(MW_WINDOW_START_MS와 동일).
+//   → RMS/MDF/SMR 의 주 오염원인 거대 스파이크 제거, 펄스 사이 데이터는 대부분 보존.
+// 값을 ~30ms로 키우면 M-wave(유발반응)까지 제외되지만, 25Hz 자극에선 펄스 간격이
+// 40ms뿐이라 데이터가 거의 다 blanking 되므로 권장하지 않음.
+const int STIM_BLANK_MS = 5;
+
 // ===== BLE 핸들 =====
 NimBLECharacteristic* dataChar = nullptr;
 NimBLECharacteristic* cmdChar  = nullptr;
@@ -117,6 +125,9 @@ volatile int latestMaxCentered10Hz = 0;
 // alpha=0.03 → 1kHz에서 약 5Hz LPF, 힘 줄 때 100~200ms 안에 따라옴
 volatile float envLPF = 0;
 const float ENV_LPF_ALPHA = 0.03f;
+
+// FES blanking 용: 마지막으로 blanking 되지 않은(깨끗한) centered 값. hold 대체에 사용.
+int lastCleanCentered = 0;
 
 // ===== RAW 1kHz 파형 스트리밍 (바이너리, 전용 캐릭터리스틱) =====
 // 매 샘플의 raw ADC를 100개(=100ms)씩 묶어 바이너리 패킷으로 보낸다.
@@ -285,17 +296,15 @@ void samplingTask(void* /*param*/) {
 
     int raw = analogRead(PIN_EMG_RAW);
     int centered = raw - DC_OFFSET;
-
-    // 실시간 envelope 업데이트 (정류 + IIR LPF) — 버퍼와 무관하게 항상 갱신
     int absVal = centered < 0 ? -centered : centered;
-    envLPF = ENV_LPF_ALPHA * (float)absVal + (1.0f - ENV_LPF_ALPHA) * envLPF;
+    unsigned long nowMs = millis();
 
-    // ===== M-wave: 자극 artifact 감지 + 윈도우 캡처 =====
+    // ===== M-wave: 자극 artifact 감지 + 윈도우 캡처 (원신호 기준) =====
     // FES는 외부에서 수동 제어 → ESP는 자극 켜짐을 모르므로, 세션 동작 중
     // (systemRunning)이면 항상 artifact를 탐지한다. refractory 경과 후 큰
     // 스파이크가 들어오면 artifact로 간주, 5~30ms 동안 centered 샘플 수집.
+    // M-wave 측정은 '진짜' 원신호로 해야 하므로 blanking 이전에 수행한다.
     {
-      unsigned long nowMs = millis();
       if (systemRunning && !mwCapturing &&
           absVal > MW_ARTIFACT_THRESHOLD &&
           (nowMs - mwArtifactAtMs) > MW_REFRACTORY_MS) {
@@ -317,33 +326,53 @@ void samplingTask(void* /*param*/) {
       }
     }
 
+    // ===== FES 자극 blanking =====
+    // 자극 검출 직후 STIM_BLANK_MS 동안의 표본은 거대한 자극 스파이크라
+    // RMS/MDF/SMR/ENV 를 오염시킨다. 그 구간은 '직전 깨끗한 값'으로 대체(hold)해
+    // 계산 버퍼에 넣는다. → RMS/MDF 가 자극에 오염되지 않는다.
+    // (raw 1kHz 로그와 M-wave 검출은 위에서 진짜 원신호로 이미 처리함)
+    bool stimBlank = systemRunning && mwArtifactAtMs != 0 &&
+                     (nowMs - mwArtifactAtMs) < (unsigned long)STIM_BLANK_MS;
+    int procCentered;
+    if (stimBlank) {
+      procCentered = lastCleanCentered;       // hold (자극 구간 대체)
+    } else {
+      procCentered = centered;
+      lastCleanCentered = centered;           // 깨끗한 값 갱신
+    }
+    int procAbs = procCentered < 0 ? -procCentered : procCentered;
+
+    // 실시간 envelope (정류 + IIR LPF) — blanking 적용값으로 갱신
+    envLPF = ENV_LPF_ALPHA * (float)procAbs + (1.0f - ENV_LPF_ALPHA) * envLPF;
+
     // 슬라이딩 윈도우 + 100ms 블록 통계
     portENTER_CRITICAL(&timerMux);
 
-    // 1초 RMS 윈도우: 오래된 표본을 빼고 새 표본을 더해 running sum 유지
+    // 1초 RMS 윈도우: 오래된 표본을 빼고 새 표본을 더해 running sum 유지 (blanking 적용)
     int old = rawBuffer[writeIdx];
-    rawBuffer[writeIdx] = centered;
+    rawBuffer[writeIdx] = procCentered;       // FFT(MDF/SMR)도 이 버퍼를 쓰므로 blanking 반영
     if (windowCount < RMS_WINDOW) {
       windowCount++;
-      windowSum += centered;
-      windowSumSq += (int64_t)centered * centered;
+      windowSum += procCentered;
+      windowSumSq += (int64_t)procCentered * procCentered;
     } else {
-      windowSum += (int64_t)centered - old;
-      windowSumSq += (int64_t)centered * centered - (int64_t)old * old;
+      windowSum += (int64_t)procCentered - old;
+      windowSumSq += (int64_t)procCentered * procCentered - (int64_t)old * old;
     }
 
     writeIdx++;
     if (writeIdx >= RMS_WINDOW) writeIdx = 0;
     bufferFilled = (windowCount >= RMS_WINDOW);
 
-    // 100ms 블록 대표값 누적: raw/emg를 ENV와 같은 10Hz 행에 맞춘다.
-    blockRawSum += raw;
-    blockCenteredSum += centered;
-    blockAbsSum += absVal;
-    if (absVal > blockPeakAbs) blockPeakAbs = absVal;
-    if (centered < blockMinCentered) blockMinCentered = centered;
-    if (centered > blockMaxCentered) blockMaxCentered = centered;
-    if (blockCount < COMPUTE_INTERVAL) rawBatchFill[blockCount] = (int16_t)raw;  // RAW 1kHz 캡처
+    // 100ms 블록 대표값. raw 평균/RAW 1kHz 로그는 '진짜' 원신호,
+    // EMG/peak/centered 통계는 blanking 적용값으로 누적.
+    blockRawSum += raw;                        // 진짜 raw 평균 (진단용)
+    blockCenteredSum += procCentered;
+    blockAbsSum += procAbs;
+    if (procAbs > blockPeakAbs) blockPeakAbs = procAbs;
+    if (procCentered < blockMinCentered) blockMinCentered = procCentered;
+    if (procCentered > blockMaxCentered) blockMaxCentered = procCentered;
+    if (blockCount < COMPUTE_INTERVAL) rawBatchFill[blockCount] = (int16_t)raw;  // RAW 1kHz: 진짜 원신호(오프라인용)
     blockCount++;
     rawSampleCounter++;          // 세션 시작 후 누적 샘플 인덱스 (1kHz=1ms)
 
@@ -716,6 +745,7 @@ void handleCommand(JsonDocument& doc) {
     baselineRMS = 0;
     rmsRatio = 1.0;
     envLPF = 0;
+    lastCleanCentered = 0;      // FES blanking hold 값 리셋
     metricsValid = false;
     currentRMS = 0;
     currentMDF = 0;
