@@ -1,0 +1,65 @@
+family,file,dur_s,n_rows,sampling_hz,has_raw,has_env,has_rms_mdf,has_mw,markers,verdict,fatigue_onset_t,mw_peak_t,mw_decline_pct,mw_saturated,rmsmdf_2sigma_onset_t,fw_fatigue_rows,analyzable,skip_reason,path
+iphone_1차,emg_20260516_205633.csv,8.001,9,1.1,True,True,True,False,,fw_none,,,,,,0.0,False,logger 계열(M-wave 없음),data_from_iphone/1차/emg_20260516_205633.csv
+iphone_1차,emg_20260516_212124.csv,8.0,9,1.1,True,True,True,False,,fw_none,,,,,,0.0,False,logger 계열(M-wave 없음),data_from_iphone/1차/emg_20260516_212124.csv
+iphone_1차,emg_20260516_213205.csv,33.0,34,1.0,True,True,True,False,,fw_none,,,,,,0.0,False,logger 계열(M-wave 없음),data_from_iphone/1차/emg_20260516_213205.csv
+iphone_1차,emg_20260613_025755.csv,107.0,108,1.0,True,True,True,False,,fw_none,,,,,,0.0,False,logger 계열(M-wave 없음),data_from_iphone/1차/emg_20260613_025755.csv
+iphone_1차,env_20260613_025755.csv,107.9,1034,9.6,False,True,False,False,,,,,,,,,False,RMS/MDF 컬럼 없음 (ENV만 있는 포맷),data_from_iphone/1차/env_20260613_025755.csv
+iphone_1차,env_20260613_142714.csv,187.8,3514,18.7,False,True,False,False,"hard,medium",,,,,,,,False,RMS/MDF 컬럼 없음 (ENV만 있는 포맷),data_from_iphone/1차/env_20260613_142714.csv
+iphone_1차,env_20260613_143857.csv,385.2,3620,9.4,False,True,False,False,"hard,medium",,,,,,,,False,RMS/MDF 컬럼 없음 (ENV만 있는 포맷),data_from_iphone/1차/env_20260613_143857.csv
+iphone_1차,env_20260613_150649.csv,839.703,7865,9.4,False,True,False,False,medium,,,,,,,,False,RMS/MDF 컬럼 없음 (ENV만 있는 포맷),data_from_iphone/1차/env_20260613_150649.csv
+iphone_1차,env_20260613_154525.csv,444.6,4007,9.0,False,True,True,True,medium,potentiation,,401.1,-31.0,False,387.7,,True,,data_from_iphone/1차/env_20260613_154525.csv
+iphone_1차,env_20260613_155627.csv,352.6,3338,9.5,False,True,True,True,,fatigue,307.9,213.1,-28.0,True,,,True,,data_from_iphone/1차/env_20260613_155627.csv
+iphone_1차,env_20260613_160317.csv,174.6,1719,9.8,False,True,True,True,,fatigue,104.6,59.0,-23.5,False,,,True,,data_from_iphone/1차/env_20260613_160317.csv
+iphone_1차,env_20260613_165300.csv,450.8,4233,9.4,False,True,True,True,,fatigue,282.8,205.5,-74.9,True,,,True,,data_from_iphone/1차/env_20260613_165300.csv
+iphone_1차,env_20260613_171454.csv,356.4,3426,9.6,False,True,True,True,,fatigue,255.0,248.9,-27.9,False,,,True,,data_from_iphone/1차/env_20260613_171454.csv
+iphone_1차,env_20260613_172934.csv,404.5,3743,9.3,False,True,True,True,,fatigue,83.2,77.0,-87.1,False,,,True,,data_from_iphone/1차/env_20260613_172934.csv
+iphone_1차,env_20260613_182422.csv,202.1,1904,9.4,False,True,True,True,,fatigue,32.1,25.8,-56.0,False,,,True,,data_from_iphone/1차/env_20260613_182422.csv
+iphone_1차,env_20260613_184019.csv,321.6,2942,9.1,False,True,True,True,,fatigue,167.3,74.3,-25.1,False,,,True,,data_from_iphone/1차/env_20260613_184019.csv
+iphone_1차,env_20260613_185834.csv,281.7,2569,9.1,False,True,True,True,,fatigue,145.8,36.4,-25.2,False,,,True,,data_from_iphone/1차/env_20260613_185834.csv
+iphone_1차,env_20260613_203210.csv,240.4,2384,9.9,False,True,True,True,,potentiation,,1.4,0.0,False,,,True,,data_from_iphone/1차/env_20260613_203210.csv
+iphone_1차,env_20260613_204337.csv,338.0,3351,9.9,False,True,True,True,,potentiation,,1.4,0.0,False,,,True,,data_from_iphone/1차/env_20260613_204337.csv
+iphone_1차,env_20260613_205824.csv,55.2,544,9.9,False,True,True,True,,potentiation,,19.6,0.0,True,,,True,,data_from_iphone/1차/env_20260613_205824.csv
+iphone_1차,env_20260613_212846.csv,355.1,3382,9.5,False,True,True,True,,potentiation,,1.4,0.0,False,,,True,,data_from_iphone/1차/env_20260613_212846.csv
+iphone_1차,env_20260613_214105.csv,272.3,2520,9.3,False,True,True,True,,fatigue,110.4,38.4,-51.4,False,,,True,,data_from_iphone/1차/env_20260613_214105.csv
+iphone_1차,env_20260613_221429.csv,314.9,2836,9.0,False,True,True,True,,potentiation,,115.8,-15.2,False,,,True,,data_from_iphone/1차/env_20260613_221429.csv
+iphone_1차,env_20260613_231507.csv,318.6,5740,18.0,False,True,True,True,,potentiation,,1.6,0.0,False,168.3,,True,,data_from_iphone/1차/env_20260613_231507.csv
+iphone_1차,env_20260613_235049.csv,133.9,1207,9.0,False,True,True,True,,fatigue,102.5,15.8,-20.4,False,,,True,,data_from_iphone/1차/env_20260613_235049.csv
+iphone_1차,env_20260614_001026.csv,334.909,3016,9.0,False,True,True,True,,fatigue,242.4,235.7,-27.5,False,,,True,,data_from_iphone/1차/env_20260614_001026.csv
+iphone_1차,env_20260614_004914.csv,358.807,3231,9.0,False,True,True,True,,potentiation,,192.5,-10.7,False,175.8,,True,,data_from_iphone/1차/env_20260614_004914.csv
+iphone_1차,env_20260614_010038.csv,394.503,3553,9.0,False,True,True,True,,fatigue,105.8,29.1,-42.5,False,,,True,,data_from_iphone/1차/env_20260614_010038.csv
+iphone_1차,env_20260614_215944.csv,149.1,1344,9.0,True,True,True,True,"easy,hard,medium",potentiation,,22.5,0.0,True,,,True,,data_from_iphone/1차/env_20260614_215944.csv
+iphone_1차,env_20260614_220658.csv,165.9,1495,9.0,True,True,True,True,"hard,medium",potentiation,,2.5,0.0,False,,,True,,data_from_iphone/1차/env_20260614_220658.csv
+iphone_1차,env_20260614_221751.csv,118.6,1070,9.0,True,True,True,True,"hard,medium",potentiation,,2.5,0.0,False,95.8,,True,,data_from_iphone/1차/env_20260614_221751.csv
+iphone_1차,env_20260614_222607.csv,160.6,1448,9.0,True,True,True,True,"hard,medium",potentiation,,155.8,-7.3,False,,,True,,data_from_iphone/1차/env_20260614_222607.csv
+iphone_1차,env_20260614_223252.csv,98.7,891,9.0,True,True,True,True,hard,potentiation,,95.8,-7.7,False,,,True,,data_from_iphone/1차/env_20260614_223252.csv
+iphone_1차,env_20260614_223907.csv,108.2,976,9.0,True,True,True,True,"hard,medium",potentiation,,79.1,-1.0,False,,,True,,data_from_iphone/1차/env_20260614_223907.csv
+iphone_1차,env_20260614_235749.csv,135.3,1220,9.0,True,True,True,True,hard,fatigue,22.5,2.5,-55.1,False,,,True,,data_from_iphone/1차/env_20260614_235749.csv
+iphone_1차,env_20260615_000151.csv,132.202,1192,9.0,True,True,True,True,"hard,medium",potentiation,,122.5,-13.0,False,,,True,,data_from_iphone/1차/env_20260615_000151.csv
+iphone_1차,env_20260615_000907.csv,265.6,2393,9.0,True,True,True,True,hard,fatigue,222.5,209.1,-48.0,False,49.1,,True,,data_from_iphone/1차/env_20260615_000907.csv
+iphone_1차,env_20260615_003002.csv,252.7,2277,9.0,True,True,True,True,hard,potentiation,,72.5,0.0,True,,,True,,data_from_iphone/1차/env_20260615_003002.csv
+iphone_1차,env_20260615_005404.csv,111.801,1008,9.0,True,True,True,True,medium,potentiation,,102.5,-18.6,False,,,True,,data_from_iphone/1차/env_20260615_005404.csv
+iphone_1차,env_20260615_005803.csv,108.1,975,9.0,True,True,True,True,,potentiation,,92.5,-0.3,False,,,True,,data_from_iphone/1차/env_20260615_005803.csv
+iphone_1차,env_20260615_010823.csv,157.6,1421,9.0,True,True,True,True,hard,fatigue,49.1,32.5,-39.7,False,,,True,,data_from_iphone/1차/env_20260615_010823.csv
+iphone_1차,env_20260615_011350.csv,181.702,1638,9.0,True,True,True,True,"hard,medium",potentiation,,169.1,-9.2,False,,,True,,data_from_iphone/1차/env_20260615_011350.csv
+iphone_1차,env_20260615_012302.csv,190.4,1716,9.0,True,True,True,True,hard,potentiation,,55.8,0.0,True,,,True,,data_from_iphone/1차/env_20260615_012302.csv
+iphone_1차,env_20260615_012619.csv,114.7,1035,9.0,True,True,True,True,,potentiation,,22.5,0.0,True,,,True,,data_from_iphone/1차/env_20260615_012619.csv
+iphone_1차,env_20260615_014637.csv,561.1,5052,9.0,True,True,True,True,medium,fatigue,412.5,262.5,-70.3,False,85.8,,True,,data_from_iphone/1차/env_20260615_014637.csv
+iphone_2차,env_20260713_232612.csv,149.5,1348,9.0,True,True,True,True,hard,fatigue,92.5,62.5,-30.0,True,49.1,,True,,data_from_iphone/2차/env_20260713_232612.csv
+logger_subjectA,20260505_135632.csv,100.0,101,1.0,True,False,True,False,session_start,fw_none,,,,,,0.0,False,logger 계열(M-wave 없음),data/subject_A/20260505_135632.csv
+logger_subjectA,20260505_135830.csv,389.0,390,1.0,True,False,True,False,"session_start,session_stop",fw_none,,,,,,0.0,False,logger 계열(M-wave 없음),data/subject_A/20260505_135830.csv
+logger_subjectA,20260505_140516.csv,1111.0,1112,1.0,True,False,True,False,"session_start,session_stop",fw_none,,,,,,0.0,False,logger 계열(M-wave 없음),data/subject_A/20260505_140516.csv
+logger_subjectB,20260505_142457.csv,319.0,320,1.0,True,False,True,False,"session_start,session_stop",fw_none,,,,,,0.0,False,logger 계열(M-wave 없음),data/subject_B/20260505_142457.csv
+logger_bench,emg_20260507_175710.csv,0.0,0,0.0,True,False,True,False,,fw_none,,,,,,0.0,False,logger 계열(M-wave 없음),data_logger/data/emg_20260507_175710.csv
+logger_bench,emg_20260507_175855.csv,169.0,170,1.0,True,False,True,False,,fw_none,,,,,,0.0,False,logger 계열(M-wave 없음),data_logger/data/emg_20260507_175855.csv
+logger_bench,emg_20260507_180213.csv,52.0,53,1.0,True,False,True,False,,fw_none,,,,,,0.0,False,logger 계열(M-wave 없음),data_logger/data/emg_20260507_180213.csv
+logger_bench,emg_20260507_180309.csv,83.0,84,1.0,True,False,True,False,,fw_none,,,,,,0.0,False,logger 계열(M-wave 없음),data_logger/data/emg_20260507_180309.csv
+logger_bench,emg_20260507_180808.csv,65.0,66,1.0,True,False,True,False,,fw_none,,,,,,0.0,False,logger 계열(M-wave 없음),data_logger/data/emg_20260507_180808.csv
+logger_bench,emg_20260507_181147.csv,180.0,181,1.0,True,False,True,False,,fw_none,,,,,,0.0,False,logger 계열(M-wave 없음),data_logger/data/emg_20260507_181147.csv
+logger_bench,emg_20260507_181751.csv,94.0,95,1.0,True,False,True,False,,fw_none,,,,,,0.0,False,logger 계열(M-wave 없음),data_logger/data/emg_20260507_181751.csv
+logger_bench,emg_20260507_183016.csv,126.0,127,1.0,True,False,True,False,,fw_none,,,,,,0.0,False,logger 계열(M-wave 없음),data_logger/data/emg_20260507_183016.csv
+logger_bench,emg_20260507_183705.csv,218.0,219,1.0,True,False,True,False,,fw_none,,,,,,0.0,False,logger 계열(M-wave 없음),data_logger/data/emg_20260507_183705.csv
+logger_bench,emg_20260507_193420.csv,0.0,0,0.0,True,False,True,False,,fw_none,,,,,,0.0,False,logger 계열(M-wave 없음),data_logger/data/emg_20260507_193420.csv
+logger_bench,emg_20260507_193948.csv,0.0,0,0.0,True,False,True,False,,fw_none,,,,,,0.0,False,logger 계열(M-wave 없음),data_logger/data/emg_20260507_193948.csv
+logger_bench,emg_20260507_194120.csv,95.0,96,1.0,True,False,True,False,,fw_none,,,,,,0.0,False,logger 계열(M-wave 없음),data_logger/data/emg_20260507_194120.csv
+logger_bench,emg_20260507_195814.csv,154.0,155,1.0,True,False,True,False,,fw_none,,,,,,0.0,False,logger 계열(M-wave 없음),data_logger/data/emg_20260507_195814.csv
+logger_bench,emg_20260507_211135.csv,24.0,25,1.0,True,False,True,False,,fw_none,,,,,,0.0,False,logger 계열(M-wave 없음),data_logger/data/emg_20260507_211135.csv
