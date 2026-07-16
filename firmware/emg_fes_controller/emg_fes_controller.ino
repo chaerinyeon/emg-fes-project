@@ -48,7 +48,7 @@ const int PIN_MASSAGER_DOWN   = 26;
 
 // ===== 신호처리 파라미터 =====
 const int SAMPLE_RATE = 1000;              // 1kHz 샘플링
-const int FFT_SIZE = 512;                  // FFT 윈도우 (256ms 분량)
+const int FFT_SIZE = 512;                  // FFT 윈도우 (512표본=512ms 분량 @1kHz)
 const int RMS_WINDOW = 1000;               // RMS 윈도우 (1초)
 const int HISTORY_SIZE = 60;               // 60초 분량 RMS/MDF 히스토리
 
@@ -76,6 +76,25 @@ const int MW_WINDOW_END_MS = 30;              // 자극 후 ms
 const int MW_WINDOW_LEN = (MW_WINDOW_END_MS - MW_WINDOW_START_MS) + 1;  // 26 샘플 (1kHz)
 const unsigned long MW_REFRACTORY_MS = 40;    // 같은 자극 중복 트리거 방지 (FES ≤ 25Hz 가정)
 
+// M-wave 검출 유효성(신뢰도) 판정 파라미터.
+// 목적: 검출 실패(노이즈 피크·창끝값)를 '유효'로 오인해 데이터셋 정답과 SPC baseline을
+//       오염시키는 것을 막는다. 유효하지 않아도 원값은 CSV에 남기되 mwv 플래그로 구분.
+const float MW_AMP_MIN = 80.0f;      // peak-to-peak 이보다 작으면 유발반응 아님(노이즈)
+const int   MW_LAT_MIN_MS = 6;       // 생리적 M-wave 잠복 하한 (창 시작 5ms 직후=아티팩트 잔향 배제)
+const int   MW_LAT_MAX_MS = 24;      // 이보다 늦으면(특히 30=창 끝) 피크 못 찾은 검출 실패
+
+// ===== 적응형 자극 트리거 임계값 =====
+// 고정 임계(MW_ARTIFACT_THRESHOLD)는 자극 스파이크가 작아지면(전극·세기 변화) 검출을
+// 통째로 놓쳐 M-wave가 절반씩 빈다. 대신 '최근 자극 스파이크 크기'를 추적해 그 일부로
+// 문턱을 자동 조절한다.  임계 = clamp( FLOOR, FRAC×최근스파이크EMA, MW_ARTIFACT_THRESHOLD )
+//   - FLOOR : 이 밑으로는 안 내려감(자발 EMG·노이즈 오검출 방지)
+//   - 상한  : 고정값(1000)을 넘지 않음(스파이크가 커도 기존만큼은 민감)
+const float MW_ADAPT_FRAC = 0.4f;    // 스파이크 EMA 의 이 비율을 문턱으로
+const float MW_ADAPT_FLOOR = 400.0f; // 문턱 하한
+const float MW_ADAPT_ALPHA = 0.2f;   // EMA 갱신율 (0=고정, 1=즉시)
+// 초기 EMA: 초기 문턱이 기존 고정값과 같도록 (FRAC×EMA0 = MW_ARTIFACT_THRESHOLD)
+const float MW_ADAPT_EMA0 = (float)MW_ARTIFACT_THRESHOLD / MW_ADAPT_FRAC;
+
 // ===== FES 자극 blanking =====
 // 자극 검출 직후 이 시간(ms)만큼 표본을 RMS/MDF/ENV 계산에서 제외(직전 깨끗한 값으로 hold).
 // 기본 5ms = 자극 스파이크 + 증폭기 회복 구간(MW_WINDOW_START_MS와 동일).
@@ -93,7 +112,7 @@ volatile bool deviceConnected = false;
 // ===== ADC 버퍼 / 10Hz 메트릭 생성 =====
 // 1kHz로 샘플링하되, CSV/BLE 행은 ENV와 같은 100ms 간격(10Hz)으로 만든다.
 // RMS는 최근 1초(1000표본) 슬라이딩 윈도우를 100ms마다 다시 계산한다.
-// MDF는 최근 FFT_SIZE(256표본) 윈도우를 100ms마다 다시 계산한다.
+// MDF는 최근 FFT_SIZE(512표본=512ms) 윈도우를 100ms마다 다시 계산한다.
 volatile int rawBuffer[RMS_WINDOW];
 volatile int writeIdx = 0;                 // 다음 기록 위치 (RMS_WINDOW로 wrap)
 volatile int windowCount = 0;              // 현재 RMS 윈도우에 들어있는 표본 수, 최대 1000
@@ -192,11 +211,14 @@ uint16_t sustainedCount = 0;
 volatile unsigned long mwArtifactAtMs = 0;
 volatile bool mwCapturing = false;
 volatile int mwSampleCount = 0;
+volatile float mwArtifactEMA = MW_ADAPT_EMA0;   // 최근 자극 스파이크 peak 의 EMA(적응형 문턱용)
+volatile int mwArtifactPeak = 0;                // 현재 캡처 중 자극 스파이크 peak |centered|
 volatile int mwSamples[MW_WINDOW_LEN + 4];     // +여유
 volatile bool mwReady = false;                 // 캡처 완료 → loop()에서 메트릭 계산
 float currentMwAmp = 0;                        // peak-to-peak (ADC counts)
 float currentMwArea = 0;                       // Σ|sample| (정류 면적)
 float currentMwLatency = 0;                    // artifact 후 peak까지 ms
+bool currentMwValid = false;                   // 검출 신뢰도 판정 통과 여부 (SPC·baseline은 이것만 사용)
 bool mwDirty = false;                          // 새 M-wave가 있어 다음 송신 포함
 uint32_t mwCount = 0;                          // 세션 누적 M-wave 검출 수
 
@@ -208,7 +230,7 @@ int   currentPeakAbs10Hz = 0;
 int   currentMinCentered10Hz = 0;
 int   currentMaxCentered10Hz = 0;
 float currentRMS = 0;            // 최근 1초 sliding RMS, 10Hz 갱신
-float currentMDF = 0;            // 최근 256ms MDF, 10Hz 갱신
+float currentMDF = 0;            // 최근 512ms MDF, 10Hz 갱신
 bool  metricsValid = false;      // RMS 1초 윈도우가 채워진 뒤 true
 float currentRMSSlope = 0;
 float currentMDFSlope = 0;
@@ -227,7 +249,7 @@ struct CChart {
   float samples[16];
   int   n = 0;
   int   baselineSamples = 8;
-  float sigmaMult = 3.0f;
+  float sigmaMult = 2.0f;
   bool  established = false;
   float mean = 0, sd = 0;
 };
@@ -305,15 +327,22 @@ void samplingTask(void* /*param*/) {
     // 스파이크가 들어오면 artifact로 간주, 5~30ms 동안 centered 샘플 수집.
     // M-wave 측정은 '진짜' 원신호로 해야 하므로 blanking 이전에 수행한다.
     {
+      // 적응형 문턱: 최근 스파이크 EMA×FRAC, 단 [FLOOR, 고정값] 으로 clamp.
+      float mwThresh = MW_ADAPT_FRAC * mwArtifactEMA;
+      if (mwThresh < MW_ADAPT_FLOOR) mwThresh = MW_ADAPT_FLOOR;
+      if (mwThresh > (float)MW_ARTIFACT_THRESHOLD) mwThresh = (float)MW_ARTIFACT_THRESHOLD;
+
       if (systemRunning && !mwCapturing &&
-          absVal > MW_ARTIFACT_THRESHOLD &&
+          (float)absVal > mwThresh &&
           (nowMs - mwArtifactAtMs) > MW_REFRACTORY_MS) {
         mwArtifactAtMs = nowMs;
         mwCapturing = true;
         mwSampleCount = 0;
+        mwArtifactPeak = absVal;              // 스파이크 peak 추적 시작
       }
       if (mwCapturing) {
         unsigned long since = nowMs - mwArtifactAtMs;
+        if (absVal > mwArtifactPeak) mwArtifactPeak = absVal;   // dead-zone 포함 스파이크 peak
         if (since >= (unsigned long)MW_WINDOW_START_MS &&
             since <= (unsigned long)MW_WINDOW_END_MS) {
           if (mwSampleCount < MW_WINDOW_LEN) {
@@ -322,6 +351,9 @@ void samplingTask(void* /*param*/) {
         } else if (since > (unsigned long)MW_WINDOW_END_MS) {
           mwCapturing = false;
           mwReady = true;
+          // 이번 자극 스파이크 peak 로 EMA 갱신 → 다음 문턱이 실제 크기를 따라감
+          mwArtifactEMA = MW_ADAPT_ALPHA * (float)mwArtifactPeak +
+                          (1.0f - MW_ADAPT_ALPHA) * mwArtifactEMA;
         }
       }
     }
@@ -465,12 +497,12 @@ void setup() {
   digitalWrite(PIN_MASSAGER_UP, LOW);
   digitalWrite(PIN_MASSAGER_DOWN, LOW);
 
-  // 관리도 초기화 — RMS/MDF 8표본, M-wave 6표본, ±3σ
-  ccInit(rmsChart, 8, 3.0f);
-  ccInit(mdfChart, 8, 3.0f);
-  ccInit(mwAmpChart, 6, 3.0f);
-  ccInit(mwAreaChart, 6, 3.0f);
-  ccInit(mwLatChart, 6, 3.0f);
+  // 관리도 초기화 — RMS/MDF 8표본, M-wave 6표본, ±2σ
+  ccInit(rmsChart, 8, 2.0f);
+  ccInit(mdfChart, 8, 2.0f);
+  ccInit(mwAmpChart, 6, 2.0f);
+  ccInit(mwAreaChart, 6, 2.0f);
+  ccInit(mwLatChart, 6, 2.0f);
 
   analogReadResolution(12);
 
@@ -573,7 +605,7 @@ void loop() {
     portEXIT_CRITICAL(&timerMux);
 
     // ===== 10Hz: ENV와 같은 시간축으로 RMS/MDF 재계산 =====
-    // RMS는 최근 1초 sliding window, MDF는 최근 256ms FFT window.
+    // RMS는 최근 1초 sliding window, MDF는 최근 512ms FFT window.
     bool rmsReady = (localWindowCount >= RMS_WINDOW);
     bool mdfReady = (localWindowCount >= FFT_SIZE);
 
@@ -615,7 +647,8 @@ void loop() {
         bool rmsHigh = systemRunning && ccAbove(rmsChart, currentRMS);
         bool mdfLow  = systemRunning && ccBelow(mdfChart, currentMDF);
         bool rmsMdfGroup = rmsHigh && mdfLow;
-        bool mwGroup = mwAmpChart.established && mwAreaChart.established &&
+        bool mwGroup = currentMwValid &&
+                       mwAmpChart.established && mwAreaChart.established &&
                        mwLatChart.established &&
                        ccBelow(mwAmpChart, currentMwAmp) &&
                        ccBelow(mwAreaChart, currentMwArea) &&
@@ -698,10 +731,17 @@ void loop() {
       currentMwAmp = (float)(mx - mn);
       currentMwArea = (float)absSum;
       currentMwLatency = (float)(MW_WINDOW_START_MS + peakIdx);
+      // ── 검출 신뢰도 판정 ──
+      // 진폭이 노이즈 수준이거나, 피크가 생리범위를 벗어나면(특히 창 끝=피크 못 찾음)
+      // '무효'로 표시. 원값(amp/area/lat)은 그대로 두어 CSV/학습엔 남기고,
+      // SPC baseline·즉시판정에서만 제외해 오검출로 인한 오작동을 막는다.
+      currentMwValid = (currentMwAmp >= MW_AMP_MIN) &&
+                       (currentMwLatency >= (float)MW_LAT_MIN_MS) &&
+                       (currentMwLatency <= (float)MW_LAT_MAX_MS);
       mwDirty = true;
       mwCount++;
-      // 관리도 baseline 학습 (세션 동작 중 초반 M-wave 6회 → mean·σ 확정)
-      if (systemRunning) {
+      // 관리도 baseline 학습 — 유효한 M-wave만 (세션 동작 중 초반 6회 → mean·σ 확정)
+      if (systemRunning && currentMwValid) {
         ccIngest(mwAmpChart, currentMwAmp);
         ccIngest(mwAreaChart, currentMwArea);
         ccIngest(mwLatChart, currentMwLatency);
@@ -777,9 +817,12 @@ void handleCommand(JsonDocument& doc) {
     mwReady = false;
     mwDirty = false;
     mwArtifactAtMs = 0;
+    mwArtifactEMA = MW_ADAPT_EMA0;   // 적응형 문턱 초기화 (초기 문턱=기존 고정값)
+    mwArtifactPeak = 0;
     currentMwAmp = 0;
     currentMwArea = 0;
     currentMwLatency = 0;
+    currentMwValid = false;
     resetFatigueCharts();          // 관리도 baseline 재학습
     muscleState = "calibrating";
     // 수축 상태머신 리셋
@@ -876,9 +919,14 @@ float calculateRMS(int64_t sum, int64_t sumSq, int n) {
 
   if (n <= 0) return 0;
 
+  // 창 평균을 빼서 RMS를 계산(= 표본 표준편차). 고정 DC_OFFSET이 실제와 어긋나거나
+  // 전극 드리프트가 있어도 창별 DC를 자동 흡수한다(MDF의 창평균 제거와 동일 취지).
+  double mean = (double)sum / n;
   double meanSq = (double)sumSq / n;
+  double variance = meanSq - mean * mean;
+  if (variance < 0) variance = 0;      // 부동소수 오차로 음수 되는 것 방지
 
-  double rms = sqrt(meanSq);
+  double rms = sqrt(variance);
 
   static int diagCnt = 0;
 
@@ -905,6 +953,18 @@ float calculateRMS(int64_t sum, int64_t sumSq, int n) {
 // ============================================================
 // MDF 계산 (RAW 핀 FFT)
 // ============================================================
+// 60Hz 전원 노이즈 + 하모닉(120/180Hz) ±NOTCH_BW 를 MDF 계산에서 제외.
+// 전원 노이즈가 크면 그 성분이 중앙주파수를 끌어올려 '피로에 의한 MDF 하강'을 가린다.
+static const float MDF_NOTCH_HZ[] = {60.0f, 120.0f, 180.0f};
+static const float MDF_NOTCH_BW = 2.0f;   // ±2Hz bin 제거
+static inline bool mdfNotched(float freqHz) {
+  for (int k = 0; k < 3; k++) {
+    if (freqHz >= MDF_NOTCH_HZ[k] - MDF_NOTCH_BW &&
+        freqHz <= MDF_NOTCH_HZ[k] + MDF_NOTCH_BW) return true;
+  }
+  return false;
+}
+
 float calculateMDF(int localWriteIdx) {
   // 원형 버퍼에서 "가장 최근 FFT_SIZE개"를 시간순으로 읽는다.
   int start = (localWriteIdx - FFT_SIZE + RMS_WINDOW) % RMS_WINDOW;
@@ -935,6 +995,7 @@ float calculateMDF(int localWriteIdx) {
 
   double totalPower = 0;
   for (int i = firstBin; i <= lastBin; i++) {
+    if (mdfNotched((float)i * BIN_HZ)) continue;   // 60/120/180Hz 전원 노이즈 제외
     double power = vReal[i] * vReal[i];
     totalPower += power;
   }
@@ -943,6 +1004,7 @@ float calculateMDF(int localWriteIdx) {
   double halfPower = totalPower / 2.0;
   double cumPower = 0;
   for (int i = firstBin; i <= lastBin; i++) {
+    if (mdfNotched((float)i * BIN_HZ)) continue;   // notch 와 동일하게 건너뜀
     double power = vReal[i] * vReal[i];
     cumPower += power;
     if (cumPower >= halfPower) {
@@ -999,7 +1061,7 @@ void sendDataUpdate() {
   doc["emg"]  = currentEmg10Hz;          // 100ms 평균 |centered|
   doc["env"]  = envLPF;                  // envelope LPF, 10Hz 송신
   doc["rms"]  = currentRMS;              // 최근 1초 sliding RMS, 10Hz 계산
-  doc["mdf"]  = currentMDF;              // 최근 256ms MDF, 10Hz 계산
+  doc["mdf"]  = currentMDF;              // 최근 512ms MDF, 10Hz 계산
   doc["v"]    = metricsValid;            // 초기 1초 전에는 false
   doc["run"]  = systemRunning;
   // FES 외부 수동 제어 → 세션 동작 중을 '자극 중'으로 보고 (앱 엔진·CSV 일관성).
@@ -1015,6 +1077,7 @@ void sendDataUpdate() {
     doc["mwa"] = currentMwAmp;
     doc["mwc"] = currentMwArea;
     doc["mwl"] = currentMwLatency;
+    doc["mwv"] = currentMwValid;    // 검출 신뢰도 플래그 (CSV MW_Valid 컬럼)
     doc["mwn"] = mwCount;
     mwDirty = false;
   }

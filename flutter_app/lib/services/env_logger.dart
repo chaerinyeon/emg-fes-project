@@ -14,6 +14,7 @@ class EnvLogRecorder {
   final List<double> _mwAmp = []; // 최근 M-wave 진폭 (검출 시 갱신)
   final List<double> _mwArea = []; // 최근 M-wave 면적
   final List<double> _mwLatency = []; // 최근 M-wave 잠복기
+  final List<int> _mwValid = []; // 최근 M-wave 검출 신뢰도(1/0) — 실패값 마스킹용
   final List<String> _markers = []; // 'easy'/'medium'/'hard' 등, 보통은 ''
   bool _recording = false;
 
@@ -31,6 +32,7 @@ class EnvLogRecorder {
     _mwAmp.clear();
     _mwArea.clear();
     _mwLatency.clear();
+    _mwValid.clear();
     _markers.clear();
     _recording = true;
   }
@@ -51,6 +53,7 @@ class EnvLogRecorder {
     double mwAmp = 0,
     double mwArea = 0,
     double mwLatency = 0,
+    bool mwValid = false,
   }) {
     if (!_recording) return;
     _timesMs.add(timeMs);
@@ -61,15 +64,17 @@ class EnvLogRecorder {
     _mwAmp.add(mwAmp);
     _mwArea.add(mwArea);
     _mwLatency.add(mwLatency);
+    _mwValid.add(mwValid ? 1 : 0);
     _markers.add(marker);
   }
 
-  /// `Time(ms),Raw_ADC,ENV_Value,RMS,MDF,MW_Amp,MW_Area,MW_Latency,Marker` 헤더의 CSV 문자열 생성.
+  /// `Time(ms),Raw_ADC,ENV_Value,RMS,MDF,MW_Amp,MW_Area,MW_Latency,MW_Valid,Marker` 헤더의 CSV 문자열 생성.
+  /// MW_Valid: 그 시점 최근 M-wave 검출의 신뢰도(1=유효,0=실패/무효). 실패 검출값 마스킹용.
   /// Time은 세션 첫 샘플 기준 상대 경과시간(ms)으로 변환해 0부터 시작.
   String toCsv() {
     final sb = StringBuffer()
       ..writeln(
-          'Time(ms),Raw_ADC,ENV_Value,RMS,MDF,MW_Amp,MW_Area,MW_Latency,Marker');
+          'Time(ms),Raw_ADC,ENV_Value,RMS,MDF,MW_Amp,MW_Area,MW_Latency,MW_Valid,Marker');
     final t0 = _timesMs.isEmpty ? 0 : _timesMs.first;
     for (var i = 0; i < _timesMs.length; i++) {
       sb.writeln('${_timesMs[i] - t0},'
@@ -80,6 +85,7 @@ class EnvLogRecorder {
           '${_mwAmp[i].toStringAsFixed(1)},'
           '${_mwArea[i].toStringAsFixed(1)},'
           '${_mwLatency[i].toStringAsFixed(1)},'
+          '${_mwValid[i]},'
           '${_markers[i]}');
     }
     return sb.toString();

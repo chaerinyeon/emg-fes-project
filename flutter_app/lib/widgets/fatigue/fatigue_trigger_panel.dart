@@ -4,7 +4,7 @@ import '../../core/constants.dart';
 import '../../core/models.dart';
 
 /// 관리도(SPC) 기반 피로 트리거 표시.
-/// - 운동 초반 8점으로 학습한 mean ± 3σ 가 임계치.
+/// - 운동 초반 8점으로 학습한 mean ± 2σ 가 임계치.
 /// - 조건1: 현재 RMS > UCL
 /// - 조건2: 현재 MDF < LCL
 class FatigueTriggerPanel extends StatelessWidget {

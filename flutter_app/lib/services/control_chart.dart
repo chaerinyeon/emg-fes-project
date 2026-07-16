@@ -9,7 +9,7 @@ import 'dart:math';
 class ControlChart {
   ControlChart({
     this.baselineSamples = 8,
-    this.sigmaMultiplier = 3.0,
+    this.sigmaMultiplier = 2.0,
   });
 
   final int baselineSamples;

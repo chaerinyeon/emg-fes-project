@@ -315,6 +315,7 @@ class SessionController extends ChangeNotifier {
         if (msg['mwa'] != null) st.mwAmp = (msg['mwa'] as num).toDouble();
         if (msg['mwc'] != null) st.mwArea = (msg['mwc'] as num).toDouble();
         if (msg['mwl'] != null) st.mwLatency = (msg['mwl'] as num).toDouble();
+        if (msg['mwv'] != null) st.mwValid = msg['mwv'] as bool;
         if (msg['mwn'] != null) st.mwCount = (msg['mwn'] as num).toInt();
       }
 
@@ -347,6 +348,7 @@ class SessionController extends ChangeNotifier {
         mwAmp: hasMw ? (msg['mwa'] as num).toDouble() : null,
         mwArea: hasMw ? (msg['mwc'] as num).toDouble() : null,
         mwLatency: hasMw ? (msg['mwl'] as num).toDouble() : null,
+        mwValid: hasMw ? (msg['mwv'] as bool? ?? true) : true,
       );
       st.engineFatigueDetected = result.detected;
       st.engineConsecutive = result.consecutive;

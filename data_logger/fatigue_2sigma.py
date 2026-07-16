@@ -43,6 +43,27 @@ def load(path: Path) -> pd.DataFrame:
         raise SkipFile(f"RMS/MDF 컬럼 없음 (ENV만 있는 포맷)")
     df = df.copy()
     df["t_s"] = (df["Time(ms)"] - df["Time(ms)"].iloc[0]) / 1000.0
+    # MW_Valid 컬럼이 있으면(펌웨어 신규 포맷) 무효 검출의 M-wave 값을 NaN 처리.
+    # → 유발응답 피로 분석이 노이즈/검출실패값에 오염되지 않음(데이터셋=정답 정합성).
+    if "MW_Valid" in df.columns:
+        bad = df["MW_Valid"].astype(float) < 0.5
+        for col in ("MW_Amp", "MW_Area", "MW_Latency"):
+            if col in df.columns:
+                df.loc[bad, col] = np.nan
+    elif "MW_Area" in df.columns and len(df) > 5:
+        # 구 데이터(신뢰도 플래그 없음): 검출이 멈추면 앱이 마지막 값을 계속 반복(ZOH).
+        # 동일 MW_Area가 '정상 홀드(≈1.5초 자극주기)'보다 오래 반복되면 얼어붙은 stale 값
+        # → NaN. 4초 이상 동일값 구간만 제거(정상 펄스간 홀드는 보존).
+        dt = np.median(np.diff(df["Time(ms)"].to_numpy())) / 1000.0
+        stale_rows = max(2, round(4.0 / (dt if dt > 0 else 0.1)))
+        a = df["MW_Area"].to_numpy(dtype=float)
+        change = np.r_[True, a[1:] != a[:-1]]
+        grp = np.cumsum(change)
+        run_len = pd.Series(grp).groupby(grp).transform("size").to_numpy()
+        stale = run_len > stale_rows
+        for col in ("MW_Amp", "MW_Area", "MW_Latency"):
+            if col in df.columns:
+                df.loc[stale, col] = np.nan
     # 워밍업(RMS 또는 MDF 가 0) 구간 제거
     df = df[(df["RMS"] > 0) & (df["MDF"] > 0)].reset_index(drop=True)
     return df
@@ -165,8 +186,11 @@ def analyze_mwave(win: pd.DataFrame) -> dict:
 
     onset = int(np.argmax(confirmed)) if confirmed.any() else None
     n_tail = max(1, len(area) // 5)
-    tail_mu = float(np.nanmean(area[-n_tail:]))
-    decline = (tail_mu - peak_val) / peak_val * 100 if peak_val else 0.0
+    tail = area[-n_tail:]
+    tail = tail[~np.isnan(tail)]                 # 꼬리가 전부 무효(NaN)일 때 경고 방지
+    tail_mu = float(np.mean(tail)) if tail.size else float("nan")
+    decline = (tail_mu - peak_val) / peak_val * 100 \
+        if (peak_val and not np.isnan(tail_mu)) else 0.0
     return {
         "mw_ok": True, "mw_sat": sat,
         "mw_ref_mu": ref_mu, "mw_ref_sd": ref_sd, "mw_lcl": mw_lcl,

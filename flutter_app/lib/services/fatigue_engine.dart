@@ -68,7 +68,7 @@ class FatigueEngine {
     this.rmsThreshold = 20.0,
     this.mdfThreshold = -3.0,
     this.consecutiveTrigger = 5,
-    double sigmaMultiplier = 3.0,
+    double sigmaMultiplier = 2.0,
   })  : rmsChart = ControlChart(sigmaMultiplier: sigmaMultiplier),
         mdfChart = ControlChart(sigmaMultiplier: sigmaMultiplier),
         // M-wave 는 burst 당 1점이라 sample 도착이 느림 → baseline 6점
@@ -160,8 +160,11 @@ class FatigueEngine {
     double? mwAmp,
     double? mwArea,
     double? mwLatency,
+    bool mwValid = true,
   }) {
-    if (mwAmp != null && mwArea != null && mwLatency != null) {
+    // 신뢰도(mwValid) 통과한 검출만 SPC baseline·판정에 반영.
+    // 무효 검출(노이즈·창끝값)로 즉시 FES 차단이 오작동하는 것을 막는다.
+    if (mwValid && mwAmp != null && mwArea != null && mwLatency != null) {
       _ingestMw(mwAmp, mwArea, mwLatency);
     }
 

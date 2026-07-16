@@ -29,6 +29,7 @@ import '../widgets/fatigue/fatigue_banner.dart';
 import '../widgets/fatigue/fatigue_dialog.dart';
 import '../widgets/fatigue/fatigue_trigger_panel.dart';
 import '../widgets/measurement/measurement_request_dialog.dart';
+import '../widgets/setup/rest_countdown_dialog.dart';
 import '../widgets/setup/workout_setup_sheet.dart';
 import '../widgets/pipeline/contraction_panel.dart';
 import '../widgets/pipeline/pipeline_diagram.dart';
@@ -78,6 +79,8 @@ class _HomePageState extends State<HomePage> {
   double _envLast = 0;
   double _rmsLast = 0;
   double _mdfLast = 0;
+  int _lastMwFreshMs = -1; // 마지막으로 '새' M-wave를 받은 시각(ms). ZOH 홀드 staleness 판정용.
+  static const int _mwStaleMs = 4000; // 이 시간 넘게 새 검출이 없으면 홀드값=stale → 무효 처리
   double _lastEnvPushT = -1.0; // ENV push의 마지막 t (시간 기반 데시메이션)
   final AppStatus _st = AppStatus();
 
@@ -367,6 +370,7 @@ class _HomePageState extends State<HomePage> {
       if (running && !_st.isRunning) {
         _lastLoggedSec = null;
         _lastEnvPushT = -1.0;
+        _lastMwFreshMs = -1; // 새 세션 → M-wave staleness 타이머 리셋
       }
 
       if (running) {
@@ -403,6 +407,7 @@ class _HomePageState extends State<HomePage> {
 
         // M-wave 메트릭 (새 검출이 있을 때만 펌웨어가 송신)
         if (msg['mwa'] != null) {
+          _lastMwFreshMs = tsMs.toInt(); // 새 검출 도착 → staleness 타이머 리셋
           _st.mwAmp = (msg['mwa'] as num).toDouble();
           _push(_mwAmpSeries, Sample(t, _st.mwAmp)); // 진폭 시계열 → 차트
         }
@@ -413,6 +418,9 @@ class _HomePageState extends State<HomePage> {
         if (msg['mwl'] != null) {
           _st.mwLatency = (msg['mwl'] as num).toDouble();
           _push(_mwLatSeries, Sample(t, _st.mwLatency)); // 잠복기 시계열 → 차트
+        }
+        if (msg['mwv'] != null) {
+          _st.mwValid = msg['mwv'] as bool; // 검출 신뢰도 플래그 (실패값 마스킹용)
         }
         if (msg['mwn'] != null) {
           _st.mwCount = (msg['mwn'] as num).toInt();
@@ -431,6 +439,11 @@ class _HomePageState extends State<HomePage> {
             mwAmp: _st.mwAmp, // M-wave는 이벤트성 → 최근 검출값 유지(ZOH)
             mwArea: _st.mwArea,
             mwLatency: _st.mwLatency,
+            // 검출 신뢰도 + staleness: 새 M-wave가 _mwStaleMs 넘게 안 오면
+            // 홀드된 값은 얼어붙은 옛 값(가짜 평탄구간)이므로 무효 처리.
+            mwValid: _st.mwValid &&
+                _lastMwFreshMs >= 0 &&
+                (tsMs.toInt() - _lastMwFreshMs) <= _mwStaleMs,
           );
           _pendingEnvMarker = null;
         }
@@ -774,6 +787,19 @@ class _HomePageState extends State<HomePage> {
     _st.mwAreaDeclinePct = null;
     _st.mwLatencyDeltaMs = null;
     _send({'cmd': 'start'});
+
+    // 세션 시작 직후 '무부하 15초' 안내 팝업.
+    // FES 자극기는 수동으로 켜서 매 세션 자극 시작 시점이 다르고 하드웨어로는 알 수 없다.
+    // 초반에 힘을 주지 않는 구간을 만들어 두면 그 구간의 자극은 자발 EMG 오염이 없어,
+    // 데이터에서 자극 시작점을 찾아 세션 간 시간축을 정렬할 수 있다(그 세션의 M-wave
+    // 기준선으로도 쓰인다). 끝나는 순간 마커를 찍어 경계를 CSV 에 남긴다.
+    if (mounted) {
+      await showRestCountdownDialog(
+        context,
+        seconds: kRestWindowSec,
+        onFinished: () => _sendMarker(kRestEndMarker),
+      );
+    }
   }
 
   Future<void> _stopSession() async {
@@ -854,20 +880,31 @@ class _HomePageState extends State<HomePage> {
       _toast('CSV 저장 실패', Colors.orange);
     }
 
-    // ENV 고해상도 CSV (Time(ms),ENV_Value) 저장 + 공유 시트
+    // ENV 고해상도 CSV (Time(ms),ENV_Value) 저장
     final envSaved = await _envLog.save(subjectId: gProfileService.active?.id);
     if (envSaved != null) {
       _lastEnvCsvPath = envSaved;
       _toast('ENV CSV 저장: $envSaved (${_envLog.length} samples)', Colors.green);
-      await _shareEnvCsv();
+    } else if (!_envLog.isEmpty) {
+      _toast('ENV CSV 저장 실패', Colors.orange);
     }
 
-    // RAW 1kHz 원신호 CSV (Time(ms),Raw_ADC) 저장 — 필터링·주파수 재분석·딥러닝용
+    // RAW 1kHz 원신호 CSV (Time(ms),Raw_ADC) 저장 — 필터링·주파수 재분석·딥러닝용.
+    // ★ 공유 시트보다 반드시 '먼저' 저장한다. 공유 시트는 사용자가 닫아야 반환되는
+    //   모달이라, 뒤에 두면 시트를 안 닫은 세션의 raw 가 영영 저장되지 않는다.
     final rawSaved = await _rawLog.save(subjectId: gProfileService.active?.id);
     if (rawSaved != null) {
       final dropMsg = _rawLog.dropped > 0 ? ', ~${_rawLog.dropped} dropped' : '';
       _toast('RAW CSV 저장: $rawSaved (${_rawLog.length} samples$dropMsg)',
           _rawLog.dropped > 0 ? Colors.orange : Colors.green);
+    } else if (!_rawLog.isEmpty) {
+      // 데이터가 있는데 null 이면 파일 쓰기 실패 — 조용히 넘기면 원인 추적이 불가능하다.
+      _toast('RAW CSV 저장 실패 (${_rawLog.length} samples)', Colors.red);
+    }
+
+    // 모든 저장이 끝난 뒤에 공유 시트 — 여기서 블록돼도 CSV 는 이미 디스크에 있다.
+    if (envSaved != null) {
+      await _shareEnvCsv();
     }
 
     // 운동 종료 → AI분석 탭으로 이동해 오늘의 운동을 자동 분석.
@@ -1331,7 +1368,7 @@ class _HomePageState extends State<HomePage> {
           SlopesChart(
             rmsSlopeQueue: _rmsSlope,
             mdfSlopeQueue: _mdfSlope,
-            // 관리도 UCL/LCL → 슬로프 등가 (= 3σ/mean × 100)
+            // 관리도 UCL/LCL → 슬로프 등가 (= 2σ/mean × 100)
             rmsSlopeUcl:
                 (_st.rmsCcUcl != null && _st.rmsCcMean != null &&
                         _st.rmsCcMean! > 0.01)

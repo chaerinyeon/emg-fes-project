@@ -5,7 +5,7 @@ class Sample {
 }
 
 /// 오늘의 컨디션 — 세션 시작 전 사용자가 입력.
-/// 모든 컨디션에 공통으로 **3σ Shewhart 표준**을 적용.
+/// 모든 컨디션에 공통으로 **2σ 관리한계**를 적용(설계: SPC 2σ, 5초 지속).
 /// 컨디션 값은 기록·코칭 노트·향후 자극 강도 추천용으로만 사용.
 enum TodayCondition {
   good('좋음'),
@@ -15,8 +15,8 @@ enum TodayCondition {
   final String label;
   const TodayCondition(this.label);
 
-  /// 모든 컨디션 공통 — Shewhart 3σ.
-  double get sigma => 3.0;
+  /// 모든 컨디션 공통 — 관리한계 2σ.
+  double get sigma => 2.0;
 }
 
 class AppStatus {
@@ -51,6 +51,7 @@ class AppStatus {
   double mwAmp = 0; // 최신 peak-to-peak (ADC counts)
   double mwArea = 0; // 최신 정류 면적 (Σ|sample|)
   double mwLatency = 0; // 최신 peak까지의 ms
+  bool mwValid = false; // 최신 검출의 신뢰도 판정 통과 여부 (펌웨어 mwv)
   int mwCount = 0; // 세션 누적 검출 수
 
   // 자체 fatigue 엔진 결과 (FatigueEngine이 채움)
@@ -79,17 +80,17 @@ class AppStatus {
   // ===== 관리도(SPC) — 개인화 RMS/MDF 임계치 =====
   // FatigueEngine 이 매 update 시 채움. mean / UCL / LCL 은 8점 모이면 확정.
   double? rmsCcMean;
-  double? rmsCcUcl;        // 평균 + 3σ
+  double? rmsCcUcl;        // 평균 + 2σ
   double? mdfCcMean;
-  double? mdfCcLcl;        // 평균 - 3σ
+  double? mdfCcLcl;        // 평균 - 2σ
   int rmsCcSamples = 0;
   int mdfCcSamples = 0;
 
   // ===== 관리도(SPC) — 개인화 M-wave 임계치 (6점 학습) =====
   double? mwAmpCcMean;
-  double? mwAmpCcLcl;       // 평균 - 3σ (진폭 하한)
+  double? mwAmpCcLcl;       // 평균 - 2σ (진폭 하한)
   double? mwAreaCcMean;
   double? mwAreaCcLcl;
   double? mwLatCcMean;
-  double? mwLatCcUcl;       // 평균 + 3σ (잠복기 상한)
+  double? mwLatCcUcl;       // 평균 + 2σ (잠복기 상한)
 }

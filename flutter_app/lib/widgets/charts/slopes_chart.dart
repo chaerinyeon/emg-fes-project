@@ -10,7 +10,7 @@ class SlopesChart extends StatelessWidget {
   final Queue<Sample> rmsSlopeQueue;
   final Queue<Sample> mdfSlopeQueue;
   // 관리도(값 차트)에서 derive 한 슬로프 등가 임계.
-  //   rmsSlopeUcl = (UCL_rms - mean_rms) / mean_rms * 100   (≈ 3σ/mean × 100)
+  //   rmsSlopeUcl = (UCL_rms - mean_rms) / mean_rms * 100   (≈ 2σ/mean × 100)
   //   mdfSlopeLcl = (LCL_mdf - mean_mdf) / mean_mdf * 100
   // 8점 학습 완료 전엔 null → 선 안 그림.
   final double? rmsSlopeUcl;
@@ -121,7 +121,7 @@ class SlopesChart extends StatelessWidget {
             const SizedBox(height: 2),
             const Text(
               '30초 선형회귀 변화율. 점선은 관리도 UCL/LCL을 슬로프 등가로 환산한 값 '
-              '(= 3σ/mean × 100). 8점 학습 후 자동 표시.',
+              '(= 2σ/mean × 100). 8점 학습 후 자동 표시.',
               style: TextStyle(color: Colors.black45, fontSize: 10),
             ),
             const SizedBox(height: 4),
