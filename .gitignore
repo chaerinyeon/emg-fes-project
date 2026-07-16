@@ -41,4 +41,7 @@ flutter_app/pubspec.lock
 # 임시
 *.tmp
 *.log
-*.bakdata_from_iphone/
+*.bak
+
+# 측정 데이터 (저장소 밖에서 관리 — 아이폰 싱크: ~/Desktop/data)
+data_from_iphone/
