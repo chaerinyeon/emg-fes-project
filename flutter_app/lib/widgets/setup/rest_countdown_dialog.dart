@@ -58,8 +58,10 @@ class _RestCountdownDialogState extends State<RestCountdownDialog> {
         setState(() => _done = true);
         widget.onFinished?.call(); // 마커 기록 — 무부하 구간의 끝을 CSV 에 남김
         // '힘 주세요' 를 잠깐 보여준 뒤 자동으로 닫는다.
+        // pop() 을 써야 한다. maybePop() 은 아래 PopScope 의 canPop:false 를 존중해
+        // 닫히지 않는다(사용자 조작을 막으려는 장치에 자동 닫기까지 걸림).
         Timer(const Duration(milliseconds: 1200), () {
-          if (mounted) Navigator.of(context).maybePop();
+          if (mounted) Navigator.of(context).pop();
         });
       }
     });

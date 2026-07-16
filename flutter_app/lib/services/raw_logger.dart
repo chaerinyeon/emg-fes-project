@@ -44,8 +44,16 @@ class RawLogRecorder {
     final count = bd.getUint16(4, Endian.little);
     if (count <= 0 || bytes.length < 6 + 2 * count) return; // 잘린 패킷 폐기
 
-    // 누락 감지: 직전 패킷 끝 다음 인덱스와 연속이어야 함
-    if (_lastIdx >= 0 && firstMs > _lastIdx + 1) {
+    // 인덱스가 뒤로 감 = 펌웨어가 세션 시작으로 rawSampleCounter 를 0 으로 리셋했다는 뜻.
+    // 리셋 직전에 만들어져 전송 대기 중이던 '이전 세션의 잔여 패킷'이 새 세션 로그의
+    // 맨 앞에 붙는 문제가 있었다(Time(ms) 가 단조증가가 아니게 되어 분석이 깨짐).
+    // 여기까지 받은 것은 모두 이전 세션 것이므로 버리고 이 패킷부터 다시 시작한다.
+    if (_lastIdx >= 0 && firstMs < _lastIdx) {
+      _timesMs.clear();
+      _raw.clear();
+      _dropped = 0;
+    } else if (_lastIdx >= 0 && firstMs > _lastIdx + 1) {
+      // 누락 감지: 직전 패킷 끝 다음 인덱스와 연속이어야 함
       _dropped += firstMs - (_lastIdx + 1);
     }
     for (var i = 0; i < count; i++) {

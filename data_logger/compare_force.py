@@ -116,41 +116,6 @@ def main() -> None:
         print("  ❌ 아티팩트도 반응부도 그대로")
         print("     → 5~15ms 는 전기적 잔향(아티팩트 반동)일 뿐, M-wave 근거 약함")
 
-    # ---- 그래프 ----
-    import matplotlib.pyplot as plt
-    plt.rcParams["font.family"] = "AppleGothic"
-    plt.rcParams["axes.unicode_minus"] = False
-    fig, ax = plt.subplots(1, 2, figsize=(14, 5))
-
-    for a, r, lab, col in ((a_no, r_no, "힘 X (FES만)", "C0"),
-                           (a_yes, r_yes, "힘 O (FES+악력)", "C3")):
-        ax[0].plot(t, a, color=col, lw=2, label=f"{lab}  (n={r['n']:,})")
-        ax[0].fill_between(t, a - r["sd"], a + r["sd"], color=col, alpha=0.12)
-    ax[0].axvspan(0, 4, color="gray", alpha=0.18, label="아티팩트 구간")
-    ax[0].axvspan(5, 15, color="green", alpha=0.10, label="반응부(M-wave 후보)")
-    ax[0].axhline(0, color="black", lw=0.4)
-    ax[0].axvline(0, color="black", lw=0.8)
-    ax[0].set_xlabel("자극 기준 시간 (ms)")
-    ax[0].set_ylabel("centered ADC")
-    ax[0].set_title("자극동기 평균 — 자발 EMG는 상쇄되고 유발반응만 남음")
-    ax[0].legend(fontsize=8)
-    ax[0].grid(alpha=0.25)
-
-    ax[1].plot(t, a_yes - a_no, color="C2", lw=2)
-    ax[1].axvspan(0, 4, color="gray", alpha=0.18)
-    ax[1].axvspan(5, 15, color="green", alpha=0.10)
-    ax[1].axhline(0, color="black", lw=0.4)
-    ax[1].axvline(0, color="black", lw=0.8)
-    ax[1].set_xlabel("자극 기준 시간 (ms)")
-    ax[1].set_ylabel("힘O − 힘X")
-    ax[1].set_title("차이 — 아티팩트 구간은 0에 가깝고\n반응부만 벌어지면 그게 M-wave")
-    ax[1].grid(alpha=0.25)
-
-    fig.suptitle("FES 자극동기 평균: 힘 X vs 힘 O", fontsize=13)
-    fig.tight_layout()
-    out = Path.home() / "Desktop" / "data" / "compare_force.png"
-    fig.savefig(out, dpi=120)
-    print(f"\n그래프 저장 → {out}")
 
 
 if __name__ == "__main__":
