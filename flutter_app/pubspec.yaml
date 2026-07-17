@@ -48,6 +48,10 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
 
+  # 로거 테스트에서 getApplicationDocumentsDirectory 를 임시 폴더로 가짜 구현하기 위함
+  path_provider_platform_interface: ^2.1.0
+  plugin_platform_interface: ^2.1.0
+
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is
   # activated in the `analysis_options.yaml` file located at the root of your

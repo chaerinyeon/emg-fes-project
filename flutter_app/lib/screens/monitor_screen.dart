@@ -394,6 +394,8 @@ class _MonitorScreenState extends State<MonitorScreen> {
           const SizedBox(height: 10),
           ControlsBar(
             canSend: canSend,
+            // 연결과 무관하게 세션 중이면 Stop 가능 — 저장이 Stop 에 달려 있다.
+            canStop: _c.isRunning,
             onStart: _c.startSession,
             onStop: _c.stopSession,
             onCalibrate: _c.calibrate,

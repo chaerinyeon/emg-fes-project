@@ -109,6 +109,20 @@ class _HomePageState extends State<HomePage> {
   // 운동 결과 분석용 — 세션 시작 시각 + 피로 검출까지 걸린 시간(초)
   DateTime? _sessionStart;
   int? _timeToFatigueSec;
+  // 경과시간 표시용 1초 틱 — BLE 수신(10Hz)에만 의존하면 정지/무신호 구간에서
+  // 시계가 멈춰 보이므로 별도 타이머로 갱신한다. 세션 종료 시 마지막 값에서 멈춤.
+  Timer? _elapsedTicker;
+
+  // 세션이 진행 중인가 — BLE 연결 상태와 '독립'이어야 한다.
+  // 예전엔 Stop 버튼이 _connState=='connected' 에 묶여 있어, 측정 도중 블루투스가
+  // 끊기면 Stop 이 비활성화되고 저장은 _stopSession 에서만 일어나므로 세션 전체가
+  // 메모리에 갇혔다(실제로 5분치를 잃을 뻔함). 저장은 로컬 작업이라 연결과 무관하다.
+  bool _sessionActive = false;
+  // 세션 중 주기적 디스크 flush — 앱이 죽어도 마지막 flush 까지는 남는다.
+  Timer? _flushTimer;
+  // 진행 중인 flush — 재진입 방지 겸, 세션 종료 시 '쓰던 게 끝나기를' 기다리는 핸들.
+  Future<void>? _flushInFlight;
+  static const _flushInterval = Duration(seconds: 20);
   // 직전 운동 결과 요약 (오늘 vs 평소 비교) — stop 시 기록 추가 '전'에 스냅샷
   Map<String, dynamic>? _lastWorkoutSummary;
 
@@ -136,6 +150,8 @@ class _HomePageState extends State<HomePage> {
     _sim?.stop();
     _disconnect();
     _scanSub?.cancel();
+    _elapsedTicker?.cancel();
+    _flushTimer?.cancel();
     super.dispose();
   }
 
@@ -221,6 +237,10 @@ class _HomePageState extends State<HomePage> {
             _device = null;
             _cmdChar = null;
           });
+          // 끊김은 세션이 비정상 종료될 신호다 — 다음 주기 flush(20초)를 기다리지
+          // 말고 즉시 디스크로 흘린다. 여기서 세션을 끝내지는 않는다(재연결 후
+          // 이어가는 경우가 있다). Stop 은 _sessionActive 로 계속 눌러진다.
+          if (_sessionActive) _flushLogs();
         }
       });
 
@@ -760,6 +780,13 @@ class _HomePageState extends State<HomePage> {
     _pendingEnvMarker = null;
     _st.sessionMaxRms = 0;
     _sessionStart = DateTime.now();
+    _sessionActive = true;
+    _elapsedTicker?.cancel();
+    _elapsedTicker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
+    _flushTimer?.cancel();
+    _flushTimer = Timer.periodic(_flushInterval, (_) => _flushLogs());
     _timeToFatigueSec = null;
     _measureDialogShown = false;
     _fatigueDialogShown = false;
@@ -802,10 +829,40 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  /// 세션 중 주기적 저장 — 아직 디스크에 안 쓴 행만 파일 끝에 이어붙인다.
+  /// 실패해도 조용히 넘긴다(다음 틱에 같은 행을 다시 시도한다). 토스트를 띄우면
+  /// 20초마다 화면을 가리게 되므로, 최종 결과는 _stopSession 이 보고한다.
+  /// 재진입 방지 — flush 커서는 await 가 끝난 '뒤에' 전진하므로, 이전 flush 가
+  /// 아직 쓰는 중에 다음 틱(또는 끊김 flush)이 겹쳐 들어오면 같은 행을 두 번
+  /// append 하게 된다. 이미 쓰는 중이면 그 future 를 그대로 돌려준다.
+  Future<void> _flushLogs() {
+    final running = _flushInFlight;
+    if (running != null) return running;
+    final f = _doFlush().whenComplete(() => _flushInFlight = null);
+    _flushInFlight = f;
+    return f;
+  }
+
+  Future<void> _doFlush() async {
+    final id = gProfileService.active?.id;
+    await _envLog.flush(subjectId: id);
+    await _rawLog.flush(subjectId: id);
+  }
+
   Future<void> _stopSession() async {
     _send({'cmd': 'stop'});
     _envLog.stop();
     _rawLog.stop();
+    // 틱만 멈춘다 — _sessionStart 는 남겨 최종 운동시간이 화면에 그대로 보이게.
+    // (아래 CSV 저장 경로에 early return 이 있어 여기서 먼저 정리한다.)
+    _elapsedTicker?.cancel();
+    _elapsedTicker = null;
+    _flushTimer?.cancel();
+    _flushTimer = null;
+    _sessionActive = false;
+    // 주기 flush 가 아직 쓰는 중일 수 있다 — 끝나기를 기다린 뒤 최종 저장으로 넘어간다.
+    // (겹치면 커서가 전진하기 전에 save 가 같은 행을 다시 써서 파일이 중복된다.)
+    await _flushInFlight;
 
     // 오늘 vs 평소 비교 스냅샷 — recordSession 이 오늘 값을 이력에 넣기 '전'에 캡처.
     // 비교/환산(분·배수)은 여기서 Dart 로 미리 계산해 '완성된 문구'로 넘긴다.
@@ -869,15 +926,18 @@ class _HomePageState extends State<HomePage> {
     );
     if (mounted) setState(() {});
 
+    // 1Hz 요약 로그가 비어도 여기서 return 하면 안 된다 — 아래 ENV/RAW 고해상도
+    // 저장까지 통째로 건너뛰어, 짧은 세션의 진짜 데이터가 그대로 사라진다.
     if (_log.isEmpty) {
-      _toast('저장할 데이터 없음', Colors.orange);
-      return;
-    }
-    final saved = await downloadCsv(_log, subjectId: gProfileService.active?.id);
-    if (saved != null) {
-      _toast('CSV 저장: $saved (${_log.length} rows)', Colors.green);
+      _toast('1Hz 요약 로그 없음 — 고해상도 CSV 만 저장합니다', Colors.orange);
     } else {
-      _toast('CSV 저장 실패', Colors.orange);
+      final saved =
+          await downloadCsv(_log, subjectId: gProfileService.active?.id);
+      if (saved != null) {
+        _toast('CSV 저장: $saved (${_log.length} rows)', Colors.green);
+      } else {
+        _toast('CSV 저장 실패', Colors.orange);
+      }
     }
 
     // ENV 고해상도 CSV (Time(ms),ENV_Value) 저장
@@ -1302,6 +1362,8 @@ class _HomePageState extends State<HomePage> {
           const SizedBox(height: 6),
           ControlsBar(
             canSend: canSend,
+            // 연결이 끊겨도 세션 중이면 Stop 은 눌러야 한다 — 저장이 여기 달려 있다.
+            canStop: _sessionActive,
             onStart: _startSession,
             onStop: _stopSession,
             onCalibrate: () => _send({'cmd': 'calibrate'}),
@@ -1311,6 +1373,7 @@ class _HomePageState extends State<HomePage> {
           const SizedBox(height: 14),
           const SectionTitle('마사지기 조절 (릴레이 컨트롤러)'),
           const SizedBox(height: 6),
+          _elapsedRow(),
           MassagerControl(
             canSend: canSend,
             onUp: () => _send({'cmd': 'up'}),
@@ -1318,6 +1381,45 @@ class _HomePageState extends State<HomePage> {
             level: _massagerLevel,
           ),
           const SizedBox(height: 8),
+        ],
+      ),
+    );
+  }
+
+  /// 운동 시작 후 경과시간 — 세션 시작 전에는 아무것도 그리지 않는다.
+  /// 진행 중엔 _elapsedTicker 가 1초마다 갱신하고, 종료 후엔 최종값에서 멈춘다.
+  Widget _elapsedRow() {
+    if (_sessionStart == null) return const SizedBox.shrink();
+    final d = DateTime.now().difference(_sessionStart!);
+    final running = _elapsedTicker != null;
+    String two(int n) => n.toString().padLeft(2, '0');
+    final text = d.inHours > 0
+        ? '${d.inHours}:${two(d.inMinutes % 60)}:${two(d.inSeconds % 60)}'
+        : '${two(d.inMinutes)}:${two(d.inSeconds % 60)}';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        children: [
+          Icon(
+            running ? Icons.timer_outlined : Icons.timer_off_outlined,
+            size: 18,
+            color: Colors.black54,
+          ),
+          const SizedBox(width: 8),
+          Text(
+            running ? '운동 경과' : '운동 시간',
+            style: const TextStyle(fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            text,
+            style: TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.w700,
+              fontFeatures: const [FontFeature.tabularFigures()],
+              color: running ? Colors.deepPurple : Colors.black45,
+            ),
+          ),
         ],
       ),
     );
