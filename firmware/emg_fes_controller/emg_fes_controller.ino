@@ -49,7 +49,13 @@ const int PIN_MASSAGER_DOWN   = 26;
 // ===== 신호처리 파라미터 =====
 const int SAMPLE_RATE = 1000;              // 1kHz 샘플링
 const int FFT_SIZE = 512;                  // FFT 윈도우 (512표본=512ms 분량 @1kHz)
-const int RMS_WINDOW = 1000;               // RMS 윈도우 (1초)
+// RMS 윈도우 = 자극 버스트 주기의 정수배여야 한다.
+// 실측 버스트 주기 1621.9ms (버스트 593ms + 쉼 1029ms, duty 37%).
+// 1000ms 였을 때: 주기의 0.62배라 창이 버스트를 0.59~1.0 비율로 물어 duty-cycle 에 따라
+// RMS 가 출렁였다. 주기와 같은 1622ms 면 창 위상과 무관하게 항상 정확히 버스트 1개를
+// 포함한다 → RMS 가 위상 불변이 된다.
+// (기기는 잠금 수준으로 안정적: 033307 주기 σ=0.58ms, 세션 전체 드리프트 0.3ms → 재정렬 불필요)
+const int RMS_WINDOW = 1622;               // = 버스트 주기 1621.9ms (실측)
 const int HISTORY_SIZE = 60;               // 60초 분량 RMS/MDF 히스토리
 
 // 임계값 (방식 3: 이중 조건)
@@ -71,17 +77,39 @@ const unsigned long DATA_THROTTLE_MS = 100;     // 데이터 송신 최소 간�
 // 자극 artifact 검출 임계 (DC 보정된 centered 값의 절대값).
 // 실측에서 normal EMG burst 최대보다 충분히 커야 함. 일반적으로 1000~2000 범위.
 const int MW_ARTIFACT_THRESHOLD = 1000;
-const int MW_WINDOW_START_MS = 5;             // 자극 후 ms (artifact 제외용 dead-zone)
-const int MW_WINDOW_END_MS = 30;              // 자극 후 ms
-const int MW_WINDOW_LEN = (MW_WINDOW_END_MS - MW_WINDOW_START_MS) + 1;  // 26 샘플 (1kHz)
-const unsigned long MW_REFRACTORY_MS = 40;    // 같은 자극 중복 트리거 방지 (FES ≤ 25Hz 가정)
+// 창 시작 = artifact 제외용 dead-zone.
+// 5ms 였을 때의 치명적 문제: 이 셋업의 M-wave 양의 정점은 3ms 에 있는데 창이 5ms 부터라
+// argmax 가 항상 창 첫 표본(=5)에 붙었다(실측 99.9%/96.3%). latency=5 가 되어 아래
+// MW_LAT_MIN_MS=6 게이트에 전량 탈락 → MW_Valid ≈ 0%(042118 은 5,363행 중 1행).
+// 진폭 게이트는 100% 통과했으므로 오직 이 모순 때문에 M-wave 가 통째로 버려지고 있었다.
+//
+// 2ms 로 여는 근거: 자극 스파이크는 0~1ms 의 용량성 성분이고, 2~4ms 는 이미 M-wave 다.
+// (실측: 2~4ms 성분은 M-wave 5~15ms 와 ρ=+0.96, 바로 옆 0~1ms 스파이크와는 ρ=+0.32
+//  → 1ms 떨어진 이웃보다 10ms 떨어진 M-wave 와 붙어 움직인다 = 근육 신호)
+// STA 평균파형 실측: 0ms=-1042, 1ms=-585, 2ms=+362, 3ms=+546(정점), 4ms=+493, 5ms=+352
+const int MW_WINDOW_START_MS = 2;             // 자극 후 ms (0~1ms 스파이크만 제외)
+// 창 끝은 '다음 자극이 오기 전'이어야 한다. 실측 자극 간격은 최소 30ms(ISI 분포 30/31/32ms,
+// 평균 31.185ms = 32.078Hz)이므로 30이면 ISI=30ms인 자극(실측 9%)의 마지막 표본이 '다음 자극
+// 스파이크'가 되어 M-wave 를 오염시킨다. 28 이면 항상 다음 자극 앞에서 닫힌다.
+// (M-wave 는 5~15ms 라 28 로 줄여도 손실 없음. MW_LAT_MAX_MS=24 도 그대로 수용)
+const int MW_WINDOW_END_MS = 28;              // 자극 후 ms
+const int MW_WINDOW_LEN = (MW_WINDOW_END_MS - MW_WINDOW_START_MS) + 1;  // 24 샘플 (1kHz)
+// 불응기는 자극 주기(실측 31.185ms)보다 반드시 작아야 한다.
+// 40ms 였을 때: 40 > 31 이라 자극 하나 걸러 하나만 검출 → 실측 검출률 50.0%(042118),
+// blanking 도 그 절반에만 걸려 놓친 스파이크가 RMS 전력의 76% 를 차지했다.
+// 25ms 면 ISI 최소값 30ms 보다 작아 모든 자극을 잡는다.
+const unsigned long MW_REFRACTORY_MS = 25;    // < 자극주기 31.185ms (실측)
 
 // M-wave 검출 유효성(신뢰도) 판정 파라미터.
 // 목적: 검출 실패(노이즈 피크·창끝값)를 '유효'로 오인해 데이터셋 정답과 SPC baseline을
 //       오염시키는 것을 막는다. 유효하지 않아도 원값은 CSV에 남기되 mwv 플래그로 구분.
 const float MW_AMP_MIN = 80.0f;      // peak-to-peak 이보다 작으면 유발반응 아님(노이즈)
-const int   MW_LAT_MIN_MS = 6;       // 생리적 M-wave 잠복 하한 (창 시작 5ms 직후=아티팩트 잔향 배제)
-const int   MW_LAT_MAX_MS = 24;      // 이보다 늦으면(특히 30=창 끝) 피크 못 찾은 검출 실패
+// 잠복 하한은 '창 시작에 붙은 = 정점을 못 찾은' 검출을 걸러내는 게 목적이다.
+// 창이 2ms 부터이므로 하한은 3 — 창 첫 표본(2ms)에 붙은 것만 버리고 진짜 정점은 통과시킨다.
+// 실측(창 2~28ms): 정점이 3ms 75% / 4ms 17% 에 찍히고 창 시작(2ms)에 붙는 건 7.7% 뿐.
+// (6 이었을 때는 창 시작이 5ms 라 정점이 전부 5 로 찍혀 5<6 으로 전량 탈락했다)
+const int   MW_LAT_MIN_MS = 3;       // 창 시작(2ms) 직후 = 정점 못 찾은 검출 배제
+const int   MW_LAT_MAX_MS = 24;      // 이보다 늦으면(특히 28=창 끝) 피크 못 찾은 검출 실패
 
 // ===== 적응형 자극 트리거 임계값 =====
 // 고정 임계(MW_ARTIFACT_THRESHOLD)는 자극 스파이크가 작아지면(전극·세기 변화) 검출을
@@ -97,11 +125,17 @@ const float MW_ADAPT_EMA0 = (float)MW_ARTIFACT_THRESHOLD / MW_ADAPT_FRAC;
 
 // ===== FES 자극 blanking =====
 // 자극 검출 직후 이 시간(ms)만큼 표본을 RMS/MDF/ENV 계산에서 제외(직전 깨끗한 값으로 hold).
-// 기본 5ms = 자극 스파이크 + 증폭기 회복 구간(MW_WINDOW_START_MS와 동일).
-//   → RMS/MDF/SMR 의 주 오염원인 거대 스파이크 제거, 펄스 사이 데이터는 대부분 보존.
-// 값을 ~30ms로 키우면 M-wave(유발반응)까지 제외되지만, 25Hz 자극에선 펄스 간격이
-// 40ms뿐이라 데이터가 거의 다 blanking 되므로 권장하지 않음.
-const int STIM_BLANK_MS = 5;
+//
+// 5ms 였을 때의 문제: 스파이크(0~1ms)만 걷어내고 M-wave(5~15ms)는 그대로 통과시켰다.
+// M-wave 는 자발 EMG 보다 10배 이상 커서 RMS 를 지배한다 → 펌웨어 RMS 가 자발 EMG 가 아니라
+// '유발반응의 대리지표'가 됐다. 유발반응은 피로에서 내려가는데 SPC 규칙은 RMS>UCL(올라가야
+// 발동)이라, 진짜 피로일수록 발동하지 않는 구조였다(042118 실측 RMS −11.8%, 후보 0개).
+//
+// 16ms = 스파이크(0~1) + 증폭기 회복 + M-wave(5~15) 를 모두 제외.
+// 남는 16~30ms 구간이 자발 EMG 만 있는 깨끗한 창이다(실측: 무부하 21.6 → 유부하 30.9, +43%).
+// 실측 자극률 12.35/s 이므로 blanking 표본 비율은 16ms×12.35 ≈ 19.8% — 80% 는 보존된다.
+// (기존 주석의 "25Hz 자극 = 펄스 간격 40ms" 는 틀렸다. 실측은 32.078Hz = 31.185ms 간격)
+const int STIM_BLANK_MS = 16;
 
 // ===== BLE 핸들 =====
 NimBLECharacteristic* dataChar = nullptr;
@@ -213,7 +247,13 @@ volatile bool mwCapturing = false;
 volatile int mwSampleCount = 0;
 volatile float mwArtifactEMA = MW_ADAPT_EMA0;   // 최근 자극 스파이크 peak 의 EMA(적응형 문턱용)
 volatile int mwArtifactPeak = 0;                // 현재 캡처 중 자극 스파이크 peak |centered|
-volatile int mwSamples[MW_WINDOW_LEN + 4];     // +여유
+volatile int mwSamples[MW_WINDOW_LEN + 4];     // 캡처 중인 버퍼 (ISR 전용)
+// 완료된 캡처는 별도 버퍼로 옮긴다(이중 버퍼).
+// MW_REFRACTORY_MS 를 25 로 낮추면 자극이 31ms 마다 잡히므로, 캡처가 닫힌 직후(창끝 28ms)
+// 곧바로 다음 캡처가 열리며 mwSampleCount 를 0 으로 리셋한다. 단일 버퍼면 loop() 가 읽기
+// 전에 지워져 M-wave 가 조용히 유실된다(n=0 → n>=5 실패). 닫는 순간 스냅샷을 떠서 분리한다.
+volatile int mwSamplesRdy[MW_WINDOW_LEN + 4];  // 완료된 캡처 (loop() 가 읽음)
+volatile int mwSampleCountRdy = 0;
 volatile bool mwReady = false;                 // 캡처 완료 → loop()에서 메트릭 계산
 float currentMwAmp = 0;                        // peak-to-peak (ADC counts)
 float currentMwArea = 0;                       // Σ|sample| (정류 면적)
@@ -349,6 +389,12 @@ void samplingTask(void* /*param*/) {
             mwSamples[mwSampleCount++] = centered;
           }
         } else if (since > (unsigned long)MW_WINDOW_END_MS) {
+          // 완료된 캡처를 ready 버퍼로 옮긴다. 다음 자극이 31ms 만에 와서 mwSamples 를
+          // 덮어써도 loop() 가 읽을 값은 보존된다.
+          for (int i = 0; i < mwSampleCount && i < MW_WINDOW_LEN + 4; i++) {
+            mwSamplesRdy[i] = mwSamples[i];
+          }
+          mwSampleCountRdy = mwSampleCount;
           mwCapturing = false;
           mwReady = true;
           // 이번 자극 스파이크 peak 로 EMA 갱신 → 다음 문턱이 실제 크기를 따라감
@@ -615,7 +661,11 @@ void loop() {
     if (mdfReady) {
       currentMDF = calculateMDF(localWriteIdx);
     }
-    metricsValid = rmsReady && mdfReady;
+    // calculateMDF 는 실패 시 NaN 을 돌려준다. NaN 이 그대로 흘러가면 ccIngest 가 관리도의
+    // mean/sd 를 NaN 으로 만들어 그 세션 내내 복구되지 않는다(판정이 조용히 죽음).
+    // 여기서 막는다 — MDF 가 유한할 때만 히스토리·관리도·판정을 돌린다.
+    // (MDF 실패는 대역 전력이 0 인 경우뿐이라 그때는 RMS 도 무의미하다)
+    metricsValid = rmsReady && mdfReady && isfinite(currentMDF);
     sendRmsMdfNext = true;          // 다음 100ms BLE 행에 rms/mdf를 반드시 포함
 
     // ===== 1Hz: 느린 로직 (히스토리·관리도·판정·상태머신) =====
@@ -712,10 +762,10 @@ void loop() {
   if (mwReady) {
     portENTER_CRITICAL(&timerMux);
     mwReady = false;
-    int n = mwSampleCount;
+    int n = mwSampleCountRdy;                  // 진행 중인 캡처가 아니라 '완료된' 캡처
     int snapshot[MW_WINDOW_LEN + 4];
     for (int i = 0; i < n && i < MW_WINDOW_LEN + 4; i++) {
-      snapshot[i] = mwSamples[i];
+      snapshot[i] = mwSamplesRdy[i];
     }
     portEXIT_CRITICAL(&timerMux);
 
@@ -814,6 +864,7 @@ void handleCommand(JsonDocument& doc) {
     mwCount = 0;
     mwCapturing = false;
     mwSampleCount = 0;
+    mwSampleCountRdy = 0;
     mwReady = false;
     mwDirty = false;
     mwArtifactAtMs = 0;
@@ -953,14 +1004,29 @@ float calculateRMS(int64_t sum, int64_t sumSq, int n) {
 // ============================================================
 // MDF 계산 (RAW 핀 FFT)
 // ============================================================
-// 60Hz 전원 노이즈 + 하모닉(120/180Hz) ±NOTCH_BW 를 MDF 계산에서 제외.
-// 전원 노이즈가 크면 그 성분이 중앙주파수를 끌어올려 '피로에 의한 MDF 하강'을 가린다.
+// MDF 계산에서 제외할 대역:
+//  (1) 60Hz 전원 노이즈 + 하모닉(120/180Hz)
+//  (2) FES 자극 배음 — 32.078Hz 의 정수배 (64·96·128·…·449Hz)
+//
+// (2)가 없으면 MDF 는 근육이 아니라 자극을 잰다. 실측(042118 60초 FFT): 20~450Hz 대역
+// 전력의 81.1% 가 자극 배음이다. blanking 으로도 안 없어진다 — M-wave 가 31ms 마다 반복되는
+// 것 자체가 32.078Hz 주기성이고, hold 방식 blanking 은 오히려 31ms 주기 계단 함수를 새로 만든다.
+//
+// F0 = 32.078: ISI '평균' 31.185ms 에서 나온 값. '중앙값' 31ms 로 1000/31=32.258 을 쓰면
+// 오차 0.182×k 라 k=14 에서 2.55Hz 어긋나 ±2Hz 노치가 놓친다(노치 효과 81.1%→68.9%).
 static const float MDF_NOTCH_HZ[] = {60.0f, 120.0f, 180.0f};
 static const float MDF_NOTCH_BW = 2.0f;   // ±2Hz bin 제거
+static const float STIM_F0_HZ = 32.078f;  // 실측 자극 기본주파수 (= 1000/31.185ms)
+static const int   STIM_HARMONIC_MAX = 14;// 450Hz 까지 (32.078×14 = 449.1)
 static inline bool mdfNotched(float freqHz) {
   for (int k = 0; k < 3; k++) {
     if (freqHz >= MDF_NOTCH_HZ[k] - MDF_NOTCH_BW &&
         freqHz <= MDF_NOTCH_HZ[k] + MDF_NOTCH_BW) return true;
+  }
+  for (int k = 1; k <= STIM_HARMONIC_MAX; k++) {
+    float f = STIM_F0_HZ * k;
+    if (f > 450.0f) break;
+    if (freqHz >= f - MDF_NOTCH_BW && freqHz <= f + MDF_NOTCH_BW) return true;
   }
   return false;
 }
@@ -995,23 +1061,34 @@ float calculateMDF(int localWriteIdx) {
 
   double totalPower = 0;
   for (int i = firstBin; i <= lastBin; i++) {
-    if (mdfNotched((float)i * BIN_HZ)) continue;   // 60/120/180Hz 전원 노이즈 제외
+    if (mdfNotched((float)i * BIN_HZ)) continue;   // 전원 노이즈 + 자극 배음 제외
     double power = vReal[i] * vReal[i];
     totalPower += power;
   }
-  if (totalPower <= 0.000001) return 0;
+  // 실패는 0 이 아니라 NaN 으로 돌려준다. 0 은 'MDF = 0Hz' 라는 유효값처럼 보여서
+  // 다운스트림(SPC baseline·CSV·학습)에 조용히 섞인다.
+  if (totalPower <= 0.000001) return NAN;
 
   double halfPower = totalPower / 2.0;
   double cumPower = 0;
   for (int i = firstBin; i <= lastBin; i++) {
     if (mdfNotched((float)i * BIN_HZ)) continue;   // notch 와 동일하게 건너뜀
     double power = vReal[i] * vReal[i];
+    double prevCum = cumPower;
     cumPower += power;
     if (cumPower >= halfPower) {
-      return (float)i * BIN_HZ;
+      // bin 중심을 그대로 쓰면 MDF 가 BIN_HZ(=1.953Hz) 격자에 양자화된다.
+      // 그러면 baseline 10개가 몇 개 값으로 뭉쳐 σ 가 붕괴하고(실측 σ=1.45Hz=0.74bin),
+      // 2σ 관리한계가 평균에서 1.5bin 아래에 붙어 잡음에도 발동한다(위양성).
+      // 이 bin 안에서 누적전력이 halfPower 를 지나는 지점을 선형보간해 격자를 없앤다.
+      double frac = (power > 0.0) ? (halfPower - prevCum) / power : 0.0;
+      if (frac < 0.0) frac = 0.0;
+      if (frac > 1.0) frac = 1.0;
+      // bin i 는 [i-0.5, i+0.5] 를 대표하므로 그 구간 안에서 보간
+      return (float)((double)i - 0.5 + frac) * BIN_HZ;
     }
   }
-  return 0;
+  return NAN;
 }
 
 // ============================================================
