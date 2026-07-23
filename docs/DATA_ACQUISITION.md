@@ -1,6 +1,6 @@
 # 데이터 획득 — FES 자극 타이밍과 측정 방법
 
-**기준일:** 2026-07-17 · **실측 근거:** `raw_20260717_033307`(298초), `raw_20260717_042118`(596초)
+**기준일:** 2026-07-17 ·
 
 이 문서는 "지금 어떻게 데이터를 얻고 있는가"를 기록한다. 값은 **설계값(코드에 적힌 것)** 과
 **실측값(raw 에서 직접 잰 것)** 을 구분해 적는다. 둘이 어긋나는 곳이 실제로 있다.
@@ -22,22 +22,6 @@
      ▼
  [Mac  ~/emgfes-data/subject_<id>/]
 
- 별도 경로 — 자극:
- ESP32 GPIO32/33/25/26 ──► [PC817 옵토커플러] ──► [IRLZ44N MOSFET]
-                                                      │
-                                                     [FES] ──► 전극
-```
-
-| 항목 | 값 |
-|---|---|
-| MCU | ESP32-WROOM (MyoWare 2.0 Wireless Shield 내장) |
-| EMG 센서 | MyoWare 2.0 Muscle Sensor, SIG(RAW) → GPIO36 |
-| 샘플링 | **1kHz** (`SAMPLE_RATE = 1000`), 1ms 타이머 ISR |
-| ADC | 12bit (`analogReadResolution(12)`) → 0~4095 |
-| DC 오프셋 | **1862** (`DC_OFFSET`, 실측 휴식 mean) |
-| 자극기 | FES(시판 마사지기/TENS) |
-| 자극기 제어 | GPIO32(ON/OFF) · 33(MODE) · 25(UP) · 26(DOWN) — 옵토커플러로 **버튼을 대신 누름** |
-| 통신 | BLE GATT, `EMG-FES-01`, Nordic UART 호환 UUID |
 
 ### ⚠️ 중요 — 자극 파형은 우리가 만들지 않는다
 

@@ -188,7 +188,7 @@ class FatigueTriggerPanel extends StatelessWidget {
             Text(
               rmsHigh && mdfLow
                   ? (status.engineConsecutive >= status.consecutiveTrigger
-                        ? '트리거 발동 — FES 자동 정지'
+                        ? '트리거 발동 — 알림만 (자동 정지 안 함)'
                         : '두 조건 만족 — 카운터 누적 중')
                   : (rmsHigh || mdfLow ? '한 조건만 만족' : '조건 미충족'),
               textAlign: TextAlign.center,

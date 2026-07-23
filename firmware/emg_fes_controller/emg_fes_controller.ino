@@ -715,9 +715,19 @@ void loop() {
             currentFatigueDetected = true;
             fatigueDetectedAtMs = millis();
             sendFullNext = true;
-            if (isStimulating) {
-              triggerStimulation(false);
-            }
+            // 자동 정지 없음 — 피로는 '기록'만 하고 자극은 끄지 않는다.
+            // 정지는 오직 사용자의 stop 명령으로만.
+            //
+            // 왜: 이 판정(rmsMdfGroup || mwGroup)은 실측에서 신뢰할 수 없다.
+            //  - rmsMdfGroup: 펌웨어 RMS 는 자발 EMG 가 아니라 유발반응의 대리지표라
+            //    피로에서 '내려간다'. 규칙은 RMS>UCL(올라가야 발동)이라 방향이 반대다.
+            //    실측 4세션 정답률 1/4, 진짜 피로 세션(042118)에서 후보 0개.
+            //  - mwGroup: 정규화 안 된 생 M-wave 를 본다. 전극 드리프트만으로도 내려가
+            //    위양성이 난다(033307: 자극 -19.5% 따라 M-wave -19.1%, 근육은 멀쩡).
+            //    올바른 지표는 M-wave ÷ 자극스파이크(R)인데 펌웨어는 스파이크를 안 낸다.
+            //
+            // 자동 정지가 세션을 중간에 끊으면 그 데이터는 못 쓴다. 판정이 옳아질 때까지
+            // 끊지 않는다 — 자극기는 사용자가 손으로도 즉시 끌 수 있다.
           }
         } else {
           consecutiveCount = 0;

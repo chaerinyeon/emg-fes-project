@@ -26,7 +26,6 @@ import '../widgets/common/section_title.dart';
 import '../widgets/controls/controls.dart';
 import '../widgets/controls/massager_control.dart';
 import '../widgets/fatigue/fatigue_banner.dart';
-import '../widgets/fatigue/fatigue_dialog.dart';
 import '../widgets/fatigue/fatigue_trigger_panel.dart';
 import '../widgets/measurement/measurement_request_dialog.dart';
 import '../widgets/setup/rest_countdown_dialog.dart';
@@ -499,7 +498,6 @@ class _HomePageState extends State<HomePage> {
 
       _massagerLevel = (msg['ml'] as num?)?.toInt() ?? _massagerLevel;
 
-      final wasStimulating = _st.isStimulating;
       _st.isRunning = running;
       _st.isStimulating = msg['stim'] ?? _st.isStimulating;
       _st.fatigueDetected = msg['fd'] ?? _st.fatigueDetected;
@@ -583,20 +581,17 @@ class _HomePageState extends State<HomePage> {
           _timeToFatigueSec =
               DateTime.now().difference(_sessionStart!).inSeconds;
         }
-        if (_st.isStimulating) {
-          _send({'cmd': 'stop'});
+        // 자동 정지 없음 — 피로를 알리기만 하고 세션은 계속된다. 화면을 막는
+        // 모달 대신 비차단 스낵바로 1회 알리고, 지속 표시는 아래 FatigueBanner 가
+        // 담당한다. 정지는 오직 사용자가 STOP 을 누를 때만. (신뢰도는 펌웨어 주석 참조)
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('근피로 감지 — 계속 진행 중 (정지는 STOP)'),
+              backgroundColor: Colors.redAccent,
+            ),
+          );
         }
-        // 엔진 reasons 가 있으면 사용, 없으면 fallback (펌웨어 fd 단독 트리거)
-        final dialogReasons = result.reasons.isNotEmpty
-            ? result.reasons
-            : const <String>['3사이클 측정 완료 — 누적 피로 추정'];
-        showFatigueDialog(
-          context,
-          status: _st,
-          fesWasOn: wasStimulating,
-          reasons: dialogReasons,
-          onConfirm: _stopSession,        // 확인 → Stop 버튼과 동일하게 세션 종료
-        );
       }
       // ===== 측정창 동작 요청 팝업 (시뮬레이터 또는 펌웨어가 'req' 발화 시) =====
       final reqText = msg['req'] as String?;
@@ -727,7 +722,7 @@ class _HomePageState extends State<HomePage> {
             child: const ListTile(
               contentPadding: EdgeInsets.zero,
               leading: Icon(Icons.trending_down, color: Colors.redAccent),
-              title: Text('연속 자연 피로 → FES 자동 정지'),
+              title: Text('연속 자연 피로 → 알림만 (자동 정지 안 함)'),
               subtitle: Text('자발 수축으로 FES 시작 → 자극 지속 중 근육이 점진적으로 '
                   '지쳐 RMS↑/MDF↓ → 피로 감지 시 FES 자동 종료'),
             ),

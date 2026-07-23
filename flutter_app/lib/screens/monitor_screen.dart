@@ -40,7 +40,7 @@ class _MonitorScreenState extends State<MonitorScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('근피로 감지 — FES 자동 정지'),
+          content: Text('근피로 감지 — 계속 진행 중 (정지는 STOP)'),
           backgroundColor: Colors.redAccent,
         ),
       );
@@ -64,7 +64,7 @@ class _MonitorScreenState extends State<MonitorScreen> {
             child: const ListTile(
               contentPadding: EdgeInsets.zero,
               leading: Icon(Icons.trending_down, color: Colors.redAccent),
-              title: Text('연속 자연 피로 → FES 자동 정지'),
+              title: Text('연속 자연 피로 → 알림만 (자동 정지 안 함)'),
               subtitle: Text('자발 수축 → FES 두드림 지속 → ~3분 후 피로 검출'),
             ),
           ),
@@ -261,7 +261,7 @@ class _MonitorScreenState extends State<MonitorScreen> {
   Widget _statusBanner() {
     final s = _c.st;
     final (label, sub, color) = switch (s.muscleState) {
-      'fatigue' => ('근피로 감지', 'FES 자동 정지됨', Colors.redAccent),
+      'fatigue' => ('근피로 감지', '계속 진행 중 — 정지는 STOP', Colors.redAccent),
       'high' => ('활성 높음', '', Colors.orangeAccent),
       'low' => ('활성 낮음', '', Colors.blueAccent),
       'normal' => ('정상', '운동 진행 중', Colors.greenAccent),

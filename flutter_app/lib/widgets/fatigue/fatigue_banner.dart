@@ -33,7 +33,7 @@ class FatigueBanner extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  '근피로 감지 — 자극 자동 정지',
+                  '근피로 감지 — 계속 진행 중',
                   style: TextStyle(
                     color: Colors.black87,
                     fontSize: 13,

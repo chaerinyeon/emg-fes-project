@@ -358,10 +358,9 @@ class SessionController extends ChangeNotifier {
       st.mdfCcMean = engine.mdfChart.mean;
       st.mdfCcLcl = engine.mdfChart.lowerLimit;
 
-      // 피로 검출 → FES 자동 정지 + 콜백 (1회)
+      // 피로 검출 → 알림만 (1회). 자동 정지 없음 — 정지는 사용자 stop 으로만.
       if (!_fatigueShown && (result.justTriggered || st.fatigueDetected)) {
         _fatigueShown = true;
-        if (st.isStimulating) send({'cmd': 'stop'});
         onFatigue?.call();
       }
 

@@ -23,10 +23,10 @@
 ```
 
 1. **MyoWare 2.0 Muscle Sensor** 가 근육 표면의 전기 신호를 증폭/필터링
-2. **ESP32** 가 1 kHz로 ADC 샘플링 → 매 1초마다 RMS · MDF · slope 계산
+2. **MyoWare2.0WirelessShield** 가 1 kHz로 ADC 샘플링 → 매 1초마다 RMS · RMS · MDF · slope 계산
 3. **이중 조건**(RMS slope ↑ AND MDF slope ↓)이 **5회 연속** 만족되면 피로 판정
 4. 피로 판정 즉시 마사지기를 자동 **OFF** (피로 회복 유도)
-5. 동시에 WebSocket으로 1 Hz JSON 스트림을 PC에 전송 → CSV 저장 / 실시간 시각화
+
 
 ### 1.2 분석 방법 — "방식 3 (RAW + MDF 이중 조건)"
 
@@ -76,26 +76,13 @@ emg-fes-project/
 
 | 부품 | 역할 | 비고 |
 |-----|------|------|
-| **ESP32** | MCU, WiFi, ADC, WebSocket 서버 | MyoWare 2.0 Wireless Shield 내장 |
+| **Myoware 2.0 Wireless Shield** | MCU, WiFi, ADC, WebSocket 서버 | MyoWare 2.0 Wireless Shield 내장 |
 | **MyoWare 2.0 Muscle Sensor** | 표면 EMG 증폭/정류 | RAW 출력 + ENV 출력 동시 제공 |
 | 표면 전극 | 근육 부착 | 일반적으로 한 근육에 3개(양극·음극·기준) |
-| **PC817** | 옵토커플러 | ESP32 GPIO ↔ 마사지기 버튼 전기적 절연 |
+| **RELAY** | 옵토커플러 | ESP32 GPIO ↔ 마사지기 버튼 전기적 절연 |
 | **IRLZ44N** | N-channel MOSFET | 마사지기 푸시버튼을 short시켜 누름 효과 |
 | **오므론 HV-F022-V** | 저주파 마사지기 (FES 대용) | ON/OFF/MODE/UP/DOWN 푸시버튼 4종 |
 
-### 3.1 ESP32 핀 매핑
-
-| 핀 | 용도 | 펌웨어 상수 |
-|---|------|------------|
-| GPIO 36 (A4) | EMG **RAW** 입력 | `PIN_EMG_RAW` |
-| GPIO 39 (A3) | EMG **ENV** 입력 (envelope) | `PIN_EMG_ENV` |
-| GPIO 13 | 상태 LED | `PIN_STATUS_LED` |
-| GPIO 32 | 마사지기 ON/OFF 버튼 | `PIN_MASSAGER_ON_OFF` |
-| GPIO 33 | MODE | `PIN_MASSAGER_MODE` |
-| GPIO 25 | 강도 UP | `PIN_MASSAGER_UP` |
-| GPIO 26 | 강도 DOWN | `PIN_MASSAGER_DOWN` |
-
----
 
 ## 4. 펌웨어 분석 — `emg_fes_controller.ino`
 
