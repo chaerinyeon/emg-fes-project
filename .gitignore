@@ -1,0 +1,9 @@
+# emgfes-data: 원본 raw CSV 와 master 만 추적한다.
+results/
+results_*/
+__pycache__/
+*.pyc
+*.png
+*.zip
+*.py
+.DS_Store
