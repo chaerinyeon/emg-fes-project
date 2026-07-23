@@ -41,4 +41,13 @@ flutter_app/pubspec.lock
 # 임시
 *.tmp
 *.log
-*.bakdata_from_iphone/
+*.bak
+
+# 측정 데이터 (저장소 밖에서 관리 — 아이폰 싱크: ~/emgfes-data → GitHub `data` 브랜치로 일원화)
+data_from_iphone/
+data/subject_*/
+data/mwave_SIMULATED.csv
+data_logger/data/
+
+# Claude Code 임시 워크트리 (커밋 금지 — 프로젝트 전체 사본이 중복 공개됐던 이력 있음)
+.claude/worktrees/
