@@ -35,6 +35,43 @@ if out=$(xcrun devicectl device copy from \
   fi
   n=$(printf '%s\n' "$rsync_out" | grep -c '^>f')
   echo "$(ts) OK: 새 파일 ${n}개 → $DEST" >> "$LOG"
+
+  # ── GitHub `data` 브랜치 자동 업로드 ─────────────────────────────────
+  # 새 CSV 가 들어왔을 때만 커밋하고, 미푸시 커밋이 있으면(이전 오프라인 실패 포함) 푸시한다.
+  # data 브랜치는 setup_data_repo.sh 가 미리 만든다 — .git 이 없으면 이 블록은 조용히 건너뛴다.
+  # git/gh 는 /opt/homebrew/bin 에 있어 launchd 기본 PATH 에 없으므로 여기서 PATH 를 맞춘다.
+  if [ -d "$DEST/.git" ]; then
+    export PATH="/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+
+    # GitHub 하드리밋(100MB/파일) 초과분은 스테이징에서 빼고 크게 경고 — 푸시를 깨뜨리지 않는다.
+    if [ "$n" -gt 0 ]; then
+      git -C "$DEST" add -A
+      while IFS= read -r big; do
+        [ -n "$big" ] || continue
+        git -C "$DEST" reset -q -- "$big" 2>/dev/null || true
+        echo "$(ts) WARN: 100MB 초과로 업로드 제외 — $big" >> "$LOG"
+      done < <(cd "$DEST" && git diff --cached --name-only -z | tr '\0' '\n' | while IFS= read -r p; do [ -f "$p" ] && [ "$(stat -f%z "$p" 2>/dev/null || echo 0)" -ge 104857600 ] && echo "$p"; done)
+
+      if ! git -C "$DEST" diff --cached --quiet; then
+        if git -C "$DEST" commit -qm "data: sync $(ts) (${n}개 신규)"; then
+          echo "$(ts) GIT: 커밋 (${n}개 신규)" >> "$LOG"
+        else
+          echo "$(ts) FAIL: git commit rc=$? — data 브랜치" >> "$LOG"
+        fi
+      fi
+    fi
+
+    # 로컬이 origin/data 보다 앞서 있으면 푸시 (이전 실패분도 여기서 재시도됨).
+    ahead=$(git -C "$DEST" rev-list --count @{u}..HEAD 2>/dev/null || echo 0)
+    if [ "${ahead:-0}" -gt 0 ]; then
+      if git -C "$DEST" push -q origin data 2>>"$LOG"; then
+        echo "$(ts) GIT: push OK → origin/data (${ahead} 커밋)" >> "$LOG"
+      else
+        echo "$(ts) FAIL: git push rc=$? — data 브랜치 (다음 동기화때 재시도)" >> "$LOG"
+      fi
+    fi
+  fi
+  # ─────────────────────────────────────────────────────────────────────
 else
   reason=$(echo "$out" | grep -oE 'kAMD[A-Za-z]+|error 10[0-9][0-9]' | head -1)
   echo "$(ts) skip: ${reason:-unknown} (기기 미연결 또는 잠금)" >> "$LOG"
