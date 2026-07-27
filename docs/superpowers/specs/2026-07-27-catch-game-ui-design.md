@@ -27,6 +27,7 @@ FES 자극 박자(≈1.6초)에 맞춰 날아오는 야구공을 **주먹 쥐어
 | 비주얼 메타포 | **야구공 캐치** (잼=글러브 닫기, 펴기=되던지기) | 잼잼 grip 동작에 직관적으로 매핑 |
 | 악력의 역할 | **캐치 성공 임계 + 별점** | 약하면 놓침(bobble), 셀수록 별점↑ → 타이밍+세기 동시 훈련 |
 | 진입점 | **대시보드(탭1)의 카드/버튼** | 기존 흐름(프로필→연결→운동)에 자연스럽게 편입, 변경 최소 |
+| 언어/렌더링 | **Dart/Flutter** · 히어로(공·글러브)는 **flutter_cube** 진짜 3D, 그 외 2D · 로직은 순수 Dart | 앱과 동일 스택(Unity·별도 언어 없음), 경량 3D, 렌더러는 나중에 flutter_scene 으로 교체 가능 |
 
 ## 3. 아키텍처
 
@@ -52,8 +53,15 @@ GameController (ChangeNotifier)          ← 위 셋을 연결, 렌더 티커로
       │
       ▼
 GameScreen (풀스크린 라우트, 자체 컨트롤러 소유)
-  위젯: PitchLane · GloveCatcher · GameHud · GripMeter · BeatTrack · JudgmentFlash · GameResultSheet
+  3D 히어로(flutter_cube): PitchLane(공) · GloveCatcher(글러브)
+  2D 위젯: GameHud · GripMeter · BeatTrack · JudgmentFlash · GameResultSheet
 ```
+
+**렌더링 스택:** 게임 화면은 3D 히어로 오브젝트(날아오는 공·글러브)를
+`flutter_cube`(순수 Dart, OBJ 3D)로, HUD·게이지·박자 트랙·배경은 일반 2D
+Flutter 위젯으로 그린다. `CatchGameEngine`은 렌더러에 무관(순수 상태만 반환)
+하므로, 나중에 조명·재질을 올리고 싶으면 `flutter_scene`(Impeller) 등으로
+히어로 렌더러만 교체해도 게임 로직은 그대로다.
 
 ### 유닛 경계 (각각 독립 이해·테스트 가능)
 
@@ -82,9 +90,12 @@ GameScreen (풀스크린 라우트, 자체 컨트롤러 소유)
 ```
 
 - 상단 HUD: 누적 캐치 수, 콤보(연속 성공), 별점.
-- 중앙 PitchLane: 투수 → 공 접근 애니메이션. 공 위치가 곧 타이밍 표시자
-  (도착선에 닿는 순간이 beat).
-- GloveCatcher: 글러브. 캐치/bobble/놓침 상태에 따라 닫힘·튕김·비움 애니메이션.
+- 중앙 PitchLane: 투수 → **3D 공(flutter_cube)** 접근 애니메이션. 멀리선
+  작게 → 다가올수록 확대·하강해 원근감을 낸다(진짜 3D 지오메트리). 공
+  위치가 곧 타이밍 표시자(도착선에 닿는 순간이 beat).
+- GloveCatcher: **3D 글러브(flutter_cube)**. 캐치/bobble/놓침 상태에 따라
+  닫힘·튕김·비움 애니메이션. (야구공=텍스처 구, 글러브=간단 OBJ/glTF 에셋 —
+  밑바닥 모델링 불필요)
 - JudgmentFlash: Perfect/Good/Early/Late/Miss + "약하게 잡음"(bobble).
 - GripMeter: 실시간 ENV 막대 + `gripThreshold` 눈금(넘어야 성공).
 - BeatTrack: 다음 투구까지 카운트다운(1.6초 진행바).
@@ -178,11 +189,13 @@ class GameState {
 
 **포함:** 시뮬레이터 구동 캐치 게임 · `TimerBeatSource(1.6s)` · 타이밍+세기 판정 ·
 잼잼(쥐고-펴기) release 요건 · 적응형 창/임계 · HUD(캐치·콤보·별점) · 실시간
-악력 미터 · 박자 트랙 · 종료 결과 시트 · 대시보드 진입 카드 · iPhone 동작.
+악력 미터 · 박자 트랙 · 종료 결과 시트 · 대시보드 진입 카드 · **flutter_cube 3D
+히어로(공·글러브) + 2D HUD** · iPhone 동작.
 
 **제외(추후):** 실제 자극 엣지 박자 동기(`StimEdgeBeatSource`) · 환자군
 스케일링(incomplete/complete) · 프로필 이력/CSV 저장 · 사운드 디자인 ·
-M-wave 연동 · 랭킹/멀티플레이 · RAW 1kHz 고정밀 타이밍.
+M-wave 연동 · 랭킹/멀티플레이 · RAW 1kHz 고정밀 타이밍 · `flutter_scene`
+고급 조명·재질(히어로 렌더러 업그레이드) · 3D 배경/스타디움.
 
 ## 10. 성공 기준
 
@@ -198,3 +211,5 @@ M-wave 연동 · 랭킹/멀티플레이 · RAW 1kHz 고정밀 타이밍.
 - 캐치창/임계의 구체적 기본값과 적응 스텝(건강인 시뮬레이터로 튜닝).
 - "쉬는 공" 삽입 규칙을 MVP에 넣을지, 추후로 미룰지.
 - GameScreen 다크 테마를 별도 팔레트로 둘지 앱 테마 확장으로 둘지.
+- 3D 공·글러브 에셋 소싱(무료 OBJ/glTF vs 간단 자체 제작)과 `flutter_cube`의
+  iOS 빌드·성능 확인(초기 스파이크로 검증).
