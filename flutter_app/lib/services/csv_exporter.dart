@@ -27,6 +27,7 @@ const List<String> kCsvHeaders = [
 Future<String?> downloadCsv(
   List<Map<String, dynamic>> log, {
   String? subjectId,
+  String filenameTag = 'unknown',
 }) async {
   final sb = StringBuffer()..writeln(kCsvHeaders.join(','));
   for (final row in log) {
@@ -45,6 +46,6 @@ Future<String?> downloadCsv(
   final stamp =
       '${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}'
       '_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}${now.second.toString().padLeft(2, '0')}';
-  final filename = 'emg_$stamp.csv';
+  final filename = 'emg_${stamp}_$filenameTag.csv';
   return saveCsvFile(filename, sb.toString(), subjectId: subjectId);
 }

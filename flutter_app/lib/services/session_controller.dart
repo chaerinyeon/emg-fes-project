@@ -368,7 +368,10 @@ class SessionController extends ChangeNotifier {
       final reqText = msg['req'] as String?;
       if (reqText != null && reqText.isNotEmpty && !_measureDialogShown) {
         _measureDialogShown = true;
-        onMeasureRequest?.call(reqText, (msg['req_dur'] as num?)?.toInt() ?? 5000);
+        onMeasureRequest?.call(
+          reqText,
+          (msg['req_dur'] as num?)?.toInt() ?? 5000,
+        );
       }
       if (msg['req_end'] == true) _measureDialogShown = false;
 

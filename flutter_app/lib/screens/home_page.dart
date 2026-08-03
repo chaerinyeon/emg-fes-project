@@ -137,6 +137,7 @@ class _HomePageState extends State<HomePage> {
   // RAW 고해상도 로깅 — 1kHz 원신호 전량 기록 → Time(ms),Raw_ADC CSV (raw_*.csv)
   final RawLogRecorder _rawLog = RawLogRecorder();
   String? _pendingEnvMarker; // ENV 로그용 마커 (_pendingMarker는 1Hz 로그가 소비)
+  String _sessionCategoryTag = 'unknown';
 
   @override
   void initState() {
@@ -228,7 +229,7 @@ class _HomePageState extends State<HomePage> {
       });
 
       final device = found!.device;
-      await _connSub?.cancel();   // 재연결 시 이전 연결-상태 리스너 누수 방지
+      await _connSub?.cancel(); // 재연결 시 이전 연결-상태 리스너 누수 방지
       _connSub = device.connectionState.listen((s) {
         if (s == BluetoothConnectionState.disconnected) {
           setState(() {
@@ -258,7 +259,8 @@ class _HomePageState extends State<HomePage> {
       final services = await device.discoverServices();
       BluetoothCharacteristic? dataChar;
       BluetoothCharacteristic? cmdChar;
-      BluetoothCharacteristic? rawChar; // RAW 1kHz (구버전 펌웨어엔 없을 수 있음 → optional)
+      BluetoothCharacteristic?
+      rawChar; // RAW 1kHz (구버전 펌웨어엔 없을 수 있음 → optional)
       for (final s in services) {
         if (s.uuid.toString().toLowerCase() != kServiceUuid) continue;
         for (final c in s.characteristics) {
@@ -460,7 +462,8 @@ class _HomePageState extends State<HomePage> {
             mwLatency: _st.mwLatency,
             // 검출 신뢰도 + staleness: 새 M-wave가 _mwStaleMs 넘게 안 오면
             // 홀드된 값은 얼어붙은 옛 값(가짜 평탄구간)이므로 무효 처리.
-            mwValid: _st.mwValid &&
+            mwValid:
+                _st.mwValid &&
                 _lastMwFreshMs >= 0 &&
                 (tsMs.toInt() - _lastMwFreshMs) <= _mwStaleMs,
           );
@@ -571,15 +574,16 @@ class _HomePageState extends State<HomePage> {
       _st.mwLatCcUcl = _engine.mwLatChart.upperLimit;
 
       // 근피로 다이얼로그 — 엔진 트리거 또는 펌웨어 fd 가 처음 true 가 됐을 때 한 번만.
-      final shouldShowFatigue = !_fatigueDialogShown &&
-          (result.justTriggered || _st.fatigueDetected);
+      final shouldShowFatigue =
+          !_fatigueDialogShown && (result.justTriggered || _st.fatigueDetected);
       if (shouldShowFatigue) {
         _fatigueDialogShown = true;
         _sessionFatigued = true; // 세션 피로 래치 — 이후 틱에 덮어써지지 않음
         // 세션 시작~피로 검출까지 걸린 시간 기록 (운동 결과 분석용)
         if (_sessionStart != null) {
-          _timeToFatigueSec =
-              DateTime.now().difference(_sessionStart!).inSeconds;
+          _timeToFatigueSec = DateTime.now()
+              .difference(_sessionStart!)
+              .inSeconds;
         }
         // 자동 정지 없음 — 피로를 알리기만 하고 세션은 계속된다. 화면을 막는
         // 모달 대신 비차단 스낵바로 1회 알리고, 지속 표시는 아래 FatigueBanner 가
@@ -598,11 +602,7 @@ class _HomePageState extends State<HomePage> {
       if (reqText != null && reqText.isNotEmpty && !_measureDialogShown) {
         final dur = (msg['req_dur'] as num?)?.toInt() ?? 5000;
         _measureDialogShown = true;
-        showMeasurementRequestDialog(
-          context,
-          prompt: reqText,
-          durationMs: dur,
-        );
+        showMeasurementRequestDialog(context, prompt: reqText, durationMs: dur);
       }
       if (msg['req_end'] == true) {
         _measureDialogShown = false;
@@ -680,7 +680,7 @@ class _HomePageState extends State<HomePage> {
     }
     // 시나리오 선택 — 임상 3사이클 vs 연속 자연 피로 폐루프
     final scenario = await _pickSimScenario();
-    if (scenario == null) return;                 // 취소
+    if (scenario == null) return; // 취소
 
     // 켜기 전에 실제 BLE 가 연결돼 있으면 끊기
     if (_connState == 'connected') {
@@ -705,7 +705,7 @@ class _HomePageState extends State<HomePage> {
     sim.start();
     setState(() {
       _sim = sim;
-      _connState = 'connected';                 // 스캔→연결 완료처럼 보이기
+      _connState = 'connected'; // 스캔→연결 완료처럼 보이기
       _lastError = null;
     });
   }
@@ -723,8 +723,10 @@ class _HomePageState extends State<HomePage> {
               contentPadding: EdgeInsets.zero,
               leading: Icon(Icons.trending_down, color: Colors.redAccent),
               title: Text('연속 자연 피로 → 알림만 (자동 정지 안 함)'),
-              subtitle: Text('자발 수축으로 FES 시작 → 자극 지속 중 근육이 점진적으로 '
-                  '지쳐 RMS↑/MDF↓ → 피로 감지 시 FES 자동 종료'),
+              subtitle: Text(
+                '자발 수축으로 FES 시작 → 자극 지속 중 근육이 점진적으로 '
+                '지쳐 RMS↑/MDF↓ → 피로 감지 시 FES 자동 종료',
+              ),
             ),
           ),
           SimpleDialogOption(
@@ -749,7 +751,7 @@ class _HomePageState extends State<HomePage> {
       status: _st,
       initial: _st.todayCondition,
     );
-    if (result == null) return;                            // 사용자가 취소/닫음
+    if (result == null) return; // 사용자가 취소/닫음
     _st.todayCondition = result.condition;
 
     // 새 세션 시작 — 차트/큐/마지막 값 모두 깨끗이 초기화
@@ -769,8 +771,10 @@ class _HomePageState extends State<HomePage> {
     _t0Init = false;
 
     _log.clear();
-    _envLog.start(); // ENV 10Hz 전량 기록 시작
-    _rawLog.start(); // RAW 1kHz 원신호 전량 기록 시작
+    _sessionCategoryTag =
+        gProfileService.active?.category?.fileTag ?? 'unknown';
+    _envLog.start(filenameTag: _sessionCategoryTag); // ENV 10Hz 전량 기록 시작
+    _rawLog.start(filenameTag: _sessionCategoryTag); // RAW 1kHz 원신호 전량 기록 시작
     _pendingMarker = null;
     _pendingEnvMarker = null;
     _st.sessionMaxRms = 0;
@@ -793,7 +797,7 @@ class _HomePageState extends State<HomePage> {
       rmsThreshold: _st.rmsThreshold,
       mdfThreshold: _st.mdfThreshold,
       consecutiveTrigger: _st.consecutiveTrigger,
-      sigmaMultiplier: result.condition.sigma,              // 컨디션별 ±kσ
+      sigmaMultiplier: result.condition.sigma, // 컨디션별 ±kσ
     );
     _st.engineFatigueDetected = false;
     _st.engineConsecutive = 0;
@@ -866,8 +870,9 @@ class _HomePageState extends State<HomePage> {
         _sessionFatigued || _st.fatigueDetected || _st.engineFatigueDetected;
     if (fatigued) {
       final p = gProfileService.active;
-      double? mean(List<double>? xs) =>
-          (xs == null || xs.isEmpty) ? null : xs.reduce((a, b) => a + b) / xs.length;
+      double? mean(List<double>? xs) => (xs == null || xs.isEmpty)
+          ? null
+          : xs.reduce((a, b) => a + b) / xs.length;
       var usualTime = mean(p?.recentTimeToFatigueSec);
       var usualRms = mean(p?.recentFatigueRmsSlopes);
       var usualMdf = mean(p?.recentFatigueMdfSlopes);
@@ -926,8 +931,11 @@ class _HomePageState extends State<HomePage> {
     if (_log.isEmpty) {
       _toast('1Hz 요약 로그 없음 — 고해상도 CSV 만 저장합니다', Colors.orange);
     } else {
-      final saved =
-          await downloadCsv(_log, subjectId: gProfileService.active?.id);
+      final saved = await downloadCsv(
+        _log,
+        subjectId: gProfileService.active?.id,
+        filenameTag: _sessionCategoryTag,
+      );
       if (saved != null) {
         _toast('CSV 저장: $saved (${_log.length} rows)', Colors.green);
       } else {
@@ -949,9 +957,13 @@ class _HomePageState extends State<HomePage> {
     //   모달이라, 뒤에 두면 시트를 안 닫은 세션의 raw 가 영영 저장되지 않는다.
     final rawSaved = await _rawLog.save(subjectId: gProfileService.active?.id);
     if (rawSaved != null) {
-      final dropMsg = _rawLog.dropped > 0 ? ', ~${_rawLog.dropped} dropped' : '';
-      _toast('RAW CSV 저장: $rawSaved (${_rawLog.length} samples$dropMsg)',
-          _rawLog.dropped > 0 ? Colors.orange : Colors.green);
+      final dropMsg = _rawLog.dropped > 0
+          ? ', ~${_rawLog.dropped} dropped'
+          : '';
+      _toast(
+        'RAW CSV 저장: $rawSaved (${_rawLog.length} samples$dropMsg)',
+        _rawLog.dropped > 0 ? Colors.orange : Colors.green,
+      );
     } else if (!_rawLog.isEmpty) {
       // 데이터가 있는데 null 이면 파일 쓰기 실패 — 조용히 넘기면 원인 추적이 불가능하다.
       _toast('RAW CSV 저장 실패 (${_rawLog.length} samples)', Colors.red);
@@ -1030,10 +1042,12 @@ class _HomePageState extends State<HomePage> {
       if (absMin < 0.5) {
         out.add('평소와 비슷한 시점에 피로해졌습니다.');
       } else {
-        final m = absMin < 1 ? absMin.toStringAsFixed(1) : absMin.toStringAsFixed(0);
-        out.add(diffSec > 0
-            ? '평소보다 약 $m분 빨리 피로해졌습니다.'
-            : '평소보다 약 $m분 더 오래 버텼습니다.');
+        final m = absMin < 1
+            ? absMin.toStringAsFixed(1)
+            : absMin.toStringAsFixed(0);
+        out.add(
+          diffSec > 0 ? '평소보다 약 $m분 빨리 피로해졌습니다.' : '평소보다 약 $m분 더 오래 버텼습니다.',
+        );
       }
     }
 
@@ -1110,7 +1124,9 @@ class _HomePageState extends State<HomePage> {
       },
       'fatigue': {
         'detected':
-            _sessionFatigued || _st.engineFatigueDetected || _st.fatigueDetected,
+            _sessionFatigued ||
+            _st.engineFatigueDetected ||
+            _st.fatigueDetected,
         'consecutive': '${_st.engineConsecutive}/${_st.consecutiveTrigger}',
         'reasons': _st.engineReasons,
       },
@@ -1224,9 +1240,9 @@ class _HomePageState extends State<HomePage> {
           IconButton(
             tooltip: '모니터 화면 (데스크탑/태블릿)',
             icon: const Icon(Icons.desktop_windows_outlined),
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const MonitorScreen()),
-            ),
+            onPressed: () => Navigator.of(
+              context,
+            ).push(MaterialPageRoute(builder: (_) => const MonitorScreen())),
           ),
           IconButton(
             tooltip: '처음 화면',
@@ -1270,10 +1286,7 @@ class _HomePageState extends State<HomePage> {
             selectedIcon: Icon(Icons.dashboard),
             label: '대시보드',
           ),
-          NavigationDestination(
-            icon: Icon(Icons.show_chart),
-            label: '차트',
-          ),
+          NavigationDestination(icon: Icon(Icons.show_chart), label: '차트'),
           NavigationDestination(
             icon: Icon(Icons.account_tree_outlined),
             selectedIcon: Icon(Icons.account_tree),
@@ -1322,9 +1335,7 @@ class _HomePageState extends State<HomePage> {
             ),
           ],
           const SizedBox(height: 8),
-          AlgorithmBadge(
-            category: gProfileService.active?.category,
-          ),
+          AlgorithmBadge(category: gProfileService.active?.category),
           const SizedBox(height: 8),
           LiveReadout(
             active: active,
@@ -1336,10 +1347,7 @@ class _HomePageState extends State<HomePage> {
           MwavePanel(status: _st),
           if (_st.engineFatigueDetected || _st.fatigueDetected) ...[
             const SizedBox(height: 8),
-            FatigueBanner(
-              rmsSlope: _st.rmsSlope,
-              mdfSlope: _st.mdfSlope,
-            ),
+            FatigueBanner(rmsSlope: _st.rmsSlope, mdfSlope: _st.mdfSlope),
             if (_st.engineReasons.isNotEmpty) ...[
               const SizedBox(height: 4),
               Text(
@@ -1443,8 +1451,7 @@ class _HomePageState extends State<HomePage> {
             title: 'RMS (근활성도 크기)',
             queue: _rms,
             color: cRms,
-            hint:
-                '√(Σ(raw-mean)²/N) — 1초 윈도우. 초기 8점으로 관리도 학습 → UCL 초과 시 이상.',
+            hint: '√(Σ(raw-mean)²/N) — 1초 윈도우. 초기 8점으로 관리도 학습 → UCL 초과 시 이상.',
             baselineY: _st.baselineRms > 0 ? _st.baselineRms : null,
             centerY: _st.rmsCcMean,
             upperLimitY: _st.rmsCcUcl,
@@ -1455,8 +1462,7 @@ class _HomePageState extends State<HomePage> {
             title: 'MDF (근피로 주파수)',
             queue: _mdf,
             color: cMdf,
-            hint:
-                'FFT 파워 중앙 주파수 (Hz). 초기 8점으로 관리도 학습 → LCL 미만 시 이상.',
+            hint: 'FFT 파워 중앙 주파수 (Hz). 초기 8점으로 관리도 학습 → LCL 미만 시 이상.',
             centerY: _st.mdfCcMean,
             lowerLimitY: _st.mdfCcLcl,
             height: 140,
@@ -1467,15 +1473,17 @@ class _HomePageState extends State<HomePage> {
             mdfSlopeQueue: _mdfSlope,
             // 관리도 UCL/LCL → 슬로프 등가 (= 2σ/mean × 100)
             rmsSlopeUcl:
-                (_st.rmsCcUcl != null && _st.rmsCcMean != null &&
-                        _st.rmsCcMean! > 0.01)
-                    ? (_st.rmsCcUcl! - _st.rmsCcMean!) / _st.rmsCcMean! * 100
-                    : null,
+                (_st.rmsCcUcl != null &&
+                    _st.rmsCcMean != null &&
+                    _st.rmsCcMean! > 0.01)
+                ? (_st.rmsCcUcl! - _st.rmsCcMean!) / _st.rmsCcMean! * 100
+                : null,
             mdfSlopeLcl:
-                (_st.mdfCcLcl != null && _st.mdfCcMean != null &&
-                        _st.mdfCcMean! > 0.01)
-                    ? (_st.mdfCcLcl! - _st.mdfCcMean!) / _st.mdfCcMean! * 100
-                    : null,
+                (_st.mdfCcLcl != null &&
+                    _st.mdfCcMean != null &&
+                    _st.mdfCcMean! > 0.01)
+                ? (_st.mdfCcLcl! - _st.mdfCcMean!) / _st.mdfCcMean! * 100
+                : null,
           ),
           const SizedBox(height: 6),
           ChartCard(

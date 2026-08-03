@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 enum SubjectCategory {
   healthy(
     code: 'A',
+    fileTag: 'A_healthy',
     label: '건강한 비장애인',
     short: '건강',
     description: '신경학적 손상 없음. 대조군(control) 측정에 사용.',
@@ -12,6 +13,7 @@ enum SubjectCategory {
   ),
   incomplete(
     code: 'B',
+    fileTag: 'B_incomplete',
     label: '불완전 마비 환자',
     short: '불완전마비',
     description: '부분적 운동 기능 보존. 잔존 EMG 신호 측정 가능.',
@@ -19,6 +21,7 @@ enum SubjectCategory {
   ),
   complete(
     code: 'C',
+    fileTag: 'C_complete',
     label: '완전 마비 환자',
     short: '완전마비',
     description: '자발적 운동 기능 소실. FES 자극 반응 평가.',
@@ -26,6 +29,7 @@ enum SubjectCategory {
   );
 
   final String code;
+  final String fileTag;
   final String label;
   final String short;
   final String description;
@@ -33,6 +37,7 @@ enum SubjectCategory {
 
   const SubjectCategory({
     required this.code,
+    required this.fileTag,
     required this.label,
     required this.short,
     required this.description,

@@ -32,7 +32,7 @@ class RawLogRecorder {
   int get dropped => _dropped;
 
   /// 세션 시작 — 이전 데이터를 비우고 기록 시작.
-  void start() {
+  void start({String filenameTag = 'unknown'}) {
     _timesMs.clear();
     _raw.clear();
     _lastIdx = -1;
@@ -40,7 +40,7 @@ class RawLogRecorder {
     _flushed = 0;
     _rewrite = false;
     _path = null;
-    _filename = 'raw_${_stamp()}.csv';
+    _filename = 'raw_${_stamp()}_$filenameTag.csv';
     _recording = true;
   }
 
@@ -107,8 +107,13 @@ class RawLogRecorder {
     if (_flushed >= _timesMs.length && !_rewrite) return _path; // 새 데이터 없음
     final upTo = _timesMs.length; // 쓰는 동안 addPacket 이 들어와도 커서가 앞서지 않게
     final rows = _rowsFrom(_flushed);
-    final p = await appendCsvFile(_filename!, _header, rows,
-        subjectId: subjectId, rewrite: _rewrite);
+    final p = await appendCsvFile(
+      _filename!,
+      _header,
+      rows,
+      subjectId: subjectId,
+      rewrite: _rewrite,
+    );
     if (p == null) return null; // 웹이거나 쓰기 실패 — 커서를 그대로 둬 다음에 재시도
     _path = p;
     _flushed = upTo;
@@ -122,7 +127,10 @@ class RawLogRecorder {
     if (isEmpty) return null;
     final flushed = await flush(subjectId: subjectId);
     if (flushed != null) return flushed;
-    return saveCsvFile(_filename ?? 'raw_${_stamp()}.csv', toCsv(),
-        subjectId: subjectId);
+    return saveCsvFile(
+      _filename ?? 'raw_${_stamp()}.csv',
+      toCsv(),
+      subjectId: subjectId,
+    );
   }
 }

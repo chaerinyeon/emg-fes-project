@@ -30,7 +30,7 @@ class EnvLogRecorder {
   int get length => _timesMs.length;
 
   /// 세션 시작 — 이전 데이터를 비우고 기록 시작.
-  void start() {
+  void start({String filenameTag = 'unknown'}) {
     _timesMs.clear();
     _envValues.clear();
     _raw.clear();
@@ -43,7 +43,7 @@ class EnvLogRecorder {
     _markers.clear();
     _flushed = 0;
     _path = null;
-    _filename = 'env_${_stamp()}.csv';
+    _filename = 'env_${_stamp()}_$filenameTag.csv';
     _recording = true;
   }
 
@@ -94,16 +94,18 @@ class EnvLogRecorder {
     final sb = StringBuffer();
     final t0 = _timesMs.isEmpty ? 0 : _timesMs.first;
     for (var i = from; i < _timesMs.length; i++) {
-      sb.writeln('${_timesMs[i] - t0},'
-          '${_raw[i].toStringAsFixed(1)},'
-          '${_envValues[i].toStringAsFixed(1)},'
-          '${_rms[i].toStringAsFixed(1)},'
-          '${_mdf[i].toStringAsFixed(1)},'
-          '${_mwAmp[i].toStringAsFixed(1)},'
-          '${_mwArea[i].toStringAsFixed(1)},'
-          '${_mwLatency[i].toStringAsFixed(1)},'
-          '${_mwValid[i]},'
-          '${_markers[i]}');
+      sb.writeln(
+        '${_timesMs[i] - t0},'
+        '${_raw[i].toStringAsFixed(1)},'
+        '${_envValues[i].toStringAsFixed(1)},'
+        '${_rms[i].toStringAsFixed(1)},'
+        '${_mdf[i].toStringAsFixed(1)},'
+        '${_mwAmp[i].toStringAsFixed(1)},'
+        '${_mwArea[i].toStringAsFixed(1)},'
+        '${_mwLatency[i].toStringAsFixed(1)},'
+        '${_mwValid[i]},'
+        '${_markers[i]}',
+      );
     }
     return sb.toString();
   }
@@ -119,8 +121,12 @@ class EnvLogRecorder {
     if (_flushed >= _timesMs.length) return _path; // 새 데이터 없음
     final upTo = _timesMs.length; // 쓰는 동안 add() 가 더 들어와도 커서가 앞서지 않게 고정
     final rows = _rowsFrom(_flushed);
-    final p =
-        await appendCsvFile(_filename!, _header, rows, subjectId: subjectId);
+    final p = await appendCsvFile(
+      _filename!,
+      _header,
+      rows,
+      subjectId: subjectId,
+    );
     if (p == null) return null; // 웹이거나 쓰기 실패 — 커서를 그대로 둬 다음에 재시도
     _path = p;
     _flushed = upTo;
@@ -134,7 +140,10 @@ class EnvLogRecorder {
     if (isEmpty) return null;
     final flushed = await flush(subjectId: subjectId);
     if (flushed != null) return flushed;
-    return saveCsvFile(_filename ?? 'env_${_stamp()}.csv', toCsv(),
-        subjectId: subjectId);
+    return saveCsvFile(
+      _filename ?? 'env_${_stamp()}.csv',
+      toCsv(),
+      subjectId: subjectId,
+    );
   }
 }

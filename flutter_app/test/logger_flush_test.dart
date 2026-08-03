@@ -13,6 +13,7 @@ import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 
 import 'package:flutter_app/services/env_logger.dart';
 import 'package:flutter_app/services/raw_logger.dart';
+import 'package:flutter_app/services/csv_exporter.dart';
 
 class _FakePathProvider extends PathProviderPlatform
     with MockPlatformInterfaceMixin {
@@ -44,6 +45,13 @@ void main() {
   });
 
   group('EnvLogRecorder', () {
+    test('분류 태그가 파일명에 포함된다', () async {
+      final log = EnvLogRecorder()..start(filenameTag: 'B_incomplete');
+      log.add(1000, 1);
+      final path = await log.flush(subjectId: 'subj');
+      expect(path, endsWith('_B_incomplete.csv'));
+    });
+
     test('여러 번 flush 해도 행이 중복·누락되지 않는다', () async {
       final log = EnvLogRecorder()..start();
       for (var i = 0; i < 5; i++) {
@@ -82,8 +90,11 @@ void main() {
       }
       log.stop();
       final p = await log.save(subjectId: 'subj');
-      expect(await _read(p!), log.toCsv(),
-          reason: '이어쓴 파일이 toCsv() 전문과 바이트 단위로 일치해야 한다');
+      expect(
+        await _read(p!),
+        log.toCsv(),
+        reason: '이어쓴 파일이 toCsv() 전문과 바이트 단위로 일치해야 한다',
+      );
     });
 
     test('Time(ms) 는 flush 경계를 넘어도 첫 샘플 기준 상대값을 유지한다', () async {
@@ -94,9 +105,21 @@ void main() {
       final p = await log.save(subjectId: 'subj');
       final rows = _rows(await _read(p!));
       expect(rows[0].split(',').first, '0');
-      expect(rows[1].split(',').first, '100',
-          reason: 'flush 이후 행도 같은 t0 로 정규화돼야 한다');
+      expect(
+        rows[1].split(',').first,
+        '100',
+        reason: 'flush 이후 행도 같은 t0 로 정규화돼야 한다',
+      );
     });
+  });
+
+  test('요약 EMG 파일명에도 분류 태그가 포함된다', () async {
+    final path = await downloadCsv(
+      const [],
+      subjectId: 'subj',
+      filenameTag: 'C_complete',
+    );
+    expect(path, endsWith('_C_complete.csv'));
   });
 
   group('RawLogRecorder', () {
@@ -116,6 +139,13 @@ void main() {
       }
       return b.toBytes();
     }
+
+    test('분류 태그가 파일명에 포함된다', () async {
+      final log = RawLogRecorder()..start(filenameTag: 'C_complete');
+      log.addPacket(packet(0, 1));
+      final path = await log.flush(subjectId: 'subj');
+      expect(path, endsWith('_C_complete.csv'));
+    });
 
     test('여러 번 flush 해도 행이 중복·누락되지 않는다', () async {
       final log = RawLogRecorder()..start();
