@@ -46,6 +46,7 @@ class BaseballGame extends FlameGame {
   Sprite? stadiumSprite;
   Sprite? gloveOpenSprite;
   Sprite? gloveClosedSprite;
+  Sprite? ballSprite;
   SpriteAnimation? pitcherAnimation;
 
   final List<StreamSubscription<Object?>> _subs = [];
@@ -54,7 +55,10 @@ class BaseballGame extends FlameGame {
   double feedNowSec = 0;
 
   /// 글러브가 공을 받는 y 좌표.
-  double get glovePlateY => size.y * 0.80;
+  ///
+  /// 배경(assets/game/background.png)의 홈플레이트가 세로 88% 지점에 있다.
+  /// 포수 시점이라 글러브는 그 바로 앞에 온다.
+  double get glovePlateY => size.y * 0.82;
 
   /// 현재 σ / 예측 σ — HUD 가 읽는다.
   double? sigmaNow;
@@ -103,6 +107,11 @@ class BaseballGame extends FlameGame {
   /// 새어 나와 프레임워크 에러로 보고된다. 그래서 **매니페스트로 존재를 먼저
   /// 확인하고** 있는 것만 부른다.
   Future<void> _loadOptionalAssets() async {
+    // Flame 은 기본으로 assets/images/ 아래를 본다. 이 프로젝트는 게임 에셋을
+    // assets/game/ 에 두므로 프리픽스를 맞춰준다. (안 맞추면 PNG 를 넣어도
+    // 계속 코드 드로잉이 나온다 — 조용히 실패하는 종류의 버그다.)
+    images.prefix = 'assets/';
+
     Set<String> available;
     try {
       final manifest = await AssetManifest.loadFromAssetBundle(rootBundle);
@@ -112,13 +121,16 @@ class BaseballGame extends FlameGame {
     }
 
     Future<Sprite?> loadIfPresent(String name) async {
-      if (!available.contains('assets/images/$name')) return null;
-      return Sprite.load(name);
+      if (!available.contains('${images.prefix}$name')) return null;
+      return Sprite.load(name, images: images);
     }
 
-    stadiumSprite = await loadIfPresent('game/stadium.png');
+    // background.png 를 먼저 보고, 없으면 stadium.png 로 떨어진다.
+    stadiumSprite = await loadIfPresent('game/background.png') ??
+        await loadIfPresent('game/stadium.png');
     gloveOpenSprite = await loadIfPresent('game/glove_open.png');
     gloveClosedSprite = await loadIfPresent('game/glove_closed.png');
+    ballSprite = await loadIfPresent('game/ball.png');
   }
 
   /// σ 존 색을 아주 옅게 깐다. **연출 전용** — 게임 규칙에는 영향이 없다.

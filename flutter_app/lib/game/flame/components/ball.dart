@@ -61,7 +61,8 @@ class Ball extends PositionComponent with HasGameReference<BaseballGame> {
     size = Vector2.all(r * 2);
 
     // 투수(화면 중앙 상단) → 글러브(하단 중앙). 살짝 좌우로 흔들어 궤적을 만든다.
-    final fromY = h * 0.46, toY = game.glovePlateY;
+    // 마운드(세로 49%)에서 출발해 글러브로 온다.
+    final fromY = h * 0.49, toY = game.glovePlateY;
     final sway = math.sin(p * math.pi) * w * 0.05;
     position = Vector2(
       w * 0.5 + sway,
@@ -90,6 +91,22 @@ class Ball extends PositionComponent with HasGameReference<BaseballGame> {
     final r = size.x / 2;
     final o = Offset(r, r);
     final a = _fade.clamp(0.0, 1.0);
+
+    final sprite = game.ballSprite;
+    if (sprite != null) {
+      // 그림자를 먼저 깔아 공이 배경에 떠 있지 않게 한다.
+      canvas.drawCircle(
+        o.translate(r * 0.16, r * 0.2),
+        r * 0.95,
+        Paint()..color = Color.fromRGBO(0, 0, 0, 0.22 * a),
+      );
+      sprite.render(
+        canvas,
+        size: size,
+        overridePaint: Paint()..color = Color.fromRGBO(255, 255, 255, a),
+      );
+      return;
+    }
 
     // 그림자 — 공이 클수록(가까울수록) 진하게
     canvas.drawCircle(

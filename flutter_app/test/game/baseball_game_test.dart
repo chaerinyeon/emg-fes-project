@@ -70,6 +70,11 @@ class ScriptedFeed implements FatigueFeed {
 }
 
 void main() {
+  // flame_test 의 testWithGame 은 바인딩을 초기화하지 않는다. 그러면 onLoad 의
+  // AssetManifest 로드가 "Binding has not yet been initialized" 로 실패해
+  // 에셋이 조용히 null 이 된다 — 실기기에서는 나지 않는 문제다.
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   /// 공식 하네스로 게임을 **mount 된 상태**로 띄운다.
   ///
   /// 직접 `onLoad` 만 부르면 게임이 mount 되지 않는다. 그러면 Flame 이 자식
@@ -194,6 +199,25 @@ void main() {
       expect(ball.isMounted, isTrue, reason: '쥐고 있는 동안 사라지면 안 된다');
       expect(ball.position.y, closeTo(game.glovePlateY, game.size.y * 0.05),
           reason: '글러브 위에 머물러야 한다');
+    });
+  });
+
+  group('★ 에셋이 실제로 쓰인다', () {
+    gameTest('배경·글러브·공 스프라이트가 로드된다', (game) async {
+      // pubspec 에 등록만 하고 로더에 안 붙이면 PNG 를 넣어도 코드 드로잉이
+      // 계속 나온다 — 실제로 투수가 그랬다.
+      expect(game.stadiumSprite, isNotNull, reason: 'background.png');
+      expect(game.gloveOpenSprite, isNotNull, reason: 'glove_open.png');
+      expect(game.gloveClosedSprite, isNotNull, reason: 'glove_closed.png');
+      expect(game.ballSprite, isNotNull, reason: 'ball.png');
+    });
+
+    gameTest('글러브가 배경의 홈플레이트 근처에 온다', (game) async {
+      game.update(0);
+      // 배경 이미지의 홈플레이트가 세로 88% 지점이다.
+      final plate = game.size.y * 0.88;
+      expect((game.glovePlateY - plate).abs(), lessThan(game.size.y * 0.12),
+          reason: '글러브가 홈플레이트에서 멀면 포구가 허공에서 일어난다');
     });
   });
 

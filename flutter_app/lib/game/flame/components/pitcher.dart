@@ -34,7 +34,8 @@ class Pitcher extends PositionComponent with HasGameReference<BaseballGame> {
   void onGameResize(Vector2 size) {
     super.onGameResize(size);
     this.size = Vector2(size.x * 0.13, size.x * 0.19);
-    position = Vector2(size.x * 0.5, size.y * 0.535);
+    // 배경의 마운드가 세로 49% 지점이다. 투수는 그 위에 선다.
+    position = Vector2(size.x * 0.5, size.y * 0.50);
   }
 
   @override
