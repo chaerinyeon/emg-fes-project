@@ -71,17 +71,38 @@ const unsigned long DATA_THROTTLE_MS = 100;     // 데이터 송신 최소 간�
 // 자극 artifact 검출 임계 (DC 보정된 centered 값의 절대값).
 // 실측에서 normal EMG burst 최대보다 충분히 커야 함. 일반적으로 1000~2000 범위.
 const int MW_ARTIFACT_THRESHOLD = 1000;
+// ── 아래 두 상수는 실측 데이터로 정했다 (data 브랜치) ──────────────────────
+// master_pulses.csv 123,182 펄스: ISI 중앙값 31ms, p1=26ms, 잠금세션 최소 23ms.
+// RAW 앙상블 평균(raw_20260717_033307 n=270, raw_20260717_141940 n=2042):
+//   0~4ms   자극 artifact 본체 (|centered| 900~1300)
+//   5~13ms  M-wave 본체 — 여기서 바닥까지 감쇠
+//   14~23ms 바닥 (노이즈 플로어)
+//   24~30ms 다시 상승 ← 다음 펄스가 다가오는 램프. M-wave 아님
+//   31ms~   다음 자극 artifact (값 급등)
 const int MW_WINDOW_START_MS = 5;             // 자극 후 ms (artifact 제외용 dead-zone)
-const int MW_WINDOW_END_MS = 30;              // 자극 후 ms
-const int MW_WINDOW_LEN = (MW_WINDOW_END_MS - MW_WINDOW_START_MS) + 1;  // 26 샘플 (1kHz)
-const unsigned long MW_REFRACTORY_MS = 40;    // 같은 자극 중복 트리거 방지 (FES ≤ 25Hz 가정)
+// 15ms에서 닫아 오프라인 분석 파이프라인과 창을 일치시킨다.
+// ~/emgfes-data/fes_fatigue_spc.py 가 피로 지표로 쓰는 창이 정확히 s[o+5:o+15]
+// 이고(peak-to-peak), 이 프로젝트의 SPC 결과 전부가 그 정의 위에 서 있다.
+// 위 앙상블에서도 M-wave 는 13~15ms 에 바닥이므로 신호 손실이 없고, 24ms 부터
+// 시작되는 다음 펄스 램프와는 9ms 여유가 생긴다. 옛 30ms 는 그 램프를 그대로
+// 창에 넣고 있었다 — mwArea 가 피로가 아니라 자극 간격에 반응했다는 뜻이다.
+const int MW_WINDOW_END_MS = 15;              // 자극 후 ms — 오프라인 s[o+5:o+15] 와 동일
+const int MW_WINDOW_LEN = (MW_WINDOW_END_MS - MW_WINDOW_START_MS) + 1;  // 11 샘플 (1kHz)
+// 이전 값 40ms 는 펄스 간격 31ms 보다 커서, 자극이 안정적으로 31ms 간격으로
+// 들어오는 잠금 세션에서 격번으로만 검출됐다(검출률 ~50%). M-wave 표본이 절반이
+// 되고, blanking 도 mwArtifactAtMs 를 키로 삼으므로 함께 절반만 걸려 RMS/MDF 가
+// 자극 스파이크에 오염됐다.
+// 21ms — 캡처(0~16ms) 종료 후의 링잉만 걸러내면 된다. 캡처 중 재트리거는
+// !mwCapturing 가드가 이미 막는다. 실측 최소 ISI 23ms 이므로 진짜 펄스를 막지
+// 않는다(ISI ≤ 21ms 는 전체의 0.01%).
+const unsigned long MW_REFRACTORY_MS = 21;    // < 실측 최소 ISI 23ms
 
 // ===== FES 자극 blanking =====
 // 자극 검출 직후 이 시간(ms)만큼 표본을 RMS/MDF/ENV 계산에서 제외(직전 깨끗한 값으로 hold).
 // 기본 5ms = 자극 스파이크 + 증폭기 회복 구간(MW_WINDOW_START_MS와 동일).
 //   → RMS/MDF/SMR 의 주 오염원인 거대 스파이크 제거, 펄스 사이 데이터는 대부분 보존.
-// 값을 ~30ms로 키우면 M-wave(유발반응)까지 제외되지만, 25Hz 자극에선 펄스 간격이
-// 40ms뿐이라 데이터가 거의 다 blanking 되므로 권장하지 않음.
+// 값을 ~25ms로 키우면 M-wave(유발반응)까지 제외되지만, 실측 펄스 간격이 31.17ms
+// 뿐이라 데이터가 거의 다 blanking 되므로 권장하지 않음.
 const int STIM_BLANK_MS = 5;
 
 // ===== BLE 핸들 =====
@@ -302,7 +323,7 @@ void samplingTask(void* /*param*/) {
     // ===== M-wave: 자극 artifact 감지 + 윈도우 캡처 (원신호 기준) =====
     // FES는 외부에서 수동 제어 → ESP는 자극 켜짐을 모르므로, 세션 동작 중
     // (systemRunning)이면 항상 artifact를 탐지한다. refractory 경과 후 큰
-    // 스파이크가 들어오면 artifact로 간주, 5~30ms 동안 centered 샘플 수집.
+    // 스파이크가 들어오면 artifact로 간주, 5~15ms 동안 centered 샘플 수집.
     // M-wave 측정은 '진짜' 원신호로 해야 하므로 blanking 이전에 수행한다.
     {
       if (systemRunning && !mwCapturing &&
