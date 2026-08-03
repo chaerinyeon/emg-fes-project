@@ -43,6 +43,7 @@ dependencies:
   flutter_dotenv: ^5.1.0
   path_provider: ^2.1.5
   share_plus: ^11.0.0
+  flame: ^1.38.0
 
 dev_dependencies:
   flutter_test:
@@ -54,6 +55,7 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+  flame_test: ^2.3.0
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -68,6 +70,8 @@ flutter:
 
   assets:
     - .env
+    # 게임 에셋(배경·글러브·투수 스프라이트). 비어 있어도 코드 드로잉으로 동작한다.
+    - assets/game/
 
   # To add assets to your application, add an assets section, like this:
   # assets:

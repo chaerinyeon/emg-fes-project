@@ -35,6 +35,7 @@ import '../widgets/pipeline/pipeline_diagram.dart';
 import '../widgets/mwave/algorithm_badge.dart';
 import '../widgets/mwave/mwave_panel.dart';
 import '../widgets/profile/profile_bar.dart';
+import '../game/ui/game_screen.dart';
 import '../widgets/readout/live_readout.dart';
 import 'monitor_screen.dart';
 import 'splash_screen.dart';
@@ -1272,6 +1273,14 @@ class _HomePageState extends State<HomePage> {
             onEmergency: () => _send({'cmd': 'emergency'}),
           ),
           const SizedBox(height: 14),
+          const SectionTitle('바이오피드백 훈련'),
+          const SizedBox(height: 6),
+          _CatchGameCard(
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const GameScreen()),
+            ),
+          ),
+          const SizedBox(height: 14),
           const SectionTitle('마사지기 조절 (릴레이 컨트롤러)'),
           const SizedBox(height: 6),
           MassagerControl(
@@ -1432,6 +1441,56 @@ class _HomePageState extends State<HomePage> {
           ),
           const SizedBox(height: 8),
         ],
+      ),
+    );
+  }
+}
+
+/// 대시보드의 캐치 게임 진입 카드.
+///
+/// 게임 화면은 자체 `SessionController` 를 소유하므로 여기서는 라우트만 연다.
+class _CatchGameCard extends StatelessWidget {
+  const _CatchGameCard({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            children: [
+              const Text('⚾', style: TextStyle(fontSize: 34)),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '캐치 게임',
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleMedium
+                          ?.copyWith(fontWeight: FontWeight.w800),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      '자극 박자에 맞춰 쥐어 공을 잡습니다.\n'
+                      '근피로(σ)는 분위기와 휴식 안내에만 쓰입니다 — 점수는 안 깎입니다.',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(Icons.chevron_right),
+            ],
+          ),
+        ),
       ),
     );
   }
