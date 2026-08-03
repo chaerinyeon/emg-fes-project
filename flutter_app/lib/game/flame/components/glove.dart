@@ -18,6 +18,12 @@ import '../baseball_game.dart';
 class Glove extends PositionComponent with HasGameReference<BaseballGame> {
   Glove() : super(priority: 20, anchor: Anchor.bottomCenter);
 
+  /// 글러브 폭 (화면 폭 대비).
+  ///
+  /// 공 지름이 0.17w 이므로 이 값이 커질수록 실제 야구공-글러브 비율(약 1:4)에
+  /// 가까워진다. 포구 순간이 화면에서 확실히 읽혀야 해서 넉넉하게 잡는다.
+  static const double widthRatio = 0.44;
+
   /// 0 = 활짝 폄, 1 = 완전히 쥠.
   double closeAmount = 0;
 
@@ -49,7 +55,8 @@ class Glove extends PositionComponent with HasGameReference<BaseballGame> {
     //   전에 이 둘을 헷갈려 position.y 를 캔버스 높이로 계산하는 바람에
     //   세로 폰에서 1029(화면 844)가 되어 글러브가 통째로 화면 밖에 있었다.
     final canvas = size;
-    final gloveSize = Vector2(canvas.x * 0.34, canvas.x * 0.30);
+    final gloveSize =
+        Vector2(canvas.x * widthRatio, canvas.x * widthRatio * 0.88);
     this.size = gloveSize;
     position = Vector2(canvas.x * 0.5, game.glovePlateY + gloveSize.y * 0.30);
   }
@@ -75,7 +82,17 @@ class Glove extends PositionComponent with HasGameReference<BaseballGame> {
         ? game.gloveClosedSprite
         : game.gloveOpenSprite;
     if (sprite != null) {
-      sprite.render(canvas, size: size);
+      // ★ 두 스프라이트의 비율이 다르다(열림 0.92, 쥠 0.84). 같은 상자에 늘려
+      //   그리면 쥘 때 글러브가 세로로 늘어나며 튄다. 각자 비율을 지키고
+      //   **손목(아랫변)을 고정**해 손가락만 움직이는 것처럼 보이게 한다.
+      final src = sprite.srcSize;
+      final drawW = size.x;
+      final drawH = drawW * src.y / src.x;
+      sprite.render(
+        canvas,
+        position: Vector2(0, size.y - drawH),
+        size: Vector2(drawW, drawH),
+      );
       return;
     }
     _paintFallback(canvas);

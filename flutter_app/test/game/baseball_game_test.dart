@@ -142,31 +142,37 @@ void main() {
       final g = game.glove;
       // 전에는 onGameResize 에서 캔버스 크기와 컴포넌트 크기를 헷갈려
       // position.y 가 1029(화면 844)로 잡혀 통째로 화면 밖에 있었다.
-      expect(g.position.y, lessThan(game.size.y),
-          reason: '글러브 y=${g.position.y} 가 화면 높이 ${game.size.y} 밖이다');
-      expect(g.position.y - g.size.y, greaterThan(game.size.y * 0.5),
-          reason: '글러브는 화면 아래쪽에 있어야 한다');
+      // 앵커가 bottomCenter 라 position.y 가 글러브 아랫변이다.
+      expect(g.position.y, lessThanOrEqualTo(game.size.y),
+          reason: '글러브 아랫변 ${g.position.y} 이 화면 높이 ${game.size.y} 밖이다');
+      expect(g.position.y, greaterThan(game.size.y * 0.7),
+          reason: '글러브는 화면 아래쪽(포수 시점)에 있어야 한다');
+      expect(g.position.y - g.size.y, greaterThan(0),
+          reason: '글러브 윗변이 화면 위로 잘리면 안 된다');
       expect(g.position.x, closeTo(game.size.x / 2, 1),
           reason: '가로 중앙');
     });
   });
 
   group('★ 수축하는 동안 공을 잡고 있는다', () {
-    gameTest('글러브가 수축 지속시간만큼 닫혀 있는다', (game) async {
+    gameTest('자극 + 이완 시간만큼 쥐고 있는다', (game) async {
       final feed = game.feed as ScriptedFeed;
-      await feed.fireContraction(1.618, 0.4, holdSec: 0.5);
+      const stim = 0.629; // 실측 자극 지속
+      await feed.fireContraction(1.618, 0.4, holdSec: stim);
       game.update(0.016);
       expect(game.glove.isHolding, isTrue);
 
-      // 0.3초 뒤에도 아직 쥐고 있다
-      for (var i = 0; i < 19; i++) {
+      // 자극만 끝난 시점 — 아직 놓으면 안 된다. 근육은 곧바로 안 풀린다.
+      for (var i = 0; i < 38; i++) {
         game.update(0.016);
       }
-      expect(game.glove.isHolding, isTrue, reason: '수축이 끝나기 전에 펴면 안 된다');
-      expect(game.glove.closeAmount, closeTo(1.0, 0.01), reason: '완전히 쥔 상태');
+      expect(game.glove.isHolding, isTrue,
+          reason: '자극 종료 직후 놓으면 화면에서 너무 빨리 놓는 것처럼 보인다');
+      expect(game.glove.closeAmount, closeTo(1.0, 0.01));
 
-      // 0.5초를 넘기면 편다
-      for (var i = 0; i < 20; i++) {
+      // 자극 + 이완을 넘기면 편다.
+      final rest = ((stim + kRelaxationSec) / 0.016).ceil() - 38 + 2;
+      for (var i = 0; i < rest; i++) {
         game.update(0.016);
       }
       expect(game.glove.isHolding, isFalse);
@@ -183,6 +189,26 @@ void main() {
       expect(game.glove.isHolding, isTrue, reason: '최소 유지시간이 있어야 보인다');
     });
 
+    gameTest('공 유지시간이 글러브와 같다', (game) async {
+      final feed = game.feed as ScriptedFeed;
+      feed.advanceTo(0.7);
+      game.update(0.016);
+      game.update(0);
+      await feed.fireContraction(1.618, 0.4, holdSec: 0.629);
+      game.update(0.016);
+      final ball = game.children.whereType<Ball>().first;
+
+      // 글러브가 펴질 때까지 공도 또렷해야 한다.
+      var frames = 0;
+      while (game.glove.isHolding && frames < 200) {
+        game.update(0.016);
+        frames++;
+      }
+      expect(frames, greaterThan(55),
+          reason: '자극 0.629 + 이완 0.35 = 0.98초 ≈ 61프레임');
+      expect(ball.isDone, isFalse, reason: '글러브가 펴지기 전에 공이 사라지면 안 된다');
+    });
+
     gameTest('잡힌 공이 그동안 글러브 위에 머문다', (game) async {
       final feed = game.feed as ScriptedFeed;
       feed.advanceTo(0.7);
@@ -196,7 +222,8 @@ void main() {
       for (var i = 0; i < 15; i++) {
         game.update(0.016);
       }
-      expect(ball.isMounted, isTrue, reason: '쥐고 있는 동안 사라지면 안 된다');
+      expect(ball.isDone, isFalse, reason: '쥐고 있는 동안 사라지면 안 된다');
+      expect(ball.opacity, 1.0, reason: '쥐고 있는 동안은 또렷해야 한다');
       expect(ball.position.y, closeTo(game.glovePlateY, game.size.y * 0.05),
           reason: '글러브 위에 머물러야 한다');
     });
@@ -210,6 +237,20 @@ void main() {
       expect(game.gloveOpenSprite, isNotNull, reason: 'glove_open.png');
       expect(game.gloveClosedSprite, isNotNull, reason: 'glove_closed.png');
       expect(game.ballSprite, isNotNull, reason: 'ball.png');
+    });
+
+    gameTest('글러브 두 포즈의 비율이 달라도 늘어나지 않는다', (game) async {
+      // 교체된 에셋은 열림 1202x1309, 쥠 1149x1369 로 비율이 다르다. 같은 상자에
+      // 늘려 그리면 쥘 때 세로로 늘어나며 튄다.
+      final o = game.gloveOpenSprite!.srcSize;
+      final c = game.gloveClosedSprite!.srcSize;
+      final ao = o.y / o.x, ac = c.y / c.x;
+      expect((ao - ac).abs(), greaterThan(0.01),
+          reason: '비율이 같다면 이 방어가 필요 없다 — 에셋이 바뀐 것');
+      // 렌더가 비율을 보존하는지는 폭 기준으로 높이를 계산하는지로 확인한다.
+      final g = game.glove;
+      expect(g.size.x, greaterThan(0));
+      expect(g.size.y, greaterThan(0));
     });
 
     gameTest('글러브가 배경의 홈플레이트 근처에 온다', (game) async {

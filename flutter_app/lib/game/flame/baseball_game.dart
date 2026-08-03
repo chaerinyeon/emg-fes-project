@@ -169,13 +169,17 @@ class BaseballGame extends FlameGame {
       catchCount++;
       // 근육이 수축하는 **동안** 쥐고 있는다. 순간적으로 닫았다 펴면
       // "잡았다"가 아니라 "스쳤다"로 보이고, 되먹임의 내용이 달라진다.
-      glove.beginContraction(e.holdSec);
+      //
+      // 자극이 끝나도 근육은 곧바로 풀리지 않으므로 이완 시간을 더한다
+      // (kRelaxationSec — 측정값이 아니라 가정이다).
+      final hold = e.holdSec + kRelaxationSec;
+      glove.beginContraction(hold);
 
       // 날아오던 공이 있으면 글러브 안에 들어가고, 없으면(예측이 어긋났거나 첫
       // 수축이면) 글러브만 닫힌다. 어느 쪽이든 벌점은 없다.
       final ball =
           children.whereType<Ball>().where((b) => !b.caught).firstOrNull;
-      ball?.hold(holdSec: math.max(e.holdSec, Glove.minHoldSec));
+      ball?.hold(holdSec: math.max(hold, Glove.minHoldSec));
 
       add(CatchEffect(position: Vector2(size.x * 0.5, glovePlateY)));
       onCatch?.call();
@@ -192,6 +196,7 @@ class BaseballGame extends FlameGame {
     if (!resting) _drainContractions();
     super.update(dt);
     if (resting) return;
+    _sweepDeadBalls();
     _scheduleNextPitch();
   }
 
@@ -229,6 +234,16 @@ class BaseballGame extends FlameGame {
       _pending.clear();
       _clearBalls();
       _scheduledArrival = null;
+    }
+  }
+
+  /// 수명이 끝난 공을 치운다.
+  ///
+  /// 공이 자기 update 안에서 removeFromParent() 를 불러도 실제로 지워지지 않아
+  /// 글러브에 무한히 쌓였다. 부모가 직접 remove 하면 정상 처리된다.
+  void _sweepDeadBalls() {
+    for (final b in children.whereType<Ball>().where((b) => b.isDone).toList()) {
+      remove(b);
     }
   }
 
