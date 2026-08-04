@@ -94,27 +94,40 @@ class MonitorBroadcaster {
   int get clientCount => _clients.length;
 
   /// 10 Hz 관찰 프레임.
-  void pushTick(MonitorTick f) => _broadcast(jsonEncode(f.toJson()));
+  void pushTick(MonitorTick f) => _broadcast(f.toJson());
 
   /// 이산 사건(수축·존 전환·피로·휴식·세션).
-  void pushEvent(MonitorEvent e) => _broadcast(jsonEncode(e.toJson()));
+  void pushEvent(MonitorEvent e) => _broadcast(e.toJson());
 
   /// BLE 연결 상태. 웹은 이것과 소켓 끊김을 구분해서 표시한다.
-  void pushLink(String state) =>
-      _broadcast(jsonEncode({'t': 'link', 'state': state}));
+  void pushLink(String state) => _broadcast({'t': 'link', 'state': state});
 
   /// RAW 1kHz 파형 100표본 묶음. **구독한 클라이언트에게만** 간다.
   void pushRaw(int firstSampleMs, List<int> samples) {
-    if (_clients.isEmpty) return;
-    final msg = jsonEncode({'t': 'raw', 'i': firstSampleMs, 'v': samples});
+    if (!_clients.any((c) => c.wantsRaw)) return;
+    final msg = _encode({'t': 'raw', 'i': firstSampleMs, 'v': samples});
+    if (msg == null) return;
     for (final c in _clients) {
       if (c.wantsRaw) c.outbox.add(msg);
     }
   }
 
-  void _broadcast(String msg) {
+  void _broadcast(Map<String, dynamic> json) {
+    final msg = _encode(json);
+    if (msg == null) return;
     for (final c in _clients) {
       c.outbox.add(msg);
+    }
+  }
+
+  /// 인코딩 실패(EMG 값이 NaN·Infinity 등 비정상일 때)는 이 프레임 하나만
+  /// 버린다. 세션·자극 경로로 예외를 흘려보내지 않는다 — 웹은 tick 이 끊긴
+  /// 걸로 보고 알아서 회색으로 죽는다.
+  String? _encode(Map<String, dynamic> json) {
+    try {
+      return jsonEncode(json);
+    } catch (_) {
+      return null;
     }
   }
 
