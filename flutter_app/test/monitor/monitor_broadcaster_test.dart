@@ -103,9 +103,10 @@ void main() {
     await b.stop();
 
     expect(b.endpoint, isNull);
+    final client = HttpClient();
+    addTearDown(client.close);
     await expectLater(
-      HttpClient()
-          .getUrl(Uri.parse('http://127.0.0.1:${ep.port}/?k=${ep.token}')),
+      client.getUrl(Uri.parse('http://127.0.0.1:${ep.port}/?k=${ep.token}')),
       throwsA(isA<SocketException>()),
     );
   });

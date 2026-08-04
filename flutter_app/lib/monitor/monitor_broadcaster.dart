@@ -75,15 +75,26 @@ class MonitorBroadcaster {
     }
     if (server == null) return null;
 
-    _server = server;
-    _endpoint = MonitorEndpoint(
-      ip: await localIpv4(),
-      port: server.port,
-      token: makeToken(_rng),
-    );
-
-    server.listen(_handle, onError: (_) {}, cancelOnError: false);
-    return _endpoint;
+    try {
+      final endpoint = MonitorEndpoint(
+        ip: await localIpv4(),
+        port: server.port,
+        token: makeToken(_rng),
+      );
+      _server = server;
+      _endpoint = endpoint;
+      server.listen(_handle, onError: (_) {}, cancelOnError: false);
+      return _endpoint;
+    } catch (_) {
+      // 엔드포인트 구성이나 리스닝이 실패해도 이미 바인딩된 소켓을 남기지
+      // 않는다 — 남기면 idempotent 체크가 그 좀비 서버를 영원히 돌려준다.
+      try {
+        await server.close(force: true);
+      } catch (_) {}
+      _server = null;
+      _endpoint = null;
+      return null;
+    }
   }
 
   Future<void> stop() async {
