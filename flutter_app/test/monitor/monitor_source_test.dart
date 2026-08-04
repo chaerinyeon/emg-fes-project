@@ -1,13 +1,23 @@
+import 'dart:async';
+import 'dart:typed_data';
+
 import 'package:flutter_app/game/data/live_fatigue_feed.dart';
 import 'package:flutter_app/monitor/monitor_frame.dart';
 import 'package:flutter_app/monitor/monitor_source.dart';
 import 'package:flutter_app/services/session_controller.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+class _RawCall {
+  _RawCall(this.firstSampleMs, this.samples);
+  final int firstSampleMs;
+  final List<int> samples;
+}
+
 class _FakeSink implements MonitorSink {
   final ticks = <MonitorTick>[];
   final events = <MonitorEvent>[];
   final links = <String>[];
+  final raws = <_RawCall>[];
 
   @override
   void tick(MonitorTick f) => ticks.add(f);
@@ -17,6 +27,10 @@ class _FakeSink implements MonitorSink {
 
   @override
   void link(String state) => links.add(state);
+
+  @override
+  void raw(int firstSampleMs, List<int> samples) =>
+      raws.add(_RawCall(firstSampleMs, samples));
 }
 
 void main() {
@@ -94,4 +108,69 @@ void main() {
     expect(hello.mu0, feed.tracker.mu0);
     expect(hello.t1, feed.tracker.t1);
   });
+
+  test('session 이 파싱한 RAW 패킷이 sink.raw 로 전달된다', () async {
+    final rawCtrl = StreamController<List<int>>.broadcast();
+    addTearDown(rawCtrl.close);
+    final session = SessionController();
+    addTearDown(session.dispose);
+    // adopt() 를 빌려 rawStream 을 연결한다 — 실제 배선(home_page → adopt)과
+    // 같은 경로다. dataStream 은 이 테스트에서 쓰지 않으므로 빈 스트림.
+    session.adopt(
+      dataStream: const Stream<List<int>>.empty(),
+      rawStream: rawCtrl.stream,
+      label: '테스트',
+    );
+    final feed = LiveFatigueFeed(session: session);
+    addTearDown(feed.dispose);
+    final sink = _FakeSink();
+    final source = MonitorSource(session: session, feed: feed, sink: sink);
+
+    await feed.start();
+    source.start();
+    addTearDown(source.stop);
+
+    rawCtrl.add(_rawBytes(1000, [10, -20, 30]));
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(sink.raws, hasLength(1));
+    expect(sink.raws.single.firstSampleMs, 1000);
+    expect(sink.raws.single.samples, [10, -20, 30]);
+  });
+
+  test('stop() 하면 더 이상 RAW 를 전달하지 않는다', () async {
+    final rawCtrl = StreamController<List<int>>.broadcast();
+    addTearDown(rawCtrl.close);
+    final session = SessionController();
+    addTearDown(session.dispose);
+    session.adopt(
+      dataStream: const Stream<List<int>>.empty(),
+      rawStream: rawCtrl.stream,
+      label: '테스트',
+    );
+    final feed = LiveFatigueFeed(session: session);
+    addTearDown(feed.dispose);
+    final sink = _FakeSink();
+    final source = MonitorSource(session: session, feed: feed, sink: sink);
+
+    await feed.start();
+    source.start();
+    source.stop();
+
+    rawCtrl.add(_rawBytes(1000, [10, -20, 30]));
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(sink.raws, isEmpty);
+  });
+}
+
+/// RAW 패킷 바이트 조립 헬퍼(펌웨어 포맷, little-endian) — session_adopt_test.dart 와 동일.
+List<int> _rawBytes(int firstSampleMs, List<int> samples) {
+  final bd = ByteData(6 + 2 * samples.length);
+  bd.setUint32(0, firstSampleMs, Endian.little);
+  bd.setUint16(4, samples.length, Endian.little);
+  for (var i = 0; i < samples.length; i++) {
+    bd.setInt16(6 + 2 * i, samples[i], Endian.little);
+  }
+  return bd.buffer.asUint8List();
 }

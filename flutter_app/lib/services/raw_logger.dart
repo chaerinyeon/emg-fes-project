@@ -9,7 +9,11 @@
 //
 // ENV CSV(10Hz, env_*.csv)는 그대로 두고, 이 로거가 raw_*.csv를 따로 만든다.
 // 1kHz 원신호는 10Hz로 평균되기 전의 진짜 파형이라 필터링·주파수 재분석·딥러닝에 쓸 수 있다.
-import 'dart:typed_data';
+//
+// 실제 바이너리 디코딩은 core/raw_packet.dart 한 곳에만 있다 — 모니터 배선
+// (SessionController.adopt)도 같은 파서를 쓴다. 여기서 다시 파싱하면 포맷이
+// 바뀌었을 때 한쪽만 고쳐지는 사고가 난다.
+import '../core/raw_packet.dart';
 import 'csv_save_stub.dart' if (dart.library.html) 'csv_save_web.dart';
 
 class RawLogRecorder {
@@ -38,19 +42,19 @@ class RawLogRecorder {
 
   /// 바이너리 패킷 1건 추가. 잘렸거나 형식이 안 맞으면 폐기.
   void addPacket(List<int> bytes) {
-    if (!_recording || bytes.length < 6) return;
-    final bd = ByteData.sublistView(Uint8List.fromList(bytes));
-    final firstMs = bd.getUint32(0, Endian.little);
-    final count = bd.getUint16(4, Endian.little);
-    if (count <= 0 || bytes.length < 6 + 2 * count) return; // 잘린 패킷 폐기
+    if (!_recording) return;
+    final pkt = RawPacket.parse(bytes);
+    if (pkt == null) return; // 잘린 패킷 폐기
 
     // 누락 감지: 직전 패킷 끝 다음 인덱스와 연속이어야 함
+    final firstMs = pkt.firstSampleMs;
+    final count = pkt.samples.length;
     if (_lastIdx >= 0 && firstMs > _lastIdx + 1) {
       _dropped += firstMs - (_lastIdx + 1);
     }
     for (var i = 0; i < count; i++) {
       _timesMs.add(firstMs + i);
-      _raw.add(bd.getInt16(6 + 2 * i, Endian.little));
+      _raw.add(pkt.samples[i]);
     }
     _lastIdx = firstMs + count - 1;
   }

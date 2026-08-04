@@ -7,6 +7,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 import '../core/constants.dart';
 import '../core/models.dart';
+import '../core/raw_packet.dart';
 import '../core/subject_category.dart';
 import 'fatigue_engine.dart';
 import 'profile_service.dart';
@@ -61,6 +62,16 @@ class SessionController extends ChangeNotifier {
 
   /// 다른 화면에서 넘겨받은 데이터 구독. [adopt] 참고.
   StreamSubscription<List<int>>? _adoptedSub;
+
+  /// 다른 화면에서 넘겨받은 RAW 1kHz 바이너리 구독. [adopt] 참고.
+  /// [_adoptedSub] 와 마찬가지로 [release]/[disconnect] 가 정리한다.
+  StreamSubscription<List<int>>? _adoptedRawSub;
+
+  /// 파싱된 RAW 패킷을 내보내는 스트림. 모니터 배선([MonitorSource])이
+  /// 여기 구독해 웹으로 전달한다 — 이 컨트롤러는 파싱만 하고 판정하지 않는다.
+  final StreamController<RawPacket> _rawController =
+      StreamController<RawPacket>.broadcast();
+  Stream<RawPacket> get rawPackets => _rawController.stream;
 
   // ============================================================
   // 시뮬레이터
@@ -223,11 +234,17 @@ class SessionController extends ChangeNotifier {
   /// [cmdChar] 는 넘겨주면 이 컨트롤러도 명령을 보낼 수 있고, 생략하면
   /// 수신 전용이 된다.
   ///
+  /// [rawStream] 은 RAW 1kHz BLE characteristic 의 스트림(있으면). 넘기면
+  /// 파싱된 패킷이 [rawPackets] 로 나온다 — 구버전 펌웨어처럼 RAW
+  /// characteristic 자체가 없을 수 있어 선택값이다. 이 컨트롤러는 파싱만
+  /// 할 뿐 판정하지 않는다: 값을 보고 무언가를 결정하는 건 호출자의 몫이다.
+  ///
   /// 이미 주 데이터 소스([_hasPrimarySource] — 실 BLE 연결이든 시뮬레이터든)
   /// 를 쥐고 있는 컨트롤러에는 adopt 할 수 없다 — 조용히 덮어써서 두 소스가
   /// 하나의 피로 엔진에 섞이게 두는 대신 즉시 예외를 던진다.
   void adopt({
     required Stream<List<int>> dataStream,
+    Stream<List<int>>? rawStream,
     BluetoothCharacteristic? cmdChar,
     String label = kDeviceName,
   }) {
@@ -240,6 +257,8 @@ class SessionController extends ChangeNotifier {
     }
     _adoptedSub?.cancel();
     _adoptedSub = dataStream.listen(_onCharData);
+    _adoptedRawSub?.cancel();
+    _adoptedRawSub = rawStream?.listen(_onRawData);
     _cmdChar = cmdChar;
     deviceLabel = label;
     connState = 'connected';
@@ -258,6 +277,8 @@ class SessionController extends ChangeNotifier {
     if (_adoptedSub == null) return;
     _adoptedSub!.cancel();
     _adoptedSub = null;
+    _adoptedRawSub?.cancel();
+    _adoptedRawSub = null;
     _cmdChar = null;
     connState = 'disconnected';
     deviceLabel = '';
@@ -274,6 +295,8 @@ class SessionController extends ChangeNotifier {
       _dataSub = null;
       await _adoptedSub?.cancel();
       _adoptedSub = null;
+      await _adoptedRawSub?.cancel();
+      _adoptedRawSub = null;
       await _connSub?.cancel();
       _connSub = null;
       await _device?.disconnect();
@@ -330,6 +353,17 @@ class SessionController extends ChangeNotifier {
     if (bytes.isEmpty) return;
     try {
       _onMessage(jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>);
+    } catch (_) {}
+  }
+
+  /// RAW 1kHz 바이너리 패킷 수신. 파싱만 하고 [rawPackets] 로 흘려보낸다 —
+  /// 판정은 하지 않는다. 파싱에 걸리는 예외는 [RawPacket.parse] 자체가
+  /// null 로 흡수하지만, 이 경로가 BLE notify 콜백이라 무슨 일이 있어도
+  /// 세션/자극 경로로 예외가 새면 안 되므로 한 번 더 감싼다.
+  void _onRawData(List<int> bytes) {
+    try {
+      final pkt = RawPacket.parse(bytes);
+      if (pkt != null) _rawController.add(pkt);
     } catch (_) {}
   }
 
@@ -473,6 +507,8 @@ class SessionController extends ChangeNotifier {
     _connSub?.cancel();
     _scanSub?.cancel();
     _adoptedSub?.cancel();
+    _adoptedRawSub?.cancel();
+    _rawController.close();
     _device?.disconnect();
     super.dispose();
   }

@@ -8,6 +8,7 @@ library;
 
 import 'dart:async';
 
+import '../core/raw_packet.dart';
 import '../game/data/fatigue_feed.dart';
 import '../game/data/live_fatigue_feed.dart';
 import '../game/model/zone.dart';
@@ -20,6 +21,10 @@ abstract class MonitorSink {
   void tick(MonitorTick f);
   void event(MonitorEvent e);
   void link(String state);
+
+  /// RAW 1kHz 파형 100표본 묶음. [firstSampleMs] 는 세션 시작 기준 첫 샘플의
+  /// ms 인덱스([RawPacket.firstSampleMs] 그대로).
+  void raw(int firstSampleMs, List<int> samples);
 }
 
 /// [MonitorBroadcaster] 를 [MonitorSink] 로 감싼다.
@@ -40,6 +45,10 @@ class BroadcasterSink implements MonitorSink {
 
   @override
   void link(String state) => broadcaster.pushLink(state);
+
+  @override
+  void raw(int firstSampleMs, List<int> samples) =>
+      broadcaster.pushRaw(firstSampleMs, samples);
 }
 
 /// tick 주기(ms). 설계 문서의 10 Hz.
@@ -64,6 +73,7 @@ class MonitorSource {
   Timer? _timer;
   StreamSubscription<ContractionEvent>? _contractionSub;
   StreamSubscription<double>? _predictedSub;
+  StreamSubscription<RawPacket>? _rawSub;
   String? _lastLink;
   FatigueZone? _lastZone;
   bool _lastFatigue = false;
@@ -82,6 +92,11 @@ class MonitorSource {
       sink.event(MonitorEvent('contraction', c.t));
     });
     _predictedSub = feed.sigmaPredicted.listen((z) => _lastPredicted = z);
+    // RAW 는 세션이 파싱까지 끝낸 패킷을 그대로 옮길 뿐이다 — 여기서도
+    // 다시 판정하지 않는다. sink.raw 자체가(BroadcasterSink 경유) 구독자가
+    // 없으면 내부에서 no-op 이므로, 여기서 또 게이팅하면 이중 게이트가 된다.
+    _rawSub = session.rawPackets
+        .listen((p) => sink.raw(p.firstSampleMs, p.samples));
     _timer = Timer.periodic(
       const Duration(milliseconds: kMonitorTickMs),
       (_) => emitTick(),
@@ -96,6 +111,8 @@ class MonitorSource {
     _contractionSub = null;
     _predictedSub?.cancel();
     _predictedSub = null;
+    _rawSub?.cancel();
+    _rawSub = null;
     session.removeListener(_onSession);
     sink.event(MonitorEvent('session_stop', feed.nowSec));
   }

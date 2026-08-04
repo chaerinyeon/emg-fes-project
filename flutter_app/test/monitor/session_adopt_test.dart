@@ -1,12 +1,26 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:flutter_app/core/raw_packet.dart';
 import 'package:flutter_app/services/profile_service.dart';
 import 'package:flutter_app/services/session_controller.dart';
 import 'package:flutter_app/services/simulator_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive/hive.dart';
+
+/// RAW 패킷 바이트 조립 헬퍼. 펌웨어 포맷과 동일 —
+/// [uint32 firstSampleMs][uint16 count][int16 raw × count], little-endian.
+List<int> _rawBytes(int firstSampleMs, List<int> samples) {
+  final bd = ByteData(6 + 2 * samples.length);
+  bd.setUint32(0, firstSampleMs, Endian.little);
+  bd.setUint16(4, samples.length, Endian.little);
+  for (var i = 0; i < samples.length; i++) {
+    bd.setInt16(6 + 2 * i, samples[i], Endian.little);
+  }
+  return bd.buffer.asUint8List();
+}
 
 void main() {
   // startSimulator() 가 gProfileService.active 를 읽는다. Hive 를 초기화
@@ -150,5 +164,134 @@ void main() {
 
     expect(seenByHomePage, hasLength(1));
     expect(session.envLast, 5.0);
+  });
+
+  // ── RAW 1kHz 스트림 (Task 10) ─────────────────────────────────────────
+  group('adopt 의 rawStream', () {
+    test('바이트가 파싱되어 rawPackets 로 나온다', () async {
+      final dataCtrl = StreamController<List<int>>.broadcast();
+      addTearDown(dataCtrl.close);
+      final rawCtrl = StreamController<List<int>>.broadcast();
+      addTearDown(rawCtrl.close);
+      final session = SessionController();
+      addTearDown(session.dispose);
+
+      final got = <RawPacket>[];
+      final sub = session.rawPackets.listen(got.add);
+      addTearDown(sub.cancel);
+
+      session.adopt(
+        dataStream: dataCtrl.stream,
+        rawStream: rawCtrl.stream,
+        label: 'EMG-FES-01',
+      );
+      rawCtrl.add(_rawBytes(1000, [10, -20, 30]));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(got, hasLength(1));
+      expect(got.single.firstSampleMs, 1000);
+      expect(got.single.samples, [10, -20, 30]);
+    });
+
+    test('rawStream 을 안 넘기면 조용히 아무 것도 안 온다 (예외 없음)', () async {
+      final dataCtrl = StreamController<List<int>>.broadcast();
+      addTearDown(dataCtrl.close);
+      final session = SessionController();
+      addTearDown(session.dispose);
+
+      final got = <RawPacket>[];
+      final sub = session.rawPackets.listen(got.add);
+      addTearDown(sub.cancel);
+
+      expect(() => session.adopt(dataStream: dataCtrl.stream), returnsNormally);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(got, isEmpty);
+    });
+
+    test('잘린/쓰레기 패킷은 조용히 버려지고 세션은 계속된다', () async {
+      final dataCtrl = StreamController<List<int>>.broadcast();
+      addTearDown(dataCtrl.close);
+      final rawCtrl = StreamController<List<int>>.broadcast();
+      addTearDown(rawCtrl.close);
+      final session = SessionController();
+      addTearDown(session.dispose);
+
+      final got = <RawPacket>[];
+      final sub = session.rawPackets.listen(got.add);
+      addTearDown(sub.cancel);
+
+      session.adopt(
+        dataStream: dataCtrl.stream,
+        rawStream: rawCtrl.stream,
+        label: 'EMG-FES-01',
+      );
+
+      // 헤더도 못 채우는 쓰레기, 그리고 count 는 100인데 실제로는 모자란 패킷.
+      rawCtrl.add(const [1, 2, 3]);
+      rawCtrl.add(const []);
+      // 유효한 패킷도 하나 섞어 보내 파이프라인 자체는 살아 있음을 확인한다.
+      rawCtrl.add(_rawBytes(5, [1, 2]));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(got, hasLength(1));
+      expect(got.single.firstSampleMs, 5);
+      // 손상 패킷이 섞여도 데이터 파이프라인(JSON)은 영향받지 않는다.
+      dataCtrl.add(utf8.encode(jsonEncode({
+        'ts': 6000, 'env': 1.0, 'rms': 1.0, 'mdf': 1.0,
+        'v': true, 'run': true, 'stim': true, 'fd': false,
+      })));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(session.envLast, 1.0);
+    });
+
+    test('release 하면 raw 구독도 함께 끊긴다', () async {
+      final dataCtrl = StreamController<List<int>>.broadcast();
+      addTearDown(dataCtrl.close);
+      final rawCtrl = StreamController<List<int>>.broadcast();
+      addTearDown(rawCtrl.close);
+      final session = SessionController();
+      addTearDown(session.dispose);
+
+      final got = <RawPacket>[];
+      final sub = session.rawPackets.listen(got.add);
+      addTearDown(sub.cancel);
+
+      session.adopt(
+        dataStream: dataCtrl.stream,
+        rawStream: rawCtrl.stream,
+        label: 'EMG-FES-01',
+      );
+      session.release();
+
+      rawCtrl.add(_rawBytes(999, [1, 2, 3]));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(got, isEmpty);
+    });
+
+    test('disconnect() 해도 raw 구독이 끊긴다', () async {
+      final dataCtrl = StreamController<List<int>>.broadcast();
+      addTearDown(dataCtrl.close);
+      final rawCtrl = StreamController<List<int>>.broadcast();
+      addTearDown(rawCtrl.close);
+      final session = SessionController();
+      addTearDown(session.dispose);
+
+      final got = <RawPacket>[];
+      final sub = session.rawPackets.listen(got.add);
+      addTearDown(sub.cancel);
+
+      session.adopt(
+        dataStream: dataCtrl.stream,
+        rawStream: rawCtrl.stream,
+        label: 'EMG-FES-01',
+      );
+      await session.disconnect();
+
+      rawCtrl.add(_rawBytes(999, [1, 2, 3]));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(got, isEmpty);
+    });
   });
 }

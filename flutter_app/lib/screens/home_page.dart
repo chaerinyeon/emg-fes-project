@@ -52,10 +52,17 @@ class _HomePageState extends State<HomePage> {
   BluetoothDevice? _device;
   BluetoothCharacteristic? _cmdChar;
   BluetoothCharacteristic? _dataChar;
+  BluetoothCharacteristic? _rawChar; // RAW 1kHz (구버전 펌웨어엔 없을 수 있음)
 
   /// adopt 로 넘겨줄 수 있는 데이터 characteristic. 미연결이면 null.
   BluetoothCharacteristic? get _adoptableDataChar =>
       _connState == 'connected' ? _dataChar : null;
+
+  /// adopt 로 넘겨줄 수 있는 RAW characteristic. 미연결이거나 펌웨어가
+  /// RAW 를 지원하지 않으면 null — [SessionController.adopt] 의 `rawStream`
+  /// 은 선택값이라 null 이어도 게임 진입 자체는 막지 않는다.
+  BluetoothCharacteristic? get _adoptableRawChar =>
+      _connState == 'connected' ? _rawChar : null;
   StreamSubscription<List<int>>? _dataSub;
   StreamSubscription<List<int>>? _rawSub; // RAW 1kHz 바이너리 스트림 구독
   StreamSubscription<BluetoothConnectionState>? _connSub;
@@ -232,6 +239,7 @@ class _HomePageState extends State<HomePage> {
             _device = null;
             _cmdChar = null;
             _dataChar = null;
+            _rawChar = null;
           });
         }
       });
@@ -281,9 +289,11 @@ class _HomePageState extends State<HomePage> {
       // RAW 1kHz 바이너리 스트림 — 펌웨어가 지원할 때만 구독 (JSON 채널과 분리).
       await _rawSub?.cancel();
       _rawSub = null;
+      _rawChar = null;
       if (rawChar != null) {
         await rawChar.setNotifyValue(true);
         _rawSub = rawChar.lastValueStream.listen(_onRawData);
+        _rawChar = rawChar;   // 게임(adopt)에 넘겨줄 스트림 원본 — _openGame() 참고
       }
 
       setState(() {
@@ -330,6 +340,7 @@ class _HomePageState extends State<HomePage> {
         _device = null;
         _cmdChar = null;
         _dataChar = null;
+        _rawChar = null;
         _connState = 'disconnected';
       });
     }
@@ -1118,9 +1129,15 @@ class _HomePageState extends State<HomePage> {
 
       // adopt() 는 갓 만든 컨트롤러에 바로 걸기 때문에 "이미 주 데이터
       // 소스를 가진 컨트롤러" StateError 는 여기서 절대 나지 않는다.
+      //
+      // rawStream 은 웹 진단 패널의 RAW 파형을 위한 배선이다(Task 10).
+      // _rawLog 는 별도로 자신의 _rawSub 를 계속 구독해 CSV 기록을
+      // 이어간다 — lastValueStream 이 브로드캐스트라 두 소비자가 같은
+      // 패킷을 함께 받는다(dataChar 와 같은 패턴).
       final session = SessionController();
       session.adopt(
         dataStream: dataChar.lastValueStream,
+        rawStream: _adoptableRawChar?.lastValueStream,
         cmdChar: _cmdChar,
         label: _device?.platformName ?? kDeviceName,
       );

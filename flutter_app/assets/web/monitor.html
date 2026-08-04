@@ -1050,6 +1050,12 @@ function onMessage(msg) {
 
   if (m.t === "hello") {
     live = true;
+    // 새 세션이 시작되면 firstIdx 가 0 근처로 "뒤로" 돌아간다 — 진행 중
+    // 재연결(ws.onopen)이나 패널 재오픈과 달리, pushRawSamples() 의 불연속
+    // 감지(RAW_GAP_TOL_MS)는 앞으로 튀는 것만 잡고 뒤로 가는 건 못 잡는다.
+    // 그래서 hello 자체에서 한 번 더 비운다 — 안 그러면 이전 세션의 파형
+    // 꼬리에 새 세션의 시작 표본이 이어붙어 그려진다.
+    resetRawWindow();
     liveInit(m.session || "실측 세션");
     D.t1 = m.t1; D.t2 = m.t2; D.t3 = m.t3;
     for (const f of (m.ticks || [])) {
@@ -1262,7 +1268,15 @@ function drawRaw() {
   g.clearRect(0, 0, W, H);
 
   const n = Math.min(rawSeen, RAW_KEEP);
-  if (n < 2) return;
+  if (n < 2) {
+    // 표본이 아직 2개 미만 — 정지된 화면과 구분해 "기다리는 중"임을 밝힌다.
+    // 이게 없으면 패널을 펼친 직후엔 화면이 그냥 비어 있어(캔버스 배경색과
+    // 동일) 구독이 됐는지, 폰이 안 보내는지, 그냥 느린 건지 알 길이 없다.
+    g.fillStyle = "#5d6b82";
+    g.font = "12px -apple-system, BlinkMacSystemFont, sans-serif";
+    g.fillText("RAW 파형 수집 중…", 10, 18);
+    return;
+  }
 
   // 과거 파형을 지금인 척 보여주지 않는다 — 끊긴 지 오래됐으면 옅게 남기고
   // 문구로 밝힌다. drawRaw() 는 새 패킷마다도, 500ms 스테일 타이머에서도
