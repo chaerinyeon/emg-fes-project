@@ -568,6 +568,15 @@ const Z_MAX = 4;                       // 게이지 상한 (4σ)
 const zoneOf = z => z < 1 ? ZONES[0] : z < 2 ? ZONES[1] : z < 3 ? ZONES[2] : ZONES[3];
 const clamp  = (v, a, b) => v < a ? a : v > b ? b : v;
 
+/** i 번째 지점의 존. 라이브 tick 이 zone 을 실어 보냈으면(D.zone[i]) 그 값을,
+    없으면(재생 모드·백필 이전) zoneOf() 로 대체한다. render()·drawTimeline()·
+    renderStats()·타임라인 호버 툴팁이 전부 이 함수 하나로만 존을 정한다 —
+    한쪽만 zoneOf() 로 남으면 게이지와 타임라인이 다른 기준으로 갈라진다. */
+function zoneAt(i) {
+  const wz = D.zone ? D.zone[i] : undefined;
+  return (typeof wz === "number" && ZONES[wz]) ? ZONES[wz] : zoneOf(D.z[i]);
+}
+
 const fmtTime = s => {
   if (s == null || !isFinite(s)) return "—";
   const m = Math.floor(s / 60), r = Math.round(s % 60);
@@ -676,10 +685,11 @@ function drawTimeline() {
   const Y = v => PLOT_Y + PLOT_H - (clamp(v, 0, Z_MAX) / Z_MAX) * PLOT_H;
 
   // 같은 존이 이어지는 구간을 하나의 사각형으로 병합 — 샘플 수와 무관하게 가볍다.
+  // zoneAt() 을 쓴다 — 라이브 지점은 폰이 보낸 zone, 재생 지점은 zoneOf() 폴백.
   const band = [];
-  let runStart = 0, runZone = zoneOf(z[0]);
+  let runStart = 0, runZone = zoneAt(0);
   for (let i = 1; i <= z.length; i++) {
-    const zn = i < z.length ? zoneOf(z[i]) : null;
+    const zn = i < z.length ? zoneAt(i) : null;
     if (zn !== runZone) {
       const x0 = X(t[runStart]), x1 = X(i < t.length ? t[i] : tEnd);
       band.push(svgEl("rect", {
@@ -719,12 +729,10 @@ function drawTimeline() {
    ════════════════════════════════════════════════════════════════════ */
 function render() {
   const z  = D.z[idx];
-  // 라이브 tick 이 zone 을 실어 보냈으면 그 값을 쓴다 — 폰이 이미 판정한
-  // 값을 여기서 zoneOf() 로 다시 판정하면 두 화면(폰·웹)이 갈라질 수 있다.
-  // 재생 모드에서 불러온 JSON 은 t/z 만 갖고 있으므로 그때는 zoneOf() 가
-  // 유일한 근거로 남는다(D.zone 자체가 없어 아래 삼항이 자동으로 대체된다).
-  const wireZone = D.zone ? D.zone[idx] : undefined;
-  const zn = (typeof wireZone === "number" && ZONES[wireZone]) ? ZONES[wireZone] : zoneOf(z);
+  // zoneAt() 이 라이브/재생을 가른다 — 폰이 zone 을 보냈으면 그 값, 아니면
+  // zoneOf() 폴백. drawTimeline()·renderStats()·타임라인 툴팁도 같은 함수를
+  // 쓴다: 게이지 하나만 바꾸면 게이지와 타임라인이 다른 기준으로 갈라진다.
+  const zn = zoneAt(idx);
   const tEnd = D.t[D.t.length - 1] || 1;
 
   // 1. 바늘
@@ -786,10 +794,10 @@ function renderStats() {
   $("sLead").textContent = lead == null ? "—" : fmtTime(lead);
   $("sLead").classList.toggle("none", lead == null);
 
-  // 존별 체류 시간 — 색 없이도 읽히는 표
+  // 존별 체류 시간 — 색 없이도 읽히는 표. zoneAt() 으로 라이브/재생을 가른다.
   const dwell = [0, 0, 0, 0], entry = [null, null, null, null];
   for (let i = 0; i < D.z.length; i++) {
-    const k = ZONES.indexOf(zoneOf(D.z[i]));
+    const k = ZONES.indexOf(zoneAt(i));
     dwell[k] += i < D.t.length - 1 ? D.t[i + 1] - D.t[i] : 0;
     if (entry[k] == null) entry[k] = D.t[i];
   }
@@ -928,9 +936,36 @@ function liveWaiting() {
   $("zoneName").textContent = "대기";
   $("zoneIcon").textContent = "…";
   $("stamNum").textContent = "—";
+  $("stamFill").style.width = "0%";       // width:100% 가 마크업 기본값이다
+  // render() 가 한 번도 안 돌면 마크업 기본값이 그대로 남는다. "행동 배너"는
+  // "✅ 정상"이 기본값이라 가장 위험하다 — 세션이 시작되기도 전에 "정상"
+  // 상태 카드로 읽힌다(aria-live 리전이라 스크린리더에도 그렇게 읽힌다).
+  // 허브 점(#hubDot)은 fill 속성이 없어 SVG 기본값(검정)으로 찍힌다.
+  // 여기 나열한 것들은 존재하는 id 를 전부 훑어(마크업 vs render()/
+  // renderStats()/drawTimeline() 가 쓰는 id 대조) 찾은 것이다 — s1/s2/s3/
+  // sLead/sessLabel 은 마크업 기본값이 이미 "—"라 손댈 필요가 없었고,
+  // needle/needleL 은 stroke 속성이 아예 없어 SVG 기본값(stroke:none)으로
+  // 이미 투명하다.
+  $("bannerIcon").textContent = "…";
+  $("bannerText").textContent = "연결 대기 중";
+  const banner = $("banner");
+  banner.style.color = "";
+  banner.style.backgroundColor = "";
+  banner.style.borderColor = "";
+  banner.classList.remove("pulse");
+  $("hub").setAttribute("stroke", "#5d6b82");     // --ink-4, 중립 회색
+  $("hubDot").setAttribute("fill", "#5d6b82");
   $("scrub").disabled = true;
   $("btnPlay").disabled = true;
   $("btnReset").disabled = true;
+  // 세션 JSON 을 수동으로 불러오는 패널도 잠근다 — 열어 둔 채로 두면
+  // "샘플 되돌리기"/"적용" 클릭 한 번으로 D 가 통째로 가짜 세션("141940")
+  // 으로 바뀌면서 setStale/배너를 거치지 않고 다시 "지금"인 척한다. hello
+  // 를 받은 뒤(live===true)에도 다시 열어 줄 이유가 없어 여기서 한 번만
+  // 잠그면 충분하다 — liveWaiting() 은 항상 liveInit() 보다 먼저 실행된다.
+  $("jsonIn").disabled = true;
+  $("btnLoad").disabled = true;
+  $("btnSample").disabled = true;
   setStale(true);
   setBanner("연결 중 · 세션 시작을 기다리는 중입니다", null);
 }
@@ -1108,7 +1143,9 @@ function sampleAt(ev) {
 
 $("tlHit").addEventListener("pointermove", ev => {
   if (!D) return; // hello 대기 중 — 아직 훑을 세션이 없다
-  const s = sampleAt(ev), zn = zoneOf(D.z[s.i]);
+  // 여기도 zoneAt() — 안 그러면 호버 툴팁만 게이지·타임라인 밴드와 다른
+  // 기준(zoneOf())으로 존 이름을 보여주는 네 번째 갈라짐 지점이 된다.
+  const s = sampleAt(ev), zn = zoneAt(s.i);
   clear(tip);
   tip.appendChild(htmlEl("b", null, fmtTime(D.t[s.i])));
   tip.appendChild(document.createTextNode(" · "));
