@@ -202,6 +202,15 @@ class SessionController extends ChangeNotifier {
   // ============================================================
   // 이미 열린 BLE 연결 넘겨받기 (adopt)
   // ============================================================
+  /// 이 컨트롤러가 직접 여는 "주(主) 데이터 소스" — 실 BLE 연결
+  /// ([scanAndConnect]) 또는 시뮬레이터([startSimulator]) — 가 있는지.
+  ///
+  /// 컨트롤러는 한 번에 데이터 소스 하나만 갖는다. [adopt] 는 빌려 쓰는
+  /// 소스라 여기 포함하지 않는다 — 그래서 이 getter 는 [adopt] 가 "이미 주
+  /// 소스가 있으면 거부"할 때만 쓰인다. [release] 는 반대로 자신이
+  /// [adopt] 로 연 것이 있을 때만 정리한다(`_adoptedSub != null`).
+  bool get _hasPrimarySource => _device != null || simOn;
+
   /// 다른 화면이 이미 연 characteristic 스트림을 함께 구독한다.
   ///
   /// ## 왜 재스캔하지 않는가
@@ -214,18 +223,19 @@ class SessionController extends ChangeNotifier {
   /// [cmdChar] 는 넘겨주면 이 컨트롤러도 명령을 보낼 수 있고, 생략하면
   /// 수신 전용이 된다.
   ///
-  /// 이미 [scanAndConnect] 로 실제 연결을 쥐고 있는 컨트롤러에는 adopt 할 수
-  /// 없다 — 조용히 `_cmdChar`/`deviceLabel` 을 덮어써서 진짜 연결을 손상시키는
-  /// 대신 즉시 예외를 던진다.
+  /// 이미 주 데이터 소스([_hasPrimarySource] — 실 BLE 연결이든 시뮬레이터든)
+  /// 를 쥐고 있는 컨트롤러에는 adopt 할 수 없다 — 조용히 덮어써서 두 소스가
+  /// 하나의 피로 엔진에 섞이게 두는 대신 즉시 예외를 던진다.
   void adopt({
     required Stream<List<int>> dataStream,
     BluetoothCharacteristic? cmdChar,
     String label = kDeviceName,
   }) {
-    if (_device != null) {
+    if (_hasPrimarySource) {
       throw StateError(
-        'adopt() 실패: 이 컨트롤러는 이미 scanAndConnect() 로 실제 BLE 기기에 '
-        '연결되어 있다. 그 연결 위에 adopt 하면 상태가 조용히 망가진다.',
+        'adopt() 실패: 이 컨트롤러는 이미 실 BLE 연결 또는 시뮬레이터라는 '
+        '주(主) 데이터 소스를 갖고 있다. 그 위에 adopt 하면 두 소스가 하나의 '
+        '피로 엔진에 섞여 들어간다.',
       );
     }
     _adoptedSub?.cancel();
@@ -238,8 +248,15 @@ class SessionController extends ChangeNotifier {
   }
 
   /// [adopt] 로 받은 구독을 놓는다. 원래 소유자의 연결은 건드리지 않는다.
+  ///
+  /// 전제조건: [adopt] 로 소스를 쥐고 있을 때만 동작한다
+  /// (`_adoptedSub != null`). adopt 한 적이 없는 컨트롤러 — 예를 들어 실
+  /// BLE 연결이나 시뮬레이터가 도는 컨트롤러 — 에서 잘못 불려도 아무 것도
+  /// 건드리지 않고 그대로 반환한다. 자신이 열지 않은 소스를 정리할 권한은
+  /// 없다.
   void release() {
-    _adoptedSub?.cancel();
+    if (_adoptedSub == null) return;
+    _adoptedSub!.cancel();
     _adoptedSub = null;
     _cmdChar = null;
     connState = 'disconnected';
@@ -249,8 +266,6 @@ class SessionController extends ChangeNotifier {
 
   Future<void> disconnect() async {
     if (simOn) {
-      await _adoptedSub?.cancel();
-      _adoptedSub = null;
       stopSimulator();
       return;
     }
