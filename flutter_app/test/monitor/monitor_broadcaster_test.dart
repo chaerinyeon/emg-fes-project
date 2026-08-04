@@ -110,4 +110,83 @@ void main() {
       throwsA(isA<SocketException>()),
     );
   });
+
+  test('pushTick 이 접속한 클라이언트에게 전달된다', () async {
+    final b = _make();
+    final ep = (await b.start())!;
+    addTearDown(b.stop);
+
+    final ws = await WebSocket.connect(
+        'ws://127.0.0.1:${ep.port}/ws?k=${ep.token}');
+    addTearDown(() => ws.close());
+
+    final got = <Map<String, dynamic>>[];
+    final sub = ws.listen(
+        (m) => got.add(jsonDecode(m as String) as Map<String, dynamic>));
+    addTearDown(sub.cancel);
+
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    b.pushTick(const MonitorTick(
+      t: 3.0, sigma: 1.2, sigmaPredicted: null,
+      env: 1, rms: 2, mdf: 3, contractions: 4,
+    ));
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+
+    expect(got.first['t'], 'hello');
+    expect(got.any((m) => m['t'] == 'tick' && m['ts'] == 3.0), isTrue);
+  });
+
+  test('raw 는 구독 전에는 안 가고 구독 후에 간다', () async {
+    final b = _make();
+    final ep = (await b.start())!;
+    addTearDown(b.stop);
+
+    final ws = await WebSocket.connect(
+        'ws://127.0.0.1:${ep.port}/ws?k=${ep.token}');
+    addTearDown(() => ws.close());
+
+    final got = <Map<String, dynamic>>[];
+    final sub = ws.listen(
+        (m) => got.add(jsonDecode(m as String) as Map<String, dynamic>));
+    addTearDown(sub.cancel);
+
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    b.pushRaw(0, const [1, 2, 3]);
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    expect(got.any((m) => m['t'] == 'raw'), isFalse);
+
+    ws.add(jsonEncode({'t': 'sub', 'raw': true}));
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    b.pushRaw(100, const [4, 5, 6]);
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    expect(got.any((m) => m['t'] == 'raw' && m['i'] == 100), isTrue);
+  });
+
+  test('sub 외의 웹 메시지는 무시된다', () async {
+    final b = _make();
+    final ep = (await b.start())!;
+    addTearDown(b.stop);
+
+    final ws = await WebSocket.connect(
+        'ws://127.0.0.1:${ep.port}/ws?k=${ep.token}');
+    addTearDown(() => ws.close());
+
+    final got = <Map<String, dynamic>>[];
+    final sub = ws.listen(
+        (m) => got.add(jsonDecode(m as String) as Map<String, dynamic>));
+    addTearDown(sub.cancel);
+
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    // 제어를 시도하는 메시지 — 폰은 반응하지 않아야 한다.
+    ws.add(jsonEncode({'t': 'cmd', 'cmd': 'stop'}));
+    ws.add('쓰레기 문자열');
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+
+    // 서버가 살아 있고 클라이언트도 유지된다.
+    expect(b.clientCount, 1);
+    b.pushEvent(const MonitorEvent('session_stop', 9.0));
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    expect(got.any((m) => m['t'] == 'event' && m['kind'] == 'session_stop'),
+        isTrue);
+  });
 }
