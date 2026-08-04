@@ -60,7 +60,8 @@ void main() {
     expect(await res.transform(utf8.decoder).join(), contains('모니터'));
   });
 
-  test('토큰이 없거나 틀리면 403 이다', () async {
+  test('토큰이 없거나 틀리면 403 이고, 본문이 접속 코드 넣는 법을 알려준다 '
+      '(Important 7)', () async {
     final b = _make();
     final ep = (await b.start())!;
     addTearDown(b.stop);
@@ -72,13 +73,17 @@ void main() {
         await (await client.getUrl(Uri.parse('http://127.0.0.1:${ep.port}/')))
             .close();
     expect(noToken.statusCode, 403);
-    await noToken.drain<void>();
+    final noTokenBody = await noToken.transform(utf8.decoder).join();
+    expect(noTokenBody, contains('?k='),
+        reason: '예전엔 본문이 그냥 "forbidden" 이었다 — host:port 만 입력한 '
+            '치료사는 왜 막혔는지, 뭘 더 넣어야 하는지 알 길이 없었다');
 
     final wrong = await (await client
             .getUrl(Uri.parse('http://127.0.0.1:${ep.port}/?k=0000x')))
         .close();
     expect(wrong.statusCode, 403);
-    await wrong.drain<void>();
+    final wrongBody = await wrong.transform(utf8.decoder).join();
+    expect(wrongBody, contains('?k='));
   });
 
   test('WS 로 붙으면 hello 를 먼저 받는다', () async {

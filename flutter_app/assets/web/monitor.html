@@ -389,7 +389,7 @@
   <header>
     <div class="eyebrow">SPC · Western Electric</div>
     <h1>근피로 스태미나 모니터</h1>
-    <p class="sub">세션 <b id="sessLabel">—</b> · 초기 상태 대비 σ 편차를 근육 여력으로 환산</p>
+    <p class="sub">세션 <b id="sessLabel">—</b> · 수축 <b id="nVal">—</b>회 · 초기 상태 대비 σ 편차를 근육 여력으로 환산</p>
   </header>
 
   <!-- 1+2. 반원 게이지 · 수치 리드아웃 -->
@@ -793,6 +793,11 @@ function render() {
 
   $("scrub").value = idx;
   $("tNow").textContent = fmtTime(D.t[idx]);
+
+  // 6. 수축 횟수 — 가장 싼 생동감(liveness) 신호다(Important 6). 재생
+  // JSON(D.n 없음)에서는 셀 것이 없으니 대시로 둔다.
+  const wireN = D.n ? D.n[idx] : undefined;
+  $("nVal").textContent = typeof wireN === "number" ? String(wireN) : "—";
 }
 
 /* ── 통계 요약 + 표 ───────────────────────────────────────────────── */
@@ -909,7 +914,29 @@ let lastTickAt = 0;            // 마지막 tick 수신 시각(performance.now)
 let linkState = "unknown";     // 폰↔ESP32 BLE 상태
 let staleTimer = null;
 
+/* haveSigma — 이 세션에서 진짜 σ(baseline 확정 후 값)를 한 번이라도 받았는가.
+   SigmaTracker 는 90초(feed 시계 기준) 전까지는 baseline 을 못 잡아 σ 가
+   null 이다 — 세션 시작 직후, 또는 FES 가 아직 시작 안 됐으면 무기한. 그
+   동안 도착하는 tick 은 z 필드 자체가 없다(MonitorTick.toJson 이 뺀다).
+   haveSigma 가 false 인 동안은 liveInit() 을 부르지 않고 liveWaiting() 의
+   대시 화면을 그대로 유지한다 — "0.0σ · 정상 · 100%" 를 이 세션이 낸 값인
+   척 그리지 않기 위해서다(Critical 1). */
+let haveSigma = false;
+let pendingSessionLabel = "";  // haveSigma 가 true 로 바뀌는 순간 liveInit() 에 넘길 이름
+
+/* fatigueLatched — "fatigue" 이벤트로 띄운 배너가 다음 tick(최대 100ms 뒤)에
+   곧바로 지워지지 않게 붙잡아 둔다. tick 은 배너를 "" 로 되돌리는 게
+   기본이라(재연결 배너를 치우기 위해서다) 이 래치가 없으면 치료사는 피로
+   배너를 사실상 보지 못한다(Important 3). session_stop/rest_start/rest_end
+   가 오면 풀린다. */
+let fatigueLatched = false;
+
 const STALE_MS = 2000;         // 10 Hz 기준 20프레임 누락이면 못 믿는다
+
+/* null-안전 숫자 변환 — 웹은 JSON 필드가 있으면 숫자, 없으면 undefined 로
+   온다. t1/t2/t3 처럼 "아직 없음" 을 null 로 명시적으로 표현해야 하는
+   자리(D 필드)에 씌운다. */
+const numOrNull = v => typeof v === "number" ? v : null;
 
 let lastFullRedrawAt = 0;      // 타임라인·통계 표를 마지막으로 다시 그린 시각
 const FULL_REDRAW_MS = 1000;   // 그 둘은 O(n) 이라 1Hz 로만 다시 그린다(아래 livePush 참고)
@@ -962,6 +989,7 @@ function liveWaiting() {
   D = null;
   idx = 0;
   $("sessLabel").textContent = "연결 대기 중";
+  $("nVal").textContent = "—";
   $("sigmaNum").textContent = "—";
   $("zoneName").textContent = "대기";
   $("zoneIcon").textContent = "…";
@@ -1001,34 +1029,38 @@ function liveWaiting() {
 }
 
 function liveInit(sessionLabel) {
-  // zone/stam 은 폰이 계산해 보낸 값을 t/z 와 나란한 배열로 그대로 보관한다.
-  // 값이 없는 지점(예: 백필 전)은 undefined 로 두고 render() 가 zoneOf() 로
+  // zone/stam/n 은 폰이 계산해 보낸 값을 t/z 와 나란한 배열로 그대로
+  // 보관한다. 값이 없는 지점은 undefined 로 두고 render() 가 zoneOf()/대시로
   // 대체한다 — 재생 모드(순수 t/z JSON)와 같은 경로를 타게 하기 위해서다.
-  D = { session: sessionLabel, t: [0], z: [0], zone: [undefined], stam: [undefined],
+  //
+  // t/z 를 [0] 으로 미리 채우지 않는다(Critical 1) — 이 함수는 이제
+  // haveSigma 가 true 로 바뀌는 바로 그 순간(=이 세션의 진짜 첫 σ 를 손에
+  // 쥔 순간)에만 불린다. 호출자가 실제 데이터를 곧바로 채워 넣고
+  // drawTimeline()/renderStats()/render() 를 부른다.
+  D = { session: sessionLabel, t: [], z: [], zone: [], stam: [], n: [],
         t1: null, t2: null, t3: null };
-  idx = 0;
+  idx = -1;
   lastFullRedrawAt = performance.now();
   $("sessLabel").textContent = sessionLabel;
   $("scrub").disabled = true;
   $("btnPlay").disabled = true;
   $("btnReset").disabled = true;
-  drawTimeline();
-  renderStats();
-  render();
 }
 
-function livePush(ts, z, zoneIdx, stam) {
+function livePush(ts, z, zoneIdx, stam, n) {
   if (!D) return;
   D.t.push(ts);
   D.z.push(z);
   D.zone.push(typeof zoneIdx === "number" ? zoneIdx : undefined);
   D.stam.push(typeof stam === "number" ? stam : undefined);
+  D.n.push(typeof n === "number" ? n : undefined);
   idx = D.t.length - 1;
   $("scrub").max = D.t.length - 1;
   $("scrub").value = idx;
   $("tEnd").textContent = fmtTime(ts);
 
-  // 게이지·바늘·배지·스태미나 바·커서는 매 tick(10Hz) 그대로 갱신한다 — O(1)이라 부담 없다.
+  // 게이지·바늘·배지·스태미나 바·커서·수축 횟수는 매 tick(10Hz) 그대로
+  // 갱신한다 — O(1)이라 부담 없다.
   render();
 
   // 타임라인 밴드·궤적과 존별 체류 표는 세션 전체(t/z 전 구간)를 다시 훑는
@@ -1056,37 +1088,103 @@ function onMessage(msg) {
     // 그래서 hello 자체에서 한 번 더 비운다 — 안 그러면 이전 세션의 파형
     // 꼬리에 새 세션의 시작 표본이 이어붙어 그려진다.
     resetRawWindow();
-    liveInit(m.session || "실측 세션");
-    D.t1 = m.t1; D.t2 = m.t2; D.t3 = m.t3;
-    for (const f of (m.ticks || [])) {
-      if (typeof f.z === "number") {
+    pendingSessionLabel = m.session || "실측 세션";
+    fatigueLatched = false;
+    lastTickAt = performance.now();
+
+    // 링버퍼에는 baseline 확정 전(σ 없음) 프레임도 섞여 있을 수 있다 —
+    // 실제 σ 를 가진 것만 골라 쓴다(Critical 1).
+    const backlog = (m.ticks || []).filter(f => typeof f.z === "number");
+
+    if (backlog.length) {
+      // 치료사가 baseline 확정 이후에 접속한 경우 — 곧바로 실제 값을 보여준다.
+      haveSigma = true;
+      liveInit(pendingSessionLabel);
+      D.t1 = numOrNull(m.t1); D.t2 = numOrNull(m.t2); D.t3 = numOrNull(m.t3);
+      for (const f of backlog) {
         D.t.push(f.ts); D.z.push(f.z);
         D.zone.push(typeof f.zone === "number" ? f.zone : undefined);
         D.stam.push(typeof f.stam === "number" ? f.stam : undefined);
+        D.n.push(typeof f.n === "number" ? f.n : undefined);
       }
+      idx = D.t.length - 1;
+      drawTimeline(); renderStats(); render();
+      lastFullRedrawAt = performance.now();
+      setStale(false);
+      setBanner("", null);
+    } else {
+      // baseline 이 아직 없다 — liveWaiting() 의 대시 화면을 그대로 유지한다
+      // (Critical 1). "연결 대기 중"과는 다른 문구를 쓴다 — 이미 붙어 있고
+      // 세션도 시작됐다, 그저 baseline(≈90초) 이 아직 안 잡혔을 뿐이다.
+      haveSigma = false;
+      liveWaiting();
+      $("sessLabel").textContent = pendingSessionLabel;
+      setBanner("기준선 측정 중 — 아직 σ 계산 전입니다(최대 약 90초)", null);
     }
-    idx = D.t.length - 1;
-    drawTimeline(); renderStats(); render();
-    lastFullRedrawAt = performance.now();
-    lastTickAt = performance.now();
-    setStale(false);
-    setBanner("", null);
     return;
   }
 
   if (m.t === "tick") {
     lastTickAt = performance.now();
+
+    if (typeof m.z !== "number") {
+      // baseline 미확정 — liveWaiting() 이 띄운 대시 화면을 그대로 둔다.
+      // 여기서 setStale(false) 를 부르면 liveInit() 의 "0.0σ · 정상 · 100%"
+      // 기본값이 un-grey 되어 이 세션이 낸 값인 척 보이게 된다(Critical 1).
+      if (!haveSigma && (linkState === "connected" || linkState === "unknown")) {
+        setBanner("기준선 측정 중 — 아직 σ 계산 전입니다(최대 약 90초)", null);
+      }
+      return;
+    }
+
+    if (!haveSigma) {
+      // 이번 tick 이 이 세션의 첫 진짜 σ 다 — 지금부터 그린다.
+      haveSigma = true;
+      liveInit(pendingSessionLabel);
+    }
+
     setStale(false);
-    if (linkState === "connected" || linkState === "unknown") setBanner("", null);
-    // σ 가 없으면(baseline 전) 게이지는 직전 값을 유지하고 타임라인만 늘리지 않는다.
-    if (typeof m.z === "number") livePush(m.ts, m.z, m.zone, m.stam);
+    if (!fatigueLatched && (linkState === "connected" || linkState === "unknown")) {
+      setBanner("", null);
+    }
+    // 리드타임 카드는 hello 시점 값에 멈춰 있었다(Important 5) — SigmaTracker
+    // 는 버스트마다 t1/t2/t3 를 다시 계산하므로 tick 마다 최신값으로 맞춘다.
+    D.t1 = numOrNull(m.t1); D.t2 = numOrNull(m.t2); D.t3 = numOrNull(m.t3);
+    livePush(m.ts, m.z, m.zone, m.stam, m.n);
     return;
   }
 
   if (m.t === "event") {
-    if (m.kind === "session_stop") setBanner("세션 종료", null);
-    if (m.kind === "rest_start")  setBanner("휴식 중", null);
-    if (m.kind === "rest_end")    setBanner("", null);
+    // MonitorSource 가 emit 할 수 있는 kind 전부를 여기서 명시적으로
+    // 다룬다(각 분기가 아무 것도 안 해도 좋다) — 새 kind 를 추가하고 여기를
+    // 깜빡하면 Finding 3(fatigue 무시)·Finding 4(rest_* 무시)와 같은 모양의
+    // 버그가 재발한다. test/monitor/protocol_completeness_test.dart 가 이
+    // 목록과 Dart 쪽(MonitorSource)이 emit 하는 kind 집합을 자동으로 맞춰
+    // 본다.
+    if (m.kind === "session_start") {
+      // hello 가 이미 세션 시작(시각·baseline·백필)을 반영했다 — 추가로
+      // 그릴 것이 없다.
+    } else if (m.kind === "session_stop") {
+      fatigueLatched = false;
+      setBanner("세션 종료", null);
+    } else if (m.kind === "contraction") {
+      // 수축 횟수는 tick.n 이 매 프레임 갱신한다(Important 6) — 이벤트로는
+      // 더 그릴 것이 없다.
+    } else if (m.kind === "zone") {
+      // 존 전환은 tick.zone 이 매 프레임 이미 반영한다 — 이벤트는 인지만 한다.
+    } else if (m.kind === "fatigue") {
+      // 피로 판정 — 폰이 자극을 자동 정지하고 다이얼로그를 띄우는 바로 그
+      // 순간이다(Important 3). fatigueLatched 로 붙잡아 두지 않으면 다음
+      // tick(최대 100ms 뒤)이 배너를 곧바로 지워 치료사가 사실상 못 본다.
+      fatigueLatched = true;
+      setBanner("⚠ 피로 판정 — 자극이 자동 정지됐습니다", "bad");
+    } else if (m.kind === "rest_start") {
+      fatigueLatched = false;
+      setBanner("휴식 중", null);
+    } else if (m.kind === "rest_end") {
+      fatigueLatched = false;
+      setBanner("", null);
+    }
     return;
   }
 

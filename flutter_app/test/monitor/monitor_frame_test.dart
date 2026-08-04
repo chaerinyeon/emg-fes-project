@@ -51,6 +51,35 @@ void main() {
       expect(tick.stamina, closeTo(staminaPercent(2.5), 1e-9));
       expect(tick.toJson()['zone'], FatigueZone.warning.index);
     });
+
+    test('t1/t2/t3 가 JSON 왕복에서 보존된다 (Important 5)', () {
+      const tick = MonitorTick(
+        t: 95.0, sigma: 2.1, sigmaPredicted: null,
+        env: 0, rms: 0, mdf: 0, contractions: 10,
+        t1: 30.0, t2: 60.0, t3: null,
+      );
+      final j = tick.toJson();
+      expect(j['t1'], 30.0);
+      expect(j['t2'], 60.0);
+      expect(j.containsKey('t3'), isFalse,
+          reason: 'null 인 필드는 다른 필드들과 마찬가지로 실어 보내지 않는다');
+
+      final back = MonitorTick.fromJson(j);
+      expect(back.t1, 30.0);
+      expect(back.t2, 60.0);
+      expect(back.t3, isNull);
+    });
+
+    test('t1/t2/t3 가 없으면(hello 이전 tick) 셋 다 null 이다', () {
+      const tick = MonitorTick(
+        t: 1, sigma: null, sigmaPredicted: null,
+        env: 0, rms: 0, mdf: 0, contractions: 0,
+      );
+      expect(tick.t1, isNull);
+      expect(tick.t2, isNull);
+      expect(tick.t3, isNull);
+      expect(tick.toJson().containsKey('t1'), isFalse);
+    });
   });
 
   group('MonitorEvent', () {

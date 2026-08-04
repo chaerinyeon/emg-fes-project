@@ -21,6 +21,9 @@ class MonitorTick {
     required this.rms,
     required this.mdf,
     required this.contractions,
+    this.t1,
+    this.t2,
+    this.t3,
   });
 
   /// 세션 시작 기준 초.
@@ -38,6 +41,16 @@ class MonitorTick {
 
   /// 지금까지 관측된 수축(버스트) 수.
   final int contractions;
+
+  /// 1σ/2σ/3σ 지속 도달 시각(초). 아직이면 null.
+  ///
+  /// `SigmaTracker` 는 버스트마다 이 셋을 다시 계산한다(도달 후엔 값이
+  /// 고정되지만, 확정 자체는 매 버스트 다시 훑는다). `hello` 는 접속
+  /// 시점 1회뿐이라 그 이후의 도달을 반영 못 한다 — 그래서 `tick` 에도
+  /// 실어 매 프레임 최신값을 유지한다(Important 5).
+  final double? t1;
+  final double? t2;
+  final double? t3;
 
   /// σ 로부터의 존. σ 가 없으면 null.
   FatigueZone? get zone {
@@ -64,6 +77,9 @@ class MonitorTick {
       'rms': rms,
       'mdf': mdf,
       'n': contractions,
+      if (t1 != null) 't1': t1,
+      if (t2 != null) 't2': t2,
+      if (t3 != null) 't3': t3,
     };
   }
 
@@ -75,6 +91,9 @@ class MonitorTick {
         rms: (j['rms'] as num).toDouble(),
         mdf: (j['mdf'] as num).toDouble(),
         contractions: (j['n'] as num).toInt(),
+        t1: (j['t1'] as num?)?.toDouble(),
+        t2: (j['t2'] as num?)?.toDouble(),
+        t3: (j['t3'] as num?)?.toDouble(),
       );
 }
 

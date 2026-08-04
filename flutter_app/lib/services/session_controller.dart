@@ -44,6 +44,17 @@ class SessionController extends ChangeNotifier {
   bool _measureDialogShown = false;
   bool _fatigueShown = false;
 
+  /// 이 컨트롤러가 세션의 실제 소유자인가 — [startSession] 을 부른 쪽만 true.
+  ///
+  /// `GameScreen` 이 [adopt] 로 받은 컨트롤러는 home_page 가 이미 올바르게
+  /// baseline 을 잡은 것과 **다른** [FatigueEngine] 을 새로 굴린다. 게임
+  /// 화면이 세션 도중에 열리면 그 시점부터 baseline 을 잡기 시작하므로 이미
+  /// 피로해진 신호를 "정상"으로 오인해 관리도가 잘못 학습된다 — 그 오판정이
+  /// 자극을 멈추면 안 된다. 그래서 자동 정지 경로는 이 플래그로 게이팅한다.
+  /// [adopt] 는 이걸 명시적으로 false 로 둔다 — 빌려 쓰는 컨트롤러는 항상
+  /// 순수 관찰자다.
+  bool _ownsSession = false;
+
   // ---- 내부 상태 ----
   double _t0 = 0;
   bool _t0Init = false;
@@ -263,6 +274,7 @@ class SessionController extends ChangeNotifier {
     deviceLabel = label;
     connState = 'connected';
     lastError = null;
+    _ownsSession = false; // adopt 는 언제나 관찰자 — startSession() 만 소유권을 준다
     notifyListeners();
   }
 
@@ -326,6 +338,7 @@ class SessionController extends ChangeNotifier {
     _clearSeries();
     _measureDialogShown = false;
     _fatigueShown = false;
+    _ownsSession = true; // 이 컨트롤러가 세션을 소유 — 자동 정지를 쓸 수 있다
     final cat = gProfileService.active?.category ?? SubjectCategory.healthy;
     engine = FatigueEngine(
       category: cat,
@@ -461,9 +474,16 @@ class SessionController extends ChangeNotifier {
       st.mdfCcLcl = engine.mdfChart.lowerLimit;
 
       // 피로 검출 → FES 자동 정지 + 콜백 (1회)
+      //
+      // 자동 정지(send)는 이 컨트롤러가 세션을 소유([_ownsSession])할 때만
+      // 쓴다 — adopt() 로 빌려 쓰는 컨트롤러(GameScreen)는 home_page 가 이미
+      // 올바르게 baseline 을 잡은 엔진과 별개로, 게임이 세션 도중 열리면
+      // 그 시점부터 다시 baseline 을 잡는 자체 FatigueEngine 을 굴린다. 그
+      // 오판정이 같은 cmdChar 에 중복으로 'stop' 을 쓰면 안 된다(Approved
+      // change, 최종 리뷰).
       if (!_fatigueShown && (result.justTriggered || st.fatigueDetected)) {
         _fatigueShown = true;
-        if (st.isStimulating) send({'cmd': 'stop'});
+        if (_ownsSession && st.isStimulating) send({'cmd': 'stop'});
         onFatigue?.call();
       }
 

@@ -193,8 +193,18 @@ class MonitorBroadcaster {
   Future<void> _handle(HttpRequest req) async {
     try {
       if (!_tokenOk(req)) {
+        // 예전엔 본문이 그냥 "forbidden" 이었다 — host:port 만 입력하면
+        // 이 응답만 보이고 왜 막혔는지, 뭘 더 넣어야 하는지 알 길이
+        // 없었다(Important 7). 접속 URL 자체가 이미 `?k=<코드>` 를 담고
+        // 있으므로(폰 화면의 MonitorAddressCard), 정상 경로로는 이 분기를
+        // 탈 일이 드물지만 — host:port 만 따로 옮겨 적었을 때를 위해 설명한다.
         req.response.statusCode = HttpStatus.forbidden;
-        req.response.write('forbidden');
+        req.response.headers.contentType = ContentType.text;
+        req.response.write(
+          'forbidden — 접속 코드가 없거나 틀렸습니다. '
+          'URL 끝에 ?k=<4자리 접속코드> 를 붙여서 다시 접속하세요.\n'
+          '예) http://<이 주소>:<포트>/?k=1234',
+        );
         await req.response.close();
         return;
       }

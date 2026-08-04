@@ -23,7 +23,11 @@ class MonitorAddressCard extends StatelessWidget {
     } else if (ep.url == null) {
       message = 'Wi-Fi 에 연결되어 있지 않아 주소를 만들 수 없습니다';
     } else {
-      message = '${ep.ip}:${ep.port}  ·  접속코드 ${ep.token}';
+      // `ip:port` 만 입력하면 토큰이 없어 서버가 본문 설명도 없는 403만
+      // 돌려준다(Important 7) — 실제로 동작하는 건 `?k=` 가 붙은 전체
+      // URL이다. 그걸 그대로 주 텍스트로 보여준다: 치료사가 노트북
+      // 주소창에 그대로 타이핑하거나, 복사 버튼으로 옮길 대상도 같은 문자열.
+      message = ep.url!;
       copyTarget = ep.url;
     }
 

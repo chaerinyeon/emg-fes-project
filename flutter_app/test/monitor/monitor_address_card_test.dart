@@ -4,7 +4,8 @@ import 'package:flutter_app/widgets/monitor/monitor_address_card.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  testWidgets('주소와 토큰을 보여준다', (tester) async {
+  testWidgets('작동하는 전체 URL(?k= 포함)을 주 텍스트로 보여준다 (Important 7)',
+      (tester) async {
     await tester.pumpWidget(const MaterialApp(
       home: Scaffold(
         body: MonitorAddressCard(
@@ -13,8 +14,13 @@ void main() {
       ),
     ));
 
-    expect(find.textContaining('192.168.0.12:8080'), findsOneWidget);
-    expect(find.textContaining('8134'), findsOneWidget);
+    // host:port 만으로는 본문 설명 없는 403 만 돌아온다 — 실제로 접속되는
+    // 건 ?k= 가 붙은 전체 URL 이다. 그 문자열이 그대로 화면에 보여야
+    // 치료사가 노트북 주소창에 타이핑(또는 복사)해서 바로 붙을 수 있다.
+    expect(
+      find.textContaining('http://192.168.0.12:8080/?k=8134'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('IP 를 못 찾으면 비활성 문구를 보여준다', (tester) async {

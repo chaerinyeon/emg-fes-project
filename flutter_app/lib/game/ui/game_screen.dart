@@ -160,6 +160,10 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
       if (!_resting && _rest.shouldTriggerRest(now, worst)) {
         _resting = true;
         _game.setResting(true);
+        // 휴식 이닝은 이 화면(정확히는 RestPolicy)만 안다 — 모니터가 그걸
+        // 모르면 정지된 화면과 구분이 안 된다(Important 4). MonitorSource 가
+        // 없어도(모니터 비활성) 게임은 그대로 진행돼야 하므로 `?.`.
+        _monitorSource?.restStart(now);
       }
 
       if (z != _sigma || p != _predicted || _resting != _game.resting) {
@@ -175,11 +179,13 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
 
   void _finishRest() {
     final decision = _rest.finishRest(_sigma);
+    final now = _game.feedNowSec;
     setState(() {
       _resting = false;
       _game.setResting(false);
       if (decision != RestDecision.endSession) _inning++;
     });
+    _monitorSource?.restEnd(now);
   }
 
   String get _sourceLabel {

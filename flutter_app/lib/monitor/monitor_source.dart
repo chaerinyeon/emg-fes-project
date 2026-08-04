@@ -57,6 +57,14 @@ const int kMonitorTickMs = 100;
 /// 링버퍼 용량 — 10 Hz × 60초.
 const int kMonitorRingCapacity = 600;
 
+/// 이보다 오래 세션으로부터 신호가 없으면 "죽었다"고 본다.
+///
+/// [SessionController] 는 BLE(또는 시뮬레이터) 메시지를 받을 때마다
+/// `notifyListeners()` 를 부른다 — 실측 메시지는 ~10Hz 라 100ms 간격이고,
+/// 이 값은 그 간격의 15배다. 짧게 잡으면 정상적인 지터에도 오탐하고, 길게
+/// 잡으면 전극이 빠진 뒤에도 한참 "정상"으로 그려진다.
+const Duration kMonitorSignalStaleTimeout = Duration(milliseconds: 1500);
+
 class MonitorSource {
   MonitorSource({
     required this.session,
@@ -82,11 +90,30 @@ class MonitorSource {
   /// 최신값을 들고 있다가 실어보낸다.
   double? _lastPredicted;
 
+  /// [_onSession] 이 마지막으로 불린 시각 — "세션으로부터 진짜 신호가 마지막
+  /// 으로 온 시각"의 대용이다. [SessionController] 는 BLE/시뮬레이터 메시지를
+  /// 파싱할 때마다 `notifyListeners()` 를 부르므로, 이 값이 갱신을 멈췄다는
+  /// 것은 곧 신호 자체가 멈췄다는 뜻이다(Critical 2).
+  DateTime? _lastSignalAt;
+
+  /// 신호가 멈춰 tick 발신을 정지한 상태인가. `link('stalled')` 를 중복
+  /// 발신하지 않기 위한 래치.
+  bool _stalled = false;
+
+  /// 세션이 실제로 시작된 벽시계 시각(ms). [buildHello] 가 매번
+  /// `DateTime.now()` 를 읽으면 "세션 시작"이 아니라 "이 클라이언트가 접속한
+  /// 시각"이 되어버린다(Important 6b) — 그래서 [start] 시점에 한 번만 찍어
+  /// 둔다.
+  int? _sessionStartedAtMs;
+
   void start() {
     _lastLink = null;
     _lastZone = null;
     _lastFatigue = false;
     _lastPredicted = null;
+    _lastSignalAt = DateTime.now();
+    _stalled = false;
+    _sessionStartedAtMs = DateTime.now().millisecondsSinceEpoch;
     session.addListener(_onSession);
     _contractionSub = feed.contractions.listen((c) {
       sink.event(MonitorEvent('contraction', c.t));
@@ -121,7 +148,38 @@ class MonitorSource {
   ///
   /// 타이머가 부르지만 테스트에서 직접 부를 수 있게 공개해 둔다 — 그래야
   /// 100ms 를 기다리지 않고 검증한다.
+  ///
+  /// ## 신호가 멈추면 tick 도 멈춘다 (Critical 2)
+  ///
+  /// 이 메서드는 100ms 마다 무조건 불렸었다 — 전극이 빠지거나 ESP32 가
+  /// 죽어도 `session.envLast/rmsLast/mdfLast` 는 마지막 값을 들고 있고
+  /// `feed.tracker.currentSigma` 도 그대로라, 그 얼어붙은 값을 "지금"인 척
+  /// 계속 내보냈다. 웹의 stale 감지 셋(2초 무수신)은 전부 **tick 도착**에
+  /// 걸려 있어서, tick 이 (내용은 죽었어도) 계속 오면 그 감지가 전혀
+  /// 작동하지 않는다. 그래서 여기서 [_lastSignalAt] 이 오래됐으면 tick 을
+  /// 아예 내보내지 않는다 — 그래야 웹의 2초 stale 게이트가 정상적으로
+  /// 걸린다.
   void emitTick() {
+    final lastSignal = _lastSignalAt;
+    final stale = lastSignal != null &&
+        DateTime.now().difference(lastSignal) > kMonitorSignalStaleTimeout;
+
+    if (stale) {
+      if (!_stalled) {
+        _stalled = true;
+        sink.link('stalled');
+      }
+      return; // 얼어붙은 값을 tick 으로 내보내지 않는다 — 링버퍼에도 안 쌓는다.
+    }
+    if (_stalled) {
+      // 신호가 돌아왔다 — link 를 실제 연결 상태로 되돌려 웹의 "센서 끊김"
+      // 배너를 해제한다. _onSession() 의 중복 억제(_lastLink)와 어긋나지
+      // 않도록 그 필드도 함께 맞춰 둔다.
+      _stalled = false;
+      _lastLink = session.connState;
+      sink.link(session.connState);
+    }
+
     final f = MonitorTick(
       t: feed.nowSec,
       sigma: feed.tracker.currentSigma,
@@ -130,6 +188,9 @@ class MonitorSource {
       rms: session.rmsLast,
       mdf: session.mdfLast,
       contractions: feed.contractionCount,
+      t1: feed.tracker.t1,
+      t2: feed.tracker.t2,
+      t3: feed.tracker.t3,
     );
     ring.add(f);
     sink.tick(f);
@@ -142,6 +203,7 @@ class MonitorSource {
   }
 
   void _onSession() {
+    _lastSignalAt = DateTime.now();
     final state = session.connState;
     if (state != _lastLink) {
       _lastLink = state;
@@ -155,10 +217,19 @@ class MonitorSource {
     _lastFatigue = fatigued;
   }
 
+  /// 휴식 이닝 시작. 휴식 판정은 `GameScreen`(정확히는 `RestPolicy`)의
+  /// 몫이라 이 클래스는 스스로 판단하지 않는다 — 호출자가 알려주면 그대로
+  /// 옮길 뿐이다(Important 4).
+  void restStart(double tSec) => sink.event(MonitorEvent('rest_start', tSec));
+
+  /// 휴식 이닝 종료.
+  void restEnd(double tSec) => sink.event(MonitorEvent('rest_end', tSec));
+
   /// 새 클라이언트에게 보낼 hello.
   MonitorHello buildHello(String sessionLabel) => MonitorHello(
         session: sessionLabel,
-        startedAtMs: DateTime.now().millisecondsSinceEpoch,
+        startedAtMs:
+            _sessionStartedAtMs ?? DateTime.now().millisecondsSinceEpoch,
         mu0: feed.tracker.mu0,
         sd0: feed.tracker.sd0,
         t1: feed.tracker.t1,
