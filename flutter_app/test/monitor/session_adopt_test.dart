@@ -51,6 +51,29 @@ void main() {
     expect(session.envLast, isNot(999.0));
   });
 
+  test('adopt 후 disconnect() 해도 더 이상 받지 않는다', () async {
+    // disconnect() 는 원래 scanAndConnect() 의 _dataSub 만 정리했다 —
+    // startSimulator() 가 connState=='connected' 일 때 disconnect() 를
+    // 부르므로, adopt 된 컨트롤러에서 시뮬레이터를 켜면 _adoptedSub 가 살아
+    // 남아 실제 BLE 패킷과 합성 패킷이 같은 피로 엔진에 섞여 들어갔다.
+    final ctrl = StreamController<List<int>>.broadcast();
+    addTearDown(ctrl.close);
+    final session = SessionController();
+    addTearDown(session.dispose);
+
+    session.adopt(dataStream: ctrl.stream, label: 'EMG-FES-01');
+    await session.disconnect();
+    expect(session.connState, 'disconnected');
+
+    ctrl.add(utf8.encode(jsonEncode({
+      'ts': 4000, 'env': 888.0, 'rms': 888.0, 'mdf': 888.0,
+      'v': true, 'run': true, 'stim': true, 'fd': false,
+    })));
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(session.envLast, isNot(888.0));
+  });
+
   test('원래 구독자와 공존한다 (브로드캐스트)', () async {
     final ctrl = StreamController<List<int>>.broadcast();
     addTearDown(ctrl.close);

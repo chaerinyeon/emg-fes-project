@@ -213,11 +213,21 @@ class SessionController extends ChangeNotifier {
   ///
   /// [cmdChar] 는 넘겨주면 이 컨트롤러도 명령을 보낼 수 있고, 생략하면
   /// 수신 전용이 된다.
+  ///
+  /// 이미 [scanAndConnect] 로 실제 연결을 쥐고 있는 컨트롤러에는 adopt 할 수
+  /// 없다 — 조용히 `_cmdChar`/`deviceLabel` 을 덮어써서 진짜 연결을 손상시키는
+  /// 대신 즉시 예외를 던진다.
   void adopt({
     required Stream<List<int>> dataStream,
     BluetoothCharacteristic? cmdChar,
     String label = kDeviceName,
   }) {
+    if (_device != null) {
+      throw StateError(
+        'adopt() 실패: 이 컨트롤러는 이미 scanAndConnect() 로 실제 BLE 기기에 '
+        '연결되어 있다. 그 연결 위에 adopt 하면 상태가 조용히 망가진다.',
+      );
+    }
     _adoptedSub?.cancel();
     _adoptedSub = dataStream.listen(_onCharData);
     _cmdChar = cmdChar;
@@ -239,12 +249,16 @@ class SessionController extends ChangeNotifier {
 
   Future<void> disconnect() async {
     if (simOn) {
+      await _adoptedSub?.cancel();
+      _adoptedSub = null;
       stopSimulator();
       return;
     }
     try {
       await _dataSub?.cancel();
       _dataSub = null;
+      await _adoptedSub?.cancel();
+      _adoptedSub = null;
       await _connSub?.cancel();
       _connSub = null;
       await _device?.disconnect();
