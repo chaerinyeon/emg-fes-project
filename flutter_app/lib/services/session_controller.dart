@@ -59,6 +59,9 @@ class SessionController extends ChangeNotifier {
   StreamSubscription<BluetoothConnectionState>? _connSub;
   StreamSubscription<List<ScanResult>>? _scanSub;
 
+  /// 다른 화면에서 넘겨받은 데이터 구독. [adopt] 참고.
+  StreamSubscription<List<int>>? _adoptedSub;
+
   // ============================================================
   // 시뮬레이터
   // ============================================================
@@ -194,6 +197,44 @@ class SessionController extends ChangeNotifier {
       lastError = '$e';
       notifyListeners();
     }
+  }
+
+  // ============================================================
+  // 이미 열린 BLE 연결 넘겨받기 (adopt)
+  // ============================================================
+  /// 다른 화면이 이미 연 characteristic 스트림을 함께 구독한다.
+  ///
+  /// ## 왜 재스캔하지 않는가
+  ///
+  /// 같은 기기에 두 번 연결할 수는 없다. `home_page` 가 BLE 를 쥔 채 게임에
+  /// 들어가면 이 컨트롤러가 다시 스캔·연결할 방법이 없고, 끊었다 다시 잡으면
+  /// 세션이 끊기고 수 초가 날아간다. `lastValueStream` 은 브로드캐스트라
+  /// 두 구독자가 같은 패킷을 함께 받는다 — 연결은 하나, 소비자는 둘이다.
+  ///
+  /// [cmdChar] 는 넘겨주면 이 컨트롤러도 명령을 보낼 수 있고, 생략하면
+  /// 수신 전용이 된다.
+  void adopt({
+    required Stream<List<int>> dataStream,
+    BluetoothCharacteristic? cmdChar,
+    String label = kDeviceName,
+  }) {
+    _adoptedSub?.cancel();
+    _adoptedSub = dataStream.listen(_onCharData);
+    _cmdChar = cmdChar;
+    deviceLabel = label;
+    connState = 'connected';
+    lastError = null;
+    notifyListeners();
+  }
+
+  /// [adopt] 로 받은 구독을 놓는다. 원래 소유자의 연결은 건드리지 않는다.
+  void release() {
+    _adoptedSub?.cancel();
+    _adoptedSub = null;
+    _cmdChar = null;
+    connState = 'disconnected';
+    deviceLabel = '';
+    notifyListeners();
   }
 
   Future<void> disconnect() async {
@@ -402,6 +443,7 @@ class SessionController extends ChangeNotifier {
     _dataSub?.cancel();
     _connSub?.cancel();
     _scanSub?.cancel();
+    _adoptedSub?.cancel();
     _device?.disconnect();
     super.dispose();
   }
