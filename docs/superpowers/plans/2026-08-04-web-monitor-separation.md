@@ -2471,3 +2471,36 @@ flutter test
 ```
 
 Expected: `No issues found!` + `All tests passed!`
+
+---
+
+### Task 10: BLE RAW 스트림 → 방송기 배선 (계획 누락분)
+
+Task 9 리뷰 중 발견된 계획 누락을 메운다. `MonitorBroadcaster.pushRaw` 의 **프로덕션 호출자가
+하나도 없다** — 테스트에서만 불린다. 폰은 BLE RAW characteristic 을 구독하고 있지만
+([home_page.dart](../../../flutter_app/lib/screens/home_page.dart) 의 `_rawSub` → `_onRawData` →
+`RawLogger`), 그 스트림이 방송기로 이어지는 경로가 어느 태스크에도 없었다.
+
+그래서 지금 상태는: 웹이 진단 패널을 펼치면 `{"t":"sub","raw":true}` 가 정상적으로 왕복하고,
+폰은 그 구독을 기록하고, **아무것도 보내지 않는다.** 파형은 영원히 빈 화면이다.
+
+스펙 §1 은 진단 패널에 RAW 파형을 요구하고 §4 는 `raw` 를 프로토콜에 넣었으므로 범위 안이다.
+
+**Files:**
+- Create: `flutter_app/lib/core/raw_packet.dart`
+- Modify: `flutter_app/lib/services/raw_logger.dart` (파싱을 새 공용 헬퍼로 교체)
+- Modify: `flutter_app/lib/services/session_controller.dart` (`adopt` 에 rawStream, 패킷 스트림 노출)
+- Modify: `flutter_app/lib/monitor/monitor_source.dart` (`MonitorSink.raw` 추가 + 구독)
+- Modify: `flutter_app/lib/screens/home_page.dart` (`_rawChar` 보관 + `_openGame` 에서 전달)
+- Modify: `flutter_app/assets/web/monitor.html` (`hello` 에서 `resetRawWindow()`)
+- Test: `flutter_app/test/monitor/raw_packet_test.dart`, 기존 monitor 테스트 확장
+
+**패킷 형식** (펌웨어 `sendRawBatch`, little-endian):
+`[uint32 firstSampleMs][uint16 count][int16 raw × count]` — 6 + 2×count 바이트, 100표본/패킷 10Hz.
+`firstSampleMs` 는 세션 시작 후 누적 샘플 인덱스(1kHz라 1샘플=1ms)이며 BLE 끊김 중에도 계속 증가한다.
+
+**설계 결정:**
+- 파싱은 `raw_packet.dart` 한 곳에만 둔다. `RawLogger` 도 그것을 쓰게 바꿔 파서가 두 벌이 되는 것을 막는다
+- `SessionController` 는 파싱된 패킷을 스트림으로 내보내기만 한다. 판정하지 않는다
+- 배선은 `SessionController` 를 통과시킨다 — 게임 화면에 이미 넘기는 객체라 위젯 계층에
+  새 배관을 만들지 않는다
