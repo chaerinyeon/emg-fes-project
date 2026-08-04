@@ -16,6 +16,7 @@ import '../services/env_logger.dart';
 import '../services/fatigue_engine.dart';
 import '../services/profile_service.dart';
 import '../services/raw_logger.dart';
+import '../services/session_controller.dart';
 import '../services/simulator_service.dart';
 import '../widgets/ai/ai_analysis_panel.dart';
 import '../widgets/ble/ble_bar.dart';
@@ -50,6 +51,11 @@ class _HomePageState extends State<HomePage> {
   // BLE
   BluetoothDevice? _device;
   BluetoothCharacteristic? _cmdChar;
+  BluetoothCharacteristic? _dataChar;
+
+  /// adopt 로 넘겨줄 수 있는 데이터 characteristic. 미연결이면 null.
+  BluetoothCharacteristic? get _adoptableDataChar =>
+      _connState == 'connected' ? _dataChar : null;
   StreamSubscription<List<int>>? _dataSub;
   StreamSubscription<List<int>>? _rawSub; // RAW 1kHz 바이너리 스트림 구독
   StreamSubscription<BluetoothConnectionState>? _connSub;
@@ -218,6 +224,7 @@ class _HomePageState extends State<HomePage> {
             _connState = 'disconnected';
             _device = null;
             _cmdChar = null;
+            _dataChar = null;
           });
         }
       });
@@ -262,6 +269,7 @@ class _HomePageState extends State<HomePage> {
       // 그대로 2배로 쌓인다. 새 구독 전에 반드시 이전 구독을 취소한다.
       await _dataSub?.cancel();
       _dataSub = dataChar.lastValueStream.listen(_onCharData);
+      _dataChar = dataChar;   // 게임/모니터에 넘겨줄 스트림 원본
 
       // RAW 1kHz 바이너리 스트림 — 펌웨어가 지원할 때만 구독 (JSON 채널과 분리).
       await _rawSub?.cancel();
@@ -314,6 +322,7 @@ class _HomePageState extends State<HomePage> {
       setState(() {
         _device = null;
         _cmdChar = null;
+        _dataChar = null;
         _connState = 'disconnected';
       });
     }
@@ -1079,6 +1088,41 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  // ---------- 캐치 게임 진입 ----------
+  /// 게임 화면으로 이동하면서 BLE 스트림을 세션 컨트롤러에 넘기고 관찰 서버를 올린다.
+  ///
+  /// 여기가 "게임이 목 데이터로 돌던" 문제의 수정 지점이다. dataChar 가 없으면
+  /// (미연결) 세션을 넘기지 않고, GameScreen 이 기존대로 목 피드로 떨어진다.
+  Future<void> _openGame() async {
+    final dataChar = _adoptableDataChar;
+    if (dataChar == null) {
+      if (!mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const GameScreen()),
+      );
+      return;
+    }
+
+    final session = SessionController();
+    session.adopt(
+      dataStream: dataChar.lastValueStream,
+      cmdChar: _cmdChar,
+      label: _device?.platformName ?? kDeviceName,
+    );
+
+    if (!mounted) {
+      session.dispose();
+      return;
+    }
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => GameScreen(session: session)),
+    );
+    session.release();
+    session.dispose();
+  }
+
   // ---------- 처음 화면으로 이동 ----------
   Future<void> _goToSplash() async {
     if (_st.isRunning) {
@@ -1276,9 +1320,7 @@ class _HomePageState extends State<HomePage> {
           const SectionTitle('바이오피드백 훈련'),
           const SizedBox(height: 6),
           _CatchGameCard(
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const GameScreen()),
-            ),
+            onTap: _openGame,
           ),
           const SizedBox(height: 14),
           const SectionTitle('마사지기 조절 (릴레이 컨트롤러)'),
@@ -1448,7 +1490,9 @@ class _HomePageState extends State<HomePage> {
 
 /// 대시보드의 캐치 게임 진입 카드.
 ///
-/// 게임 화면은 자체 `SessionController` 를 소유하므로 여기서는 라우트만 연다.
+/// 실제 진입 로직(`_openGame`)은 `_HomePageState` 가 쥔다 — BLE 가 연결돼
+/// 있으면 그 데이터 스트림을 새 `SessionController` 에 adopt 시켜 게임으로
+/// 넘기고, 미연결이면 세션 없이 열어 `GameScreen` 이 목 피드로 떨어지게 둔다.
 class _CatchGameCard extends StatelessWidget {
   const _CatchGameCard({required this.onTap});
 

@@ -1,7 +1,12 @@
 import 'package:flame/game.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle;
 
+import '../../monitor/monitor_broadcaster.dart';
+import '../../monitor/monitor_frame.dart';
+import '../../monitor/monitor_source.dart';
 import '../../services/session_controller.dart';
+import '../../widgets/monitor/monitor_address_card.dart';
 import '../data/fatigue_feed.dart';
 import '../data/live_fatigue_feed.dart';
 import '../data/mock_fatigue_feed.dart';
@@ -37,8 +42,19 @@ class GameScreen extends StatefulWidget {
   State<GameScreen> createState() => _GameScreenState();
 }
 
-class _GameScreenState extends State<GameScreen> {
+class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   late final FatigueFeed _feed;
+  MonitorBroadcaster? _broadcaster;
+  MonitorSource? _monitorSource;
+  BroadcasterSink? _monitorSink;
+  MonitorEndpoint? _monitorEndpoint;
+
+  /// [_startMonitor] 재진입 방지. [MonitorBroadcaster.start] 는 그 안에 await
+  /// 지점이 두 번 있어, 그 사이에 `initState` 와 `didChangeAppLifecycleState`
+  /// 양쪽에서 겹쳐 부르면 idempotency 체크(`_broadcaster?.endpoint != null`)를
+  /// 둘 다 통과해 포트를 두 번 바인딩할 수 있다.
+  bool _monitorStarting = false;
+
   late final BaseballGame _game;
   late final bool _isMock;
 
@@ -74,6 +90,8 @@ class _GameScreenState extends State<GameScreen> {
     }
 
     _game = BaseballGame(feed: _feed)..onCatch = _onCatch;
+    _startMonitor();
+    WidgetsBinding.instance.addObserver(this);
     _tickHud();
   }
 
@@ -129,9 +147,79 @@ class _GameScreenState extends State<GameScreen> {
     return '실측 M-wave';
   }
 
+  /// 관찰 서버를 올린다. 실패해도 게임은 그대로 진행된다.
+  ///
+  /// 두 번째 이후 호출(백그라운드 복귀)에서는 **방송기만** 새로 만들고 소스는
+  /// 그대로 둔다. 소스를 다시 만들면 세션 시계와 링버퍼가 초기화된다.
+  Future<void> _startMonitor() async {
+    final session = widget.session;
+    final feed = _feed;
+    if (session == null || feed is! LiveFatigueFeed) return; // 목 피드는 방송하지 않는다
+    if (_broadcaster?.endpoint != null) return; // 이미 떠 있다
+    if (_monitorStarting) return; // start() 의 await 구간에 겹쳐 불리는 것 방지
+    _monitorStarting = true;
+
+    try {
+      late final MonitorBroadcaster broadcaster;
+      broadcaster = MonitorBroadcaster(
+        pageLoader: () => rootBundle.loadString('assets/web/monitor.html'),
+        helloBuilder: () =>
+            _monitorSource!.buildHello(_sessionLabel()),
+      );
+
+      var source = _monitorSource;
+      if (source == null) {
+        final sink = BroadcasterSink(broadcaster);
+        source = MonitorSource(session: session, feed: feed, sink: sink);
+        _monitorSink = sink;
+        _monitorSource = source;
+        source.start();
+      } else {
+        _monitorSink!.broadcaster = broadcaster; // 소스는 유지, 방송기만 교체
+      }
+
+      final ep = await broadcaster.start();
+      if (!mounted) {
+        await broadcaster.stop();
+        return;
+      }
+      setState(() {
+        _broadcaster = broadcaster;
+        _monitorEndpoint = ep;
+      });
+    } finally {
+      _monitorStarting = false;
+    }
+  }
+
+  String _sessionLabel() {
+    final f = _feed;
+    return f is MockFatigueFeed ? '재생: ${f.sessionName}' : '실측 세션';
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final b = _broadcaster;
+    if (b == null) return;
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      // 폰 화면이 꺼지면 소켓이 죽는다. 웹이 "멈춘 화면"을 현재로 오해하지 않도록
+      // 먼저 알리고 닫는다. 웹은 소켓 종료를 보고 stale 로 넘어간다.
+      b.pushEvent(MonitorEvent('phone_background', _game.feedNowSec));
+      b.stop();
+      if (mounted) setState(() => _monitorEndpoint = null);
+    } else if (state == AppLifecycleState.resumed && b.endpoint == null) {
+      // 소스는 살아 있으므로 방송기만 다시 올라온다 (_startMonitor 참고).
+      _startMonitor();
+    }
+  }
+
   @override
   void dispose() {
-    _game.onRemove();
+    WidgetsBinding.instance.removeObserver(this);
+    _monitorSource?.stop();
+    _broadcaster?.stop();
+    _game.onRemove(); // feed.dispose() 는 이 안에서 호출된다
     super.dispose();
   }
 
@@ -185,6 +273,15 @@ class _GameScreenState extends State<GameScreen> {
                   alignment: const Alignment(0, 0.28),
                   child: CatchPopup(trigger: _catches),
                 ),
+                // 관찰 주소 배너 — _SimulationBanner 와 같은 자리(top-center)를 쓴다.
+                // 모니터는 실측 세션에서만 뜨고 _isMock 이면 뜨지 않아 서로 겹치지
+                // 않는다. Positioned 없이 두면 Stack 기본 정렬(top-start)로 좌상단
+                // SessionHud 를 덮어버리므로 명시적으로 top-center 에 고정한다.
+                if (_monitorEndpoint != null || _broadcaster != null)
+                  Align(
+                    alignment: Alignment.topCenter,
+                    child: MonitorAddressCard(endpoint: _monitorEndpoint),
+                  ),
               ],
             ),
           ),
