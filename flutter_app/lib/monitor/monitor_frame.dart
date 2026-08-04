@@ -129,6 +129,7 @@ class MonitorHello {
     required this.t1,
     required this.t2,
     required this.t3,
+    required this.link,
     required this.ticks,
   });
 
@@ -144,6 +145,15 @@ class MonitorHello {
   final double? t2;
   final double? t3;
 
+  /// 접속 시점의 폰↔ESP32 BLE 링크 상태(Finding 2).
+  ///
+  /// `link` 메시지는 상태가 "바뀔 때"만 오는 edge-triggered 라, 세션 도중
+  /// (센서가 이미 죽어 있는 상태로) 접속한 클라이언트는 그 전환을 영영 못
+  /// 본다 — `linkState` 가 웹에서 "unknown" 에 멈춰 원인을 알려주지 못한다.
+  /// hello 는 접속 시점 1회뿐이라 아직 아무 신호도 못 본 경우 null 일 수
+  /// 있다.
+  final String? link;
+
   final List<MonitorTick> ticks;
 
   Map<String, dynamic> toJson() => {
@@ -155,6 +165,7 @@ class MonitorHello {
         't1': t1,
         't2': t2,
         't3': t3,
+        'link': link,
         'ticks': [for (final f in ticks) f.toJson()],
       };
 }

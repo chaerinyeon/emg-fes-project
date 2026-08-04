@@ -1121,6 +1121,23 @@ function onMessage(msg) {
       $("sessLabel").textContent = pendingSessionLabel;
       setBanner("기준선 측정 중 — 아직 σ 계산 전입니다(최대 약 90초)", null);
     }
+
+    // Finding 2 — link 는 상태가 "바뀔 때"만 오는 edge-triggered 메시지라,
+    // 세션 도중(센서가 이미 죽어 있는 상태로) 접속한 클라이언트는 그 전환을
+    // 영영 못 보고 linkState="unknown"에 머문다. hello 가 접속 시점의 링크
+    // 상태를 실어 보내므로, link 메시지를 받았을 때와 정확히 같은 처리를
+    // 여기서도 한다 — 위 backlog 분기가 먼저 배너를 정리했더라도 센서가
+    // 죽어 있으면 이 블록이 마지막에 "센서 끊김"으로 덮어써야 원인이
+    // 전달된다.
+    if (typeof m.link === "string") {
+      linkState = m.link;
+      updateDiagLink();
+      if (m.link !== "connected") {
+        setBanner("센서 끊김 (" + m.link + ") — 전극·기기를 확인하세요", "bad");
+      } else {
+        setBanner("", null);
+      }
+    }
     return;
   }
 
@@ -1266,7 +1283,16 @@ function scheduleRetry() {
 staleTimer = setInterval(() => {
   if (live && lastTickAt && performance.now() - lastTickAt > STALE_MS) {
     setStale(true);
-    setBanner("데이터 끊김 — 화면이 갱신되지 않고 있습니다", "bad");
+    // Finding 1 — linkState 가 이미 원인을 알고 있으면(BLE 가 끊겼거나
+    // 센서가 stalled 다) 그 원인을 계속 보여준다. 이 타이머는 500ms 마다
+    // 다시 돌기 때문에, 손대지 않으면 "센서 끊김" 배너가 이 일반 문구로
+    // 계속 덮어써진다 — 화면은 맞게 회색이 되지만 치료사는 2초 뒤부터
+    // 전극이 아니라 Wi-Fi/폰 쪽을 의심하게 된다.
+    if (linkState !== "connected") {
+      setBanner("센서 끊김 (" + linkState + ") — 전극·기기를 확인하세요", "bad");
+    } else {
+      setBanner("데이터 끊김 — 화면이 갱신되지 않고 있습니다", "bad");
+    }
   }
   const diagPanel = $("diag");
   if (diagPanel && diagPanel.open) drawRaw();

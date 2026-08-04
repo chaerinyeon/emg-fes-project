@@ -107,6 +107,8 @@ void main() {
     expect(hello.ticks, hasLength(2));
     expect(hello.mu0, feed.tracker.mu0);
     expect(hello.t1, feed.tracker.t1);
+    // Finding 2 — hello 도 접속 시점의 BLE 링크 상태를 싣는다.
+    expect(hello.link, session.connState);
   });
 
   test('session 이 파싱한 RAW 패킷이 sink.raw 로 전달된다', () async {
@@ -217,6 +219,94 @@ void main() {
       expect(sink.links.last, isNot('stalled'),
           reason: '신호가 돌아오면 link 상태도 실제 연결 상태로 복구돼야 '
               '한다 — 안 그러면 "센서 끊김" 배너가 영원히 안 지워진다');
+    });
+
+    // Finding 2 — 세션 도중(센서가 이미 죽어 있는 상태로) 접속한 클라이언트가
+    // hello 에서 원인을 알 수 있어야 한다. stalled 인 동안은 session.connState
+    // 가 여전히 "connected" 일 수 있어(BLE 는 살아 있고 신호만 안 옴)
+    // buildHello() 가 그 값을 그대로 쓰면 "정상"으로 잘못 보인다.
+    test('stalled 인 동안 buildHello().link 는 세션의 connState 가 아니라 '
+        '"stalled" 다 (Finding 2)', () async {
+      final session = SessionController();
+      addTearDown(session.dispose);
+      final feed = LiveFatigueFeed(session: session);
+      addTearDown(feed.dispose);
+      final sink = _FakeSink();
+      final source = MonitorSource(session: session, feed: feed, sink: sink);
+
+      await feed.start();
+      source.start();
+      addTearDown(source.stop);
+
+      session.connState = 'connected';
+      // ignore: invalid_use_of_protected_member
+      session.notifyListeners();
+
+      await Future<void>.delayed(const Duration(milliseconds: 1700));
+      expect(sink.links.where((l) => l == 'stalled'), hasLength(1));
+
+      expect(source.buildHello('테스트').link, 'stalled',
+          reason: 'BLE 자체는 "connected" 로 남아 있어도(전극만 빠진 경우), '
+              'emitTick() 이 실제로 방송한 상태는 stalled 다 — hello 가 '
+              'session.connState 를 그대로 실으면 세션 도중 접속한 치료사가 '
+              '"정상"으로 오인한다');
+    });
+
+    // Finding 3 — 신호 재개 경로(_stalled 해제 + link 재방송)를 직접 핀다.
+    //
+    // 위의 "신호가 돌아오면..." 테스트는 이 경로를 못 잡는다: 그 테스트는
+    // stall 시작 전에 _lastLink 를 채워 두지 않아서(never 호출된 채로
+    // null), 복구 시점에 session.notifyListeners() 가 부르는 _onSession() 이
+    // "state(session.connState) != _lastLink(null)"로 걸려 자기 스스로
+    // link 를 하나 내보낸다 — 이게 emitTick() 의 복구 블록이 없어도 같은
+    // 결과(끝값이 'stalled' 가 아님)를 만들어내 버그를 가린다.
+    //
+    // 이 테스트는 stall 이전에 한 번 notifyListeners() 를 불러 _lastLink 를
+    // "connected"로 채워 둔다. 그러면 복구 시점에 connState 가 그대로
+    // "connected"라 _onSession() 의 dedup(state == _lastLink)에 걸려
+    // 아무것도 내보내지 않는다 — 오직 emitTick() 의 복구 블록만 link 를
+    // 다시 낼 수 있다. 그래서 link 시퀀스 전체(연결→stalled→복구)를
+    // 확인해야 이 블록이 삭제됐을 때 실패한다.
+    test('연결 상태에서 stall 후 복구하면 link 시퀀스가 connected→stalled→'
+        'connected 다 (Finding 3 — 복구 블록 핀)', () async {
+      final session = SessionController();
+      addTearDown(session.dispose);
+      final feed = LiveFatigueFeed(session: session);
+      addTearDown(feed.dispose);
+      final sink = _FakeSink();
+      final source = MonitorSource(session: session, feed: feed, sink: sink);
+
+      await feed.start();
+      source.start();
+      addTearDown(source.stop);
+
+      // stall 전에 한 번 연결 상태를 실제로 흘려보내 _lastLink 를 채운다 —
+      // 그래야 복구 시점에 _onSession() 이 스스로 link 를 내보내며 이
+      // 테스트가 검증하려는 emitTick() 의 복구 블록을 가리지 않는다.
+      session.connState = 'connected';
+      // ignore: invalid_use_of_protected_member
+      session.notifyListeners();
+      expect(sink.links, ['connected']);
+
+      // 1.5초 임계값을 넘겨 stalled 로 만든다. 그 사이엔 아무 신호도 주지
+      // 않는다 — _lastSignalAt 이 그대로 오래돼야 타이머가 stale 을 잡는다.
+      await Future<void>.delayed(const Duration(milliseconds: 1700));
+      expect(sink.links, ['connected', 'stalled']);
+
+      // 신호가 돌아온 것처럼 흉내낸다 — connState 는 stall 전과 동일하게
+      // "connected"로 둔다(바뀌지 않는다). _onSession() 의 dedup 이 여기서
+      // 새 link 를 막으므로, 아래 세 번째 항목은 오직 emitTick() 의 복구
+      // 블록에서만 나올 수 있다.
+      session.envLast = 5.0;
+      // ignore: invalid_use_of_protected_member
+      session.notifyListeners();
+
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+
+      expect(sink.links, ['connected', 'stalled', 'connected'],
+          reason: '복구 블록이 삭제되면 세 번째 connected 가 영영 나오지 '
+              '않는다 — _onSession() 은 connState 가 안 바뀌어 dedup 에 '
+              '걸리므로, "센서 끊김" 배너가 화면에 영구히 붙는다');
     });
   });
 

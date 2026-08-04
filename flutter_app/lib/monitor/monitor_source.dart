@@ -226,6 +226,14 @@ class MonitorSource {
   void restEnd(double tSec) => sink.event(MonitorEvent('rest_end', tSec));
 
   /// 새 클라이언트에게 보낼 hello.
+  ///
+  /// [MonitorHello.link] 는 지금 이 순간의 BLE 링크 상태다(Finding 2) —
+  /// [session.connState] 를 그대로 쓰지 않는 이유는, 신호가 멈춰
+  /// [_stalled] 인 동안은 BLE 자체는 "connected" 인 채로 남아 있을 수
+  /// 있기 때문이다(전극만 빠진 경우). 그 상태에서 hello 가
+  /// `session.connState` 를 그대로 실으면 세션 도중 접속한 치료사에게
+  /// "정상"으로 잘못 보인다 — emitTick() 이 sink 에 실제로 방송해 온
+  /// 상태(stalled)와 어긋나면 안 된다.
   MonitorHello buildHello(String sessionLabel) => MonitorHello(
         session: sessionLabel,
         startedAtMs:
@@ -235,6 +243,7 @@ class MonitorSource {
         t1: feed.tracker.t1,
         t2: feed.tracker.t2,
         t3: feed.tracker.t3,
+        link: _stalled ? 'stalled' : session.connState,
         ticks: ring.frames,
       );
 }

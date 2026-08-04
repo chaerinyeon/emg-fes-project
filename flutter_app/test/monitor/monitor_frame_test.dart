@@ -107,6 +107,7 @@ void main() {
         t1: 30.0,
         t2: null,
         t3: null,
+        link: 'connected',
         ticks: const [tick],
       );
       final j = hello.toJson();
@@ -115,8 +116,29 @@ void main() {
       expect(j['mu0'], 900.0);
       expect(j['t1'], 30.0);
       expect(j['t2'], isNull);
+      expect(j['link'], 'connected');
       expect((j['ticks'] as List).length, 1);
       expect((j['ticks'] as List).first['ts'], 1);
+    });
+
+    test('link 이 null 이어도 다른 nullable 필드처럼 키는 그대로 실린다 '
+        '(Finding 2)', () {
+      const hello = MonitorHello(
+        session: '홍길동',
+        startedAtMs: 1000,
+        mu0: null,
+        sd0: null,
+        t1: null,
+        t2: null,
+        t3: null,
+        link: null,
+        ticks: [],
+      );
+      final j = hello.toJson();
+      expect(j.containsKey('link'), isTrue,
+          reason: 'MonitorTick 과 달리 MonitorHello 는 null 필드도 조건부로 '
+              '생략하지 않는다 — mu0/t1 등 기존 필드와 같은 관례다');
+      expect(j['link'], isNull);
     });
   });
 

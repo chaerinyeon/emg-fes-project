@@ -13,6 +13,7 @@ MonitorHello _hello() => const MonitorHello(
       t1: null,
       t2: null,
       t3: null,
+      link: null,
       ticks: [],
     );
 
