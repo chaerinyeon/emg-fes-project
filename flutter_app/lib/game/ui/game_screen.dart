@@ -1,3 +1,5 @@
+import 'dart:async' show unawaited;
+
 import 'package:flame/game.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
@@ -49,6 +51,14 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   BroadcasterSink? _monitorSink;
   MonitorEndpoint? _monitorEndpoint;
 
+  /// [_monitorEndpoint] 를 그대로 미러링한다. `showDialog` 로 띄운 주소
+  /// 다이얼로그는 `_GameScreenState` 와 별개의 라우트(자기만의 Element 트리)
+  /// 라 이 위젯의 `setState` 로는 재빌드되지 않는다 — 다이얼로그 안에서
+  /// [ValueListenableBuilder] 로 이걸 구독해야 배경 전환으로 주소가
+  /// null 이 돼도 다이얼로그가 죽은 주소를 계속 보여주지 않는다.
+  final ValueNotifier<MonitorEndpoint?> _monitorEndpointNotifier =
+      ValueNotifier<MonitorEndpoint?>(null);
+
   /// 접속 토큰. 세션 시작 시 한 번만 만들어 재사용한다 — 백그라운드 복귀로
   /// 방송기가 재생성돼도(아래 [_startMonitor] 참고) 같은 토큰이라 URL이
   /// 바뀌지 않고, 치료사가 열어 둔 브라우저 탭이 그대로 유효하다.
@@ -67,10 +77,21 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   /// 있다(iOS는 paused 직후 곧바로 isolate 를 재운다).
   bool _monitorPaused = false;
 
-  /// 배경 전환 시 시작된 [MonitorBroadcaster.stop]. resumed 에서 재바인딩하기
+  /// 가장 최근에 폐기 중인 [MonitorBroadcaster.stop]. resumed 에서 재바인딩하기
   /// 전에 이걸 먼저 기다려야 포트(예: 8080)가 OS 에 반환돼 같은 포트를 다시
-  /// 잡을 수 있다.
+  /// 잡을 수 있다. paused 브랜치와 [_startMonitor] 의 "좀비" 브랜치 양쪽에서
+  /// 이 필드에 쓴다 — 어느 한쪽만 쓰면 다른 쪽에서 폐기한 방송기의 stop() 을
+  /// 아무도 기다리지 않게 된다.
   Future<void>? _stopping;
+
+  /// [_monitorStarting] 가드에 막혀 버려질 뻔한 재시작 요청. 가드를 통과하지
+  /// 못한 `_startMonitor()` 호출은 그냥 사라지지 않고 이 플래그만 남긴다 —
+  /// 지금 진행 중인 호출이 끝나면(`finally`) 이 플래그를 보고 자기 자신을
+  /// 다시 부른다. 이게 없으면: paused→resumed 도중 다시 paused 가 껴들어 온
+  /// 바인딩을 좀비로 만들고, 그 좀비를 정리하는 사이에 온 resumed 의
+  /// `_startMonitor()` 호출이 가드에 막혀 조용히 사라져 모니터가 세션 내내
+  /// 죽은 채로 남는다.
+  bool _restartRequested = false;
 
   late final BaseballGame _game;
   late final bool _isMock;
@@ -173,12 +194,30 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   /// 두 번째 이후 호출(백그라운드 복귀)에서는 **방송기만** 새로 만들고 소스는
   /// 그대로 둔다. 소스를 다시 만들면 세션 시계와 링버퍼가 초기화된다.
   Future<void> _startMonitor() async {
+    // dispose() 는 그 시점에 존재하는 _broadcaster/_monitorSource 만 안다.
+    // _restartRequested 의 finally-재실행이 disposal 이후에 불릴 수 있는데
+    // (예: 좀비 정리 도중 위젯이 통째로 pop 됐다), 그때 여기를 통과시키면
+    // dispose() 가 모르는 새 소켓 바인딩이 시작돼 아무도 그걸 stop() 해줄
+    // 사람이 없다 — 자기 자신의 `!mounted` 자가진단(아래)이 언젠가 정리는
+    // 하지만, 그 사이 창이 열려 있는 동안 들어온 요청을 처리하다 이미 죽은
+    // 위젯의 자원(예: 테스트에서는 다음 테스트로 넘어간 rootBundle mock)을
+    // 참조해 엉뚱한 곳에서 예외가 튈 수 있다. 그래서 진입 자체를 막는다.
+    if (!mounted) return;
     final session = widget.session;
     final feed = _feed;
     if (session == null || feed is! LiveFatigueFeed) return; // 목 피드는 방송하지 않는다
     if (_broadcaster?.endpoint != null) return; // 이미 떠 있다
-    if (_monitorStarting) return; // start() 의 await 구간에 겹쳐 불리는 것 방지
+    if (_monitorStarting) {
+      // 이미 다른 _startMonitor() 호출이 진행 중이다. 그냥 버리면 안 된다 —
+      // 그 호출이 시작된 뒤에 상황이 다시 바뀌었을 수 있다(예: paused 도중
+      // 온 resumed). 표시만 해 두면 진행 중인 호출의 finally 가 끝나면서
+      // 이 요청을 대신 재실행해 준다 (재발 방지 상세는 _restartRequested
+      // 독스트링 참고).
+      _restartRequested = true;
+      return;
+    }
     _monitorStarting = true;
+    if (debugOnBindStarting != null) await debugOnBindStarting!();
 
     try {
       late final MonitorBroadcaster broadcaster;
@@ -202,23 +241,44 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
 
       final ep = await broadcaster.start();
       if (!mounted || _monitorPaused) {
-        // 위젯이 이미 죽었거나, 바인딩 도중 앱이 배경으로 갔다. 후자의 경우
-        // 방금 띄운 방송기를 살려두면 화면엔 안 보이는 채로 OS 소켓만 열려
-        // 있다가 (Finding 4의 두 번째 버그) 재개 시 죽은 소켓 주소를 광고하게
-        // 된다. resumed 가 오면 _monitorPaused 가 풀리며 _startMonitor 가
-        // 다시 불려 새로 뜬다.
-        await broadcaster.stop();
+        // 위젯이 이미 죽었거나, 바인딩 도중(또는 그 사이) 앱이 배경으로
+        // 갔다. 방금 띄운 방송기를 살려두면 화면엔 안 보이는 채로 OS 소켓만
+        // 열려 있다가 재개 시 죽은 소켓 주소를 광고하게 된다.
+        //
+        // 이 stop() 도 _stopping 에 반드시 게시한다 — paused 브랜치만 쓰면
+        // 여기서 폐기하는 방송기는 아무도 기다려주지 않아, resumed 가 재빨리
+        // 다시 바인딩을 시도할 때 방금 닫기 시작한 포트를 놓고 경합한다.
+        // 로컬 변수에 먼저 담아 두고 그걸 기다린다 — 아래 훅이 재진입해
+        // `_stopping` 필드를 다시 null 로 되돌려도(정상적인 resumed 처리의
+        // 일부다) 여기서 기다리는 대상은 바뀌지 않는다.
+        final stopping = broadcaster.stop();
+        _stopping = stopping;
+        if (debugOnZombieStopping != null) await debugOnZombieStopping!();
+        await stopping;
         return;
       }
       setState(() {
         _broadcaster = broadcaster;
         _monitorEndpoint = ep;
       });
-    } catch (_) {
+      _monitorEndpointNotifier.value = ep;
+    } catch (e) {
       // 모니터 실패가 게임·자극 경로로 절대 전파되지 않는다는 보장을 이 경계
-      // 스스로도 갖는다 — 콜백들의 자체 삼킴에만 기대지 않는다.
+      // 스스로도 갖는다 — 콜백들의 자체 삼킴에만 기대지 않는다. 다만 그냥
+      // 삼키기만 하면 setState 실패나 helloBuilder 안의 _monitorSource!
+      // 같은 진짜 프로그래밍 버그도 조용히 사라져 디버깅이 불가능해지므로
+      // 로그는 남긴다.
+      debugPrint('GameScreen._startMonitor 실패(격리됨, 세션엔 영향 없음): $e');
     } finally {
       _monitorStarting = false;
+      if (_restartRequested) {
+        _restartRequested = false;
+        // 가드에 막혀 사라질 뻔한 재시작 요청을 지금 대신 실행한다 — 단,
+        // 그 사이 위젯이 죽었으면 다시 부르지 않는다(맨 위의 `!mounted`
+        // 체크가 어차피 걸러내지만, 여기서 거르면 불필요한 재바인딩 시도
+        // 자체를 만들지 않는다).
+        if (mounted) unawaited(_startMonitor());
+      }
     }
   }
 
@@ -244,6 +304,13 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
       final b = _broadcaster;
       if (b != null) {
         _stopping = b.stop();
+        // 이 핸들을 지운다 — 안 지우면 이 직후에 또 paused 가 오는(화면
+        // 잠금·전화 수신 등) 경우 이미 죽은 b 를 또 stop() 해 _stopping 을
+        // 의미 없는 no-op 으로 덮어써 버린다. 그 사이 진짜로 떠 있던 다음
+        // 방송기(_startMonitor 가 만든)의 stop() 은 "좀비" 브랜치가 따로
+        // _stopping 에 게시하므로 여기서 잃을 게 없다.
+        _broadcaster = null;
+        _monitorEndpointNotifier.value = null;
         if (mounted) setState(() => _monitorEndpoint = null);
       }
     } else if (state == AppLifecycleState.resumed) {
@@ -271,8 +338,15 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    // MonitorSource.stop() 은 session_stop 이벤트를 outbox 에 큐잉만 한다.
+    // 바로 다음 줄의 broadcaster.stop() 이 16ms 드레인 타이머를 그 이벤트가
+    // 한 번도 못 돈 채로 취소해 버리므로(Finding 3 과 같은 패턴), 이 이벤트도
+    // 클라이언트에 절대 도달하지 않는다 — dispose() 는 async 가 아니라 여기서
+    // await 로 순서를 바꿀 수도 없다. 문제 없다: broadcaster.stop() 이 곧이어
+    // 소켓을 닫고, 웹은 그 소켓 종료 자체로 세션 종료를 판단한다.
     _monitorSource?.stop();
     _broadcaster?.stop();
+    _monitorEndpointNotifier.dispose();
     _game.onRemove(); // feed.dispose() 는 이 안에서 호출된다
     super.dispose();
   }
@@ -290,6 +364,22 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   bool get debugHasBroadcaster => _broadcaster != null;
   @visibleForTesting
   String get debugMonitorToken => _monitorToken;
+
+  /// 테스트 전용 동기화 훅 두 개. 프로덕션에서는 항상 null(오버헤드 없음).
+  /// "몇 ms 쯤 기다렸다 이벤트를 흘려보내는" 식으로 폴링해 이 파일의
+  /// 레이스 순간을 맞히려던 시도는 기계마다 실 소켓 바인딩/종료 속도가
+  /// 달라 들쭉날쭉했다 — 진짜 배경 전환이 겹치는 사용자 시나리오를
+  /// 안정적으로 재현하려면 아래 두 지점을 정확히 짚어야 한다.
+  ///
+  /// [debugOnBindStarting] 은 `_monitorStarting = true` 직후, 아직
+  /// `broadcaster.start()` 를 부르기 전에 불린다.
+  @visibleForTesting
+  Future<void> Function()? debugOnBindStarting;
+
+  /// [debugOnZombieStopping] 은 "좀비" 분기가 방금 뜬 방송기의 stop() 을
+  /// 막 시작한 그 정확한 순간에 불린다.
+  @visibleForTesting
+  Future<void> Function()? debugOnZombieStopping;
 
   @override
   Widget build(BuildContext context) {
@@ -397,7 +487,35 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
       builder: (_) => Dialog(
         backgroundColor: Colors.transparent,
         insetPadding: const EdgeInsets.symmetric(horizontal: 24),
-        child: MonitorAddressCard(endpoint: _monitorEndpoint),
+        // 다이얼로그는 GameScreen 과 별개의 라우트라 GameScreen 의 setState
+        // 로는 재빌드되지 않는다 — ValueListenableBuilder 로 직접 구독해야
+        // 다이얼로그가 열려 있는 동안 배경 전환이 일어나도(_monitorEndpoint
+        // 가 null 로 바뀌어도) 죽은 주소를 계속 보여주지 않는다.
+        //
+        // ScaffoldMessenger + Scaffold 로 한 겹 더 감싼 것은 카드의 복사
+        // 버튼 때문이다. MonitorAddressCard 는 ScaffoldMessenger.of(context)
+        // 로 스낵바를 띄우는데, 감싸지 않으면 MaterialApp 최상위
+        // ScaffoldMessenger 를 찾아가고, 그 스낵바는 등록된 Scaffold(=
+        // GameScreen 자신의 Scaffold) 안에 그려져 이 다이얼로그의 모달
+        // 배리어 **아래**에 있게 돼 사용자 눈에 보이지 않는다.
+        //
+        // ScaffoldMessenger 하나만 새로 두는 것으로는 부족하다 —
+        // ScaffoldMessengerState.showSnackBar 는 등록된 Scaffold 후손이
+        // 없으면 그냥 assert 로 죽는다("no descendant Scaffolds to present
+        // to"). Material 로는 등록되지 않고 Scaffold 라야 등록된다. 그래서
+        // 투명 배경 Scaffold 를 그 안에 둬 이 다이얼로그 자신의 스낵바
+        // 표시 대상이 되게 한다 — 그 오버레이는 다이얼로그 콘텐츠 위에
+        // 그려져 실제로 보인다.
+        child: ScaffoldMessenger(
+          child: Scaffold(
+            backgroundColor: Colors.transparent,
+            body: ValueListenableBuilder<MonitorEndpoint?>(
+              valueListenable: _monitorEndpointNotifier,
+              builder: (context, endpoint, _) =>
+                  MonitorAddressCard(endpoint: endpoint),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -415,18 +533,26 @@ class _MonitorAddressButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final active = endpoint?.url != null;
-    return Material(
-      color: const Color(0xFF161B22).withValues(alpha: 0.93),
-      shape: const CircleBorder(side: BorderSide(color: Color(0xFF30363D))),
-      child: InkWell(
-        customBorder: const CircleBorder(),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.all(10),
-          child: Icon(
-            Icons.desktop_windows_outlined,
-            size: 20,
-            color: active ? const Color(0xFF58A6FF) : const Color(0xFF8B949E),
+    // 아이콘 하나가 "노트북에서 이 세션을 관찰하려면 여기를 눌러 주소를
+    // 확인하라"는 것을 전달하는 유일한 단서다 — 툴팁이 최소한이다. 상태를
+    // 20px 아이콘 색 차이 하나로만 표현하지 않도록 문구에도 활성/비활성을
+    // 담는다.
+    return Tooltip(
+      message: active ? '관찰 화면 주소 보기' : '모니터 비활성 — 눌러서 확인',
+      child: Material(
+        color: const Color(0xFF161B22).withValues(alpha: 0.93),
+        shape: const CircleBorder(side: BorderSide(color: Color(0xFF30363D))),
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(10),
+            child: Icon(
+              Icons.desktop_windows_outlined,
+              size: 20,
+              color:
+                  active ? const Color(0xFF58A6FF) : const Color(0xFF8B949E),
+            ),
           ),
         ),
       ),
