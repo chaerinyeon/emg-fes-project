@@ -719,7 +719,12 @@ function drawTimeline() {
    ════════════════════════════════════════════════════════════════════ */
 function render() {
   const z  = D.z[idx];
-  const zn = zoneOf(z);
+  // 라이브 tick 이 zone 을 실어 보냈으면 그 값을 쓴다 — 폰이 이미 판정한
+  // 값을 여기서 zoneOf() 로 다시 판정하면 두 화면(폰·웹)이 갈라질 수 있다.
+  // 재생 모드에서 불러온 JSON 은 t/z 만 갖고 있으므로 그때는 zoneOf() 가
+  // 유일한 근거로 남는다(D.zone 자체가 없어 아래 삼항이 자동으로 대체된다).
+  const wireZone = D.zone ? D.zone[idx] : undefined;
+  const zn = (typeof wireZone === "number" && ZONES[wireZone]) ? ZONES[wireZone] : zoneOf(z);
   const tEnd = D.t[D.t.length - 1] || 1;
 
   // 1. 바늘
@@ -737,8 +742,12 @@ function render() {
   badge.style.color = zn.color;
   badge.style.backgroundColor = zn.color + "1f";
 
-  // 3. 스태미나 — 여력 = 100 − (z/4)×100
-  const pct = clamp(100 - (Math.max(0, z) / Z_MAX) * 100, 0, 100);
+  // 3. 스태미나 — 폰이 보낸 stam 을 우선한다(여력 = 100 − (z/4)×100 은 폰과
+  // 동일한 공식이지만, 재생 모드처럼 stam 이 없을 때만 폴백으로 계산한다).
+  const wireStam = D.stam ? D.stam[idx] : undefined;
+  const pct = (typeof wireStam === "number")
+    ? clamp(wireStam, 0, 100)
+    : clamp(100 - (Math.max(0, z) / Z_MAX) * 100, 0, 100);
   $("stamNum").textContent = String(Math.round(pct));
   $("stamPct").style.color = zn.color;
   $("stamFill").style.width = pct + "%";
@@ -876,6 +885,9 @@ let staleTimer = null;
 
 const STALE_MS = 2000;         // 10 Hz 기준 20프레임 누락이면 못 믿는다
 
+let lastFullRedrawAt = 0;      // 타임라인·통계 표를 마지막으로 다시 그린 시각
+const FULL_REDRAW_MS = 1000;   // 그 둘은 O(n) 이라 1Hz 로만 다시 그린다(아래 livePush 참고)
+
 function setBanner(text, tone) {
   let el = document.getElementById("liveBanner");
   if (!el) {
@@ -892,15 +904,45 @@ function setBanner(text, tone) {
   el.style.color = "#fff";
 }
 
-/** 화면 전체를 흐리게 — 오래된 값을 현재값인 척 그리지 않는다. */
+/** 화면 전체를 흐리게 — 오래된 값을 현재값인 척 그리지 않는다.
+    #liveBanner 는 .wrap 의 형제로 body 에 고정 배치된다. body 를 통째로
+    흐리면 "왜 흐린지" 설명하는 배너 글자까지 같이 흐려져 가장 필요한
+    순간에 안 읽히므로, 콘텐츠 래퍼(.wrap)만 흐리고 배너는 그대로 둔다. */
 function setStale(on) {
-  document.body.style.opacity = on ? "0.45" : "1";
-  document.body.style.filter = on ? "grayscale(1)" : "none";
+  const wrap = document.querySelector(".wrap");
+  if (wrap) {
+    wrap.style.opacity = on ? "0.45" : "1";
+    wrap.style.filter = on ? "grayscale(1)" : "none";
+  }
+}
+
+/** hello 가 아직 도착하지 않았다 — 부팅 직후 또는 재연결 중.
+    D 를 비우고 화면엔 대시(—)만 보여준다. 초기 마크업의 기본값
+    ("0.0σ"·"정상"·"100%")을 그대로 두면 세션이 시작되기도 전에 "정상"으로
+    읽히는 숫자가 떠 있게 된다 — 이 세션에서 온 값이 아니면 그리지 않는다. */
+function liveWaiting() {
+  D = null;
+  idx = 0;
+  $("sessLabel").textContent = "연결 대기 중";
+  $("sigmaNum").textContent = "—";
+  $("zoneName").textContent = "대기";
+  $("zoneIcon").textContent = "…";
+  $("stamNum").textContent = "—";
+  $("scrub").disabled = true;
+  $("btnPlay").disabled = true;
+  $("btnReset").disabled = true;
+  setStale(true);
+  setBanner("연결 중 · 세션 시작을 기다리는 중입니다", null);
 }
 
 function liveInit(sessionLabel) {
-  D = { session: sessionLabel, t: [0], z: [0], t1: null, t2: null, t3: null };
+  // zone/stam 은 폰이 계산해 보낸 값을 t/z 와 나란한 배열로 그대로 보관한다.
+  // 값이 없는 지점(예: 백필 전)은 undefined 로 두고 render() 가 zoneOf() 로
+  // 대체한다 — 재생 모드(순수 t/z JSON)와 같은 경로를 타게 하기 위해서다.
+  D = { session: sessionLabel, t: [0], z: [0], zone: [undefined], stam: [undefined],
+        t1: null, t2: null, t3: null };
   idx = 0;
+  lastFullRedrawAt = performance.now();
   $("sessLabel").textContent = sessionLabel;
   $("scrub").disabled = true;
   $("btnPlay").disabled = true;
@@ -910,17 +952,31 @@ function liveInit(sessionLabel) {
   render();
 }
 
-function livePush(ts, z) {
+function livePush(ts, z, zoneIdx, stam) {
   if (!D) return;
   D.t.push(ts);
   D.z.push(z);
+  D.zone.push(typeof zoneIdx === "number" ? zoneIdx : undefined);
+  D.stam.push(typeof stam === "number" ? stam : undefined);
   idx = D.t.length - 1;
   $("scrub").max = D.t.length - 1;
   $("scrub").value = idx;
   $("tEnd").textContent = fmtTime(ts);
-  drawTimeline();
-  renderStats();
+
+  // 게이지·바늘·배지·스태미나 바·커서는 매 tick(10Hz) 그대로 갱신한다 — O(1)이라 부담 없다.
   render();
+
+  // 타임라인 밴드·궤적과 존별 체류 표는 세션 전체(t/z 전 구간)를 다시 훑는
+  // O(n) 작업이다. 매 tick 마다 다시 그리면 세션이 길어질수록 누적 비용이
+  // O(n²)로 발산해 화면이 밀리기 시작한다 — 밀린 화면은 이 파일이 막으려는
+  // "과거를 현재처럼 보여주기"의 또 다른 형태라 1Hz 로 스로틀링한다. 커서는
+  // render() 가 매 tick 옮기므로 위치 자체의 실시간성은 잃지 않는다.
+  const now = performance.now();
+  if (now - lastFullRedrawAt >= FULL_REDRAW_MS) {
+    lastFullRedrawAt = now;
+    drawTimeline();
+    renderStats();
+  }
 }
 
 function onMessage(msg) {
@@ -932,10 +988,15 @@ function onMessage(msg) {
     liveInit(m.session || "실측 세션");
     D.t1 = m.t1; D.t2 = m.t2; D.t3 = m.t3;
     for (const f of (m.ticks || [])) {
-      if (typeof f.z === "number") { D.t.push(f.ts); D.z.push(f.z); }
+      if (typeof f.z === "number") {
+        D.t.push(f.ts); D.z.push(f.z);
+        D.zone.push(typeof f.zone === "number" ? f.zone : undefined);
+        D.stam.push(typeof f.stam === "number" ? f.stam : undefined);
+      }
     }
     idx = D.t.length - 1;
     drawTimeline(); renderStats(); render();
+    lastFullRedrawAt = performance.now();
     lastTickAt = performance.now();
     setStale(false);
     setBanner("", null);
@@ -947,7 +1008,7 @@ function onMessage(msg) {
     setStale(false);
     if (linkState === "connected" || linkState === "unknown") setBanner("", null);
     // σ 가 없으면(baseline 전) 게이지는 직전 값을 유지하고 타임라인만 늘리지 않는다.
-    if (typeof m.z === "number") livePush(m.ts, m.z);
+    if (typeof m.z === "number") livePush(m.ts, m.z, m.zone, m.stam);
     return;
   }
 
@@ -976,7 +1037,13 @@ function connect() {
               location.host + "/ws" + location.search;
   try { ws = new WebSocket(url); } catch (e) { scheduleRetry(); return; }
 
-  ws.onopen = () => { retry = 500; };
+  ws.onopen = () => {
+    retry = 500;
+    // 소켓은 열렸지만 아직 hello/tick 이 안 왔다 — stale 은 그대로 두고
+    // (계속 회색인 채로) 배너 문구만 "재연결 중"에서 갱신해 둔다. 그래야
+    // hello 가 늦게 오더라도 화면이 "끊김"으로 멈춰 있지 않는다.
+    setBanner("연결됨 · 세션 데이터 수신 대기 중", null);
+  };
   ws.onmessage = ev => onMessage(ev.data);
   ws.onclose = () => { ws = null; setStale(true);
     setBanner("연결 끊김 · 재연결 중", "bad"); scheduleRetry(); };
@@ -997,8 +1064,12 @@ staleTimer = setInterval(() => {
   }
 }, 500);
 
-/* 폰이 서빙한 페이지면 라이브로 붙는다. 파일을 직접 열었으면 재생 모드다. */
+/* 폰이 서빙한 페이지면 라이브로 붙는다. 파일을 직접 열었으면 재생 모드다.
+   hello 가 오기 전까지는 절대 숫자를 그리지 않는다 — liveWaiting() 이 먼저
+   대기 화면을 띄운 뒤에만 소켓을 연다. 아래 "부팅" 블록의 makeSample()/
+   load() 는 이 분기가 http/https 면 실행되지 않는다. */
 if (location.protocol === "http:" || location.protocol === "https:") {
+  liveWaiting();
   connect();
 }
 
@@ -1036,6 +1107,7 @@ function sampleAt(ev) {
 }
 
 $("tlHit").addEventListener("pointermove", ev => {
+  if (!D) return; // hello 대기 중 — 아직 훑을 세션이 없다
   const s = sampleAt(ev), zn = zoneOf(D.z[s.i]);
   clear(tip);
   tip.appendChild(htmlEl("b", null, fmtTime(D.t[s.i])));
@@ -1050,12 +1122,14 @@ $("tlHit").addEventListener("pointermove", ev => {
 });
 $("tlHit").addEventListener("pointerleave", () => { tip.style.opacity = "0"; });
 $("tlHit").addEventListener("pointerdown", ev => {
+  if (!D) return; // hello 대기 중 — 아직 훑을 세션이 없다
   setPlaying(false); idx = sampleAt(ev).i; render();
 });
 
 /* 키보드: 좌우 화살표로 한 표본씩, 스페이스로 재생/정지 */
 document.addEventListener("keydown", e => {
   if (e.target.tagName === "TEXTAREA") return;
+  if (!D) return; // hello 대기 중(라이브 접속 직후) — 재생 조작을 무시한다
   if (e.key === "ArrowRight")     { setPlaying(false); idx = Math.min(D.t.length - 1, idx + 1); render(); }
   else if (e.key === "ArrowLeft") { setPlaying(false); idx = Math.max(0, idx - 1); render(); }
   else if (e.key === " ")         { e.preventDefault(); setPlaying(!playing); }
@@ -1081,7 +1155,14 @@ $("jsonIn").value = JSON.stringify({
   z: sample.z.slice(0, 6).concat(["…"]),
   t1: null, t2: null, t3: null,
 }, null, 1);
-load(sample);
+
+/* file:// 로 직접 연 경우에만 샘플을 자동 재생한다. 폰이 서빙한 페이지
+   (http/https)라면 위 라이브 분기가 이미 liveWaiting() 으로 대기 화면을
+   띄웠다 — 여기서 샘플을 또 그리면 이 프로젝트의 실측 세션 "141940"이
+   지금 이 환자의 값인 것처럼 보이게 된다. */
+if (location.protocol === "file:") {
+  load(sample);
+}
 </script>
 </body>
 </html>
