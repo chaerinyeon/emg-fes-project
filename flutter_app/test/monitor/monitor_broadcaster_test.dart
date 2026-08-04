@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
 
 import 'package:flutter_app/monitor/monitor_broadcaster.dart';
 import 'package:flutter_app/monitor/monitor_frame.dart';
@@ -17,10 +16,10 @@ MonitorHello _hello() => const MonitorHello(
       ticks: [],
     );
 
-MonitorBroadcaster _make() => MonitorBroadcaster(
+MonitorBroadcaster _make({String token = '8134'}) => MonitorBroadcaster(
       pageLoader: () async => '<html><body>모니터</body></html>',
       helloBuilder: _hello,
-      rng: Random(1),
+      token: token,
     );
 
 void main() {
@@ -32,6 +31,18 @@ void main() {
     expect(ep, isNotNull);
     expect(ep!.port, inInclusiveRange(8080, 8090));
     expect(RegExp(r'^\d{4}$').hasMatch(ep.token), isTrue);
+  });
+
+  // 토큰은 호출자([GameScreen])가 makeToken() 으로 한 번만 만들어 넘긴다.
+  // 여기서 다시 만들면 안 된다 — 백그라운드 복귀로 방송기가 재생성될 때마다
+  // URL 이 바뀌어 치료사의 브라우저 탭이 403을 받는다 (Finding 5).
+  test('전달받은 토큰을 그대로 쓰고 새로 만들지 않는다', () async {
+    final b = _make(token: '4242');
+    final ep = await b.start();
+    addTearDown(b.stop);
+
+    expect(ep!.token, '4242');
+    expect(b.endpoint!.token, '4242');
   });
 
   test('토큰이 맞으면 페이지를 준다', () async {

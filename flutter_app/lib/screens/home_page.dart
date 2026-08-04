@@ -129,6 +129,13 @@ class _HomePageState extends State<HomePage> {
   final RawLogRecorder _rawLog = RawLogRecorder();
   String? _pendingEnvMarker; // ENV 로그용 마커 (_pendingMarker는 1Hz 로그가 소비)
 
+  // 게임 화면 진입 재진입 방지 — onTap 은 Future<void> Function() 를 VoidCallback
+  // 자리에 넘겨 결과가 await 되지 않는다. 가드 없이 연타하면 SessionController
+  // 를 두 개 만들어 같은 BLE 스트림에 두 구독을 걸고, _startMonitor() 두 벌이
+  // 서로 다른 포트에 바인딩돼 화면에 뜨는 주소가 실제 보이는 게임 화면 것과
+  // 어긋난다.
+  bool _openingGame = false;
+
   @override
   void initState() {
     super.initState();
@@ -1094,33 +1101,45 @@ class _HomePageState extends State<HomePage> {
   /// 여기가 "게임이 목 데이터로 돌던" 문제의 수정 지점이다. dataChar 가 없으면
   /// (미연결) 세션을 넘기지 않고, GameScreen 이 기존대로 목 피드로 떨어진다.
   Future<void> _openGame() async {
-    final dataChar = _adoptableDataChar;
-    if (dataChar == null) {
-      if (!mounted) return;
-      await Navigator.push(
-        context,
-        MaterialPageRoute(builder: (_) => const GameScreen()),
+    // 연타 가드 — onTap 이 이 Future 를 await 하지 않으므로, 첫 탭이 아직
+    // 화면을 올리는 중일 때 두 번째 탭이 들어오면 조용히 무시한다.
+    if (_openingGame) return;
+    _openingGame = true;
+    try {
+      final dataChar = _adoptableDataChar;
+      if (dataChar == null) {
+        if (!mounted) return;
+        await Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const GameScreen()),
+        );
+        return;
+      }
+
+      // adopt() 는 갓 만든 컨트롤러에 바로 걸기 때문에 "이미 주 데이터
+      // 소스를 가진 컨트롤러" StateError 는 여기서 절대 나지 않는다.
+      final session = SessionController();
+      session.adopt(
+        dataStream: dataChar.lastValueStream,
+        cmdChar: _cmdChar,
+        label: _device?.platformName ?? kDeviceName,
       );
-      return;
-    }
 
-    final session = SessionController();
-    session.adopt(
-      dataStream: dataChar.lastValueStream,
-      cmdChar: _cmdChar,
-      label: _device?.platformName ?? kDeviceName,
-    );
-
-    if (!mounted) {
-      session.dispose();
-      return;
+      try {
+        if (!mounted) return;
+        await Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => GameScreen(session: session)),
+        );
+      } finally {
+        // push 와 release()/dispose() 사이 어디서 던지든(예: Navigator 예외)
+        // 구독과 ChangeNotifier 가 새게 두지 않는다.
+        session.release();
+        session.dispose();
+      }
+    } finally {
+      _openingGame = false;
     }
-    await Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => GameScreen(session: session)),
-    );
-    session.release();
-    session.dispose();
   }
 
   // ---------- 처음 화면으로 이동 ----------

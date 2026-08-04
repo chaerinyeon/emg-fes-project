@@ -13,7 +13,6 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
 
 import 'monitor_address.dart';
 import 'monitor_frame.dart';
@@ -70,8 +69,8 @@ class MonitorBroadcaster {
   MonitorBroadcaster({
     required this.pageLoader,
     required this.helloBuilder,
-    Random? rng,
-  }) : _rng = rng ?? Random();
+    required this.token,
+  });
 
   /// HTML 본문 공급자. 앱에서는 에셋 번들, 테스트에서는 문자열 상수.
   final Future<String> Function() pageLoader;
@@ -79,7 +78,11 @@ class MonitorBroadcaster {
   /// 새 클라이언트에게 보낼 hello 를 그때그때 만든다.
   final MonitorHello Function() helloBuilder;
 
-  final Random _rng;
+  /// 접속 토큰. 세션 전체에서 고정 — 호출자([GameScreen])가 [makeToken] 으로
+  /// 한 번만 만들어 넘긴다. 여기서 매번 새로 만들면(과거 동작) 백그라운드
+  /// 복귀로 방송기가 재생성될 때마다 URL 이 바뀌어, 이미 열어 둔 브라우저
+  /// 탭이 403 을 받고 치료사가 주소를 다시 입력해야 했다.
+  final String token;
 
   HttpServer? _server;
   MonitorEndpoint? _endpoint;
@@ -152,7 +155,7 @@ class MonitorBroadcaster {
       final endpoint = MonitorEndpoint(
         ip: await localIpv4(),
         port: server.port,
-        token: makeToken(_rng),
+        token: token,
       );
       _server = server;
       _endpoint = endpoint;

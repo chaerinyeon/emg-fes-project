@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_app/game/data/live_fatigue_feed.dart';
+import 'package:flutter_app/monitor/monitor_address.dart';
 import 'package:flutter_app/monitor/monitor_broadcaster.dart';
 import 'package:flutter_app/monitor/monitor_source.dart';
 import 'package:flutter_app/services/profile_service.dart';
@@ -38,6 +39,7 @@ void main() {
     final broadcaster = MonitorBroadcaster(
       pageLoader: () async => '<html></html>',
       helloBuilder: () => source.buildHello('시뮬레이터'),
+      token: makeToken(),
     );
     source = MonitorSource(
       session: session,

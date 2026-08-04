@@ -2,8 +2,8 @@ import 'package:flame/game.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 
+import '../../monitor/monitor_address.dart';
 import '../../monitor/monitor_broadcaster.dart';
-import '../../monitor/monitor_frame.dart';
 import '../../monitor/monitor_source.dart';
 import '../../services/session_controller.dart';
 import '../../widgets/monitor/monitor_address_card.dart';
@@ -49,11 +49,28 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   BroadcasterSink? _monitorSink;
   MonitorEndpoint? _monitorEndpoint;
 
+  /// 접속 토큰. 세션 시작 시 한 번만 만들어 재사용한다 — 백그라운드 복귀로
+  /// 방송기가 재생성돼도(아래 [_startMonitor] 참고) 같은 토큰이라 URL이
+  /// 바뀌지 않고, 치료사가 열어 둔 브라우저 탭이 그대로 유효하다.
+  late final String _monitorToken;
+
   /// [_startMonitor] 재진입 방지. [MonitorBroadcaster.start] 는 그 안에 await
   /// 지점이 두 번 있어, 그 사이에 `initState` 와 `didChangeAppLifecycleState`
   /// 양쪽에서 겹쳐 부르면 idempotency 체크(`_broadcaster?.endpoint != null`)를
   /// 둘 다 통과해 포트를 두 번 바인딩할 수 있다.
   bool _monitorStarting = false;
+
+  /// 앱이 배경으로 간 뒤(또는 초기 바인딩 도중 배경으로 간) true. **이 위젯이
+  /// 동기적으로** 관리한다 — [MonitorBroadcaster.endpoint] 는 [MonitorBroadcaster.stop]
+  /// 이 소켓들을 다 닫은 *뒤에야* null 이 되므로, 그 필드로 resumed 를 게이팅하면
+  /// stop() 이 아직 끝나지 않은 사이에 resumed 가 와서 게이트가 영영 안 열릴 수
+  /// 있다(iOS는 paused 직후 곧바로 isolate 를 재운다).
+  bool _monitorPaused = false;
+
+  /// 배경 전환 시 시작된 [MonitorBroadcaster.stop]. resumed 에서 재바인딩하기
+  /// 전에 이걸 먼저 기다려야 포트(예: 8080)가 OS 에 반환돼 같은 포트를 다시
+  /// 잡을 수 있다.
+  Future<void>? _stopping;
 
   late final BaseballGame _game;
   late final bool _isMock;
@@ -88,6 +105,9 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
       _feed = MockFatigueFeed();
       _isMock = true;
     }
+    // 세션 전체에서 고정 — 방송기가 재생성돼도(백그라운드 복귀) 같은 URL 을
+    // 유지하려면 토큰의 수명이 위젯(=게임 화면 한 판)과 같아야 한다.
+    _monitorToken = makeToken();
 
     _game = BaseballGame(feed: _feed)..onCatch = _onCatch;
     _startMonitor();
@@ -147,7 +167,8 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     return '실측 M-wave';
   }
 
-  /// 관찰 서버를 올린다. 실패해도 게임은 그대로 진행된다.
+  /// 관찰 서버를 올린다. 실패해도 게임은 그대로 진행된다 — 모든 예외를 여기서
+  /// 삼켜, 콜백 내부 구현이 앞으로 바뀌어도 이 경계 자체가 방어선이 되게 한다.
   ///
   /// 두 번째 이후 호출(백그라운드 복귀)에서는 **방송기만** 새로 만들고 소스는
   /// 그대로 둔다. 소스를 다시 만들면 세션 시계와 링버퍼가 초기화된다.
@@ -165,6 +186,7 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
         pageLoader: () => rootBundle.loadString('assets/web/monitor.html'),
         helloBuilder: () =>
             _monitorSource!.buildHello(_sessionLabel()),
+        token: _monitorToken, // 세션 전체에서 고정 — 재생성돼도 URL 이 안 바뀐다
       );
 
       var source = _monitorSource;
@@ -179,7 +201,12 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
       }
 
       final ep = await broadcaster.start();
-      if (!mounted) {
+      if (!mounted || _monitorPaused) {
+        // 위젯이 이미 죽었거나, 바인딩 도중 앱이 배경으로 갔다. 후자의 경우
+        // 방금 띄운 방송기를 살려두면 화면엔 안 보이는 채로 OS 소켓만 열려
+        // 있다가 (Finding 4의 두 번째 버그) 재개 시 죽은 소켓 주소를 광고하게
+        // 된다. resumed 가 오면 _monitorPaused 가 풀리며 _startMonitor 가
+        // 다시 불려 새로 뜬다.
         await broadcaster.stop();
         return;
       }
@@ -187,6 +214,9 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
         _broadcaster = broadcaster;
         _monitorEndpoint = ep;
       });
+    } catch (_) {
+      // 모니터 실패가 게임·자극 경로로 절대 전파되지 않는다는 보장을 이 경계
+      // 스스로도 갖는다 — 콜백들의 자체 삼킴에만 기대지 않는다.
     } finally {
       _monitorStarting = false;
     }
@@ -199,19 +229,43 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    final b = _broadcaster;
-    if (b == null) return;
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached) {
-      // 폰 화면이 꺼지면 소켓이 죽는다. 웹이 "멈춘 화면"을 현재로 오해하지 않도록
-      // 먼저 알리고 닫는다. 웹은 소켓 종료를 보고 stale 로 넘어간다.
-      b.pushEvent(MonitorEvent('phone_background', _game.feedNowSec));
-      b.stop();
-      if (mounted) setState(() => _monitorEndpoint = null);
-    } else if (state == AppLifecycleState.resumed && b.endpoint == null) {
-      // 소스는 살아 있으므로 방송기만 다시 올라온다 (_startMonitor 참고).
-      _startMonitor();
+      // 폰 화면이 꺼지면 소켓이 죽는다. phone_background 이벤트로 미리 알리려
+      // 해도 outbox 드레인은 16ms 주기 타이머가 처리하는데 stop() 이 그
+      // 타이머부터 취소해 이벤트가 도착하기 전에 죽는다 — 그래서 이벤트는
+      // 보내지 않는다. 웹은 소켓 종료 자체를 stale 신호로 받아들인다.
+      //
+      // _monitorPaused 는 _broadcaster 존재 여부와 무관하게 항상 세운다.
+      // 아직 초기 바인딩 중(_broadcaster == null)이어도 표시해 둬야
+      // _startMonitor 가 나중에 완료됐을 때 "배경에서 새로 뜬 좀비 엔드포인트"
+      // 를 스스로 정리할 수 있다 (Finding 4).
+      _monitorPaused = true;
+      final b = _broadcaster;
+      if (b != null) {
+        _stopping = b.stop();
+        if (mounted) setState(() => _monitorEndpoint = null);
+      }
+    } else if (state == AppLifecycleState.resumed) {
+      if (!_monitorPaused) return; // 배경에 간 적이 없으면(혹은 초기 바인딩 전) 할 일 없음
+      _monitorPaused = false;
+      _resumeMonitor();
     }
+  }
+
+  /// resumed 진입점. 직전 [MonitorBroadcaster.stop] 이 아직 끝나지 않았으면
+  /// 먼저 기다린다 — 그래야 OS 가 포트(예: 8080)를 회수한 뒤에 재바인딩해
+  /// 같은 포트를 다시 잡을 확률이 높아진다. [_startMonitor] 자체의 재진입
+  /// 방지는 `_monitorStarting` 이 맡는다.
+  Future<void> _resumeMonitor() async {
+    final stopping = _stopping;
+    _stopping = null;
+    if (stopping != null) {
+      try {
+        await stopping;
+      } catch (_) {}
+    }
+    await _startMonitor();
   }
 
   @override
@@ -222,6 +276,20 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     _game.onRemove(); // feed.dispose() 는 이 안에서 호출된다
     super.dispose();
   }
+
+  // ── 테스트 전용 진단 게터 ─────────────────────────────────────────
+  // 프로덕션 코드는 쓰지 않는다. `_GameScreenState` 는 라이브러리 비공개라
+  // 테스트가 타입으로 직접 잡을 수 없으므로, `tester.state(...)` 로 얻은
+  // 인스턴스를 `dynamic` 으로 다뤄 이 이름들로 내부 배선을 검증한다
+  // (재진입 가드·pause/resume 후 동일 MonitorSource 유지·토큰 불변).
+  @visibleForTesting
+  MonitorEndpoint? get debugMonitorEndpoint => _monitorEndpoint;
+  @visibleForTesting
+  MonitorSource? get debugMonitorSource => _monitorSource;
+  @visibleForTesting
+  bool get debugHasBroadcaster => _broadcaster != null;
+  @visibleForTesting
+  String get debugMonitorToken => _monitorToken;
 
   @override
   Widget build(BuildContext context) {
@@ -273,14 +341,25 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
                   alignment: const Alignment(0, 0.28),
                   child: CatchPopup(trigger: _catches),
                 ),
-                // 관찰 주소 배너 — _SimulationBanner 와 같은 자리(top-center)를 쓴다.
-                // 모니터는 실측 세션에서만 뜨고 _isMock 이면 뜨지 않아 서로 겹치지
-                // 않는다. Positioned 없이 두면 Stack 기본 정렬(top-start)로 좌상단
-                // SessionHud 를 덮어버리므로 명시적으로 top-center 에 고정한다.
+                // 관찰 주소 — 상시 카드가 아니라 작은 트리거 버튼이다.
+                //
+                // 예전엔 top-center 에 Align 으로 풀사이즈 카드를 얹었는데,
+                // Align 은 loosen() 된 constraints 를 자식에게 넘길 뿐이라
+                // ListTile 이 (StackFit.expand 로 finite 해진) 가로 전체를
+                // 채워 좌상단 SessionHud·우상단 FatiguePanel 을 통째로 덮었다
+                // — 이 화면의 "임상 알맹이"(FatiguePanel 독스트링 참고)가
+                // 세션 내내 가려지는 셈이라 카드 대신 우하단의 작은 아이콘
+                // 버튼으로 접어 둔다. 좌표는 play area(가로 25~75%, 세로
+                // 45~100%) 바깥의 우하단 모서리 — 포구 장면·양쪽 HUD 어느 것도
+                // 침범하지 않는다. 주소는 탭하면 다이얼로그로 펼쳐진다.
                 if (_monitorEndpoint != null || _broadcaster != null)
-                  Align(
-                    alignment: Alignment.topCenter,
-                    child: MonitorAddressCard(endpoint: _monitorEndpoint),
+                  Positioned(
+                    right: 8,
+                    bottom: 8,
+                    child: _MonitorAddressButton(
+                      endpoint: _monitorEndpoint,
+                      onTap: () => _showMonitorAddress(context),
+                    ),
                   ),
               ],
             ),
@@ -307,6 +386,49 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
           if (zone == FatigueZone.danger && !_resting)
             const IgnorePointer(child: _DangerVignette()),
         ],
+      ),
+    );
+  }
+
+  /// 관찰 주소 트리거를 탭했을 때 전체 카드를 다이얼로그로 펼친다.
+  void _showMonitorAddress(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder: (_) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.symmetric(horizontal: 24),
+        child: MonitorAddressCard(endpoint: _monitorEndpoint),
+      ),
+    );
+  }
+}
+
+/// 관찰 주소를 접어 두는 작은 원형 버튼. 탭하면 [MonitorAddressCard] 를
+/// 다이얼로그로 띄운다 — HUD 를 절대 가리지 않으면서도 주소를 discoverable
+/// 하게 유지한다 (Finding 1).
+class _MonitorAddressButton extends StatelessWidget {
+  const _MonitorAddressButton({required this.endpoint, required this.onTap});
+
+  final MonitorEndpoint? endpoint;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final active = endpoint?.url != null;
+    return Material(
+      color: const Color(0xFF161B22).withValues(alpha: 0.93),
+      shape: const CircleBorder(side: BorderSide(color: Color(0xFF30363D))),
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(10),
+          child: Icon(
+            Icons.desktop_windows_outlined,
+            size: 20,
+            color: active ? const Color(0xFF58A6FF) : const Color(0xFF8B949E),
+          ),
+        ),
       ),
     );
   }
