@@ -15,6 +15,7 @@ import '../data/mock_fatigue_feed.dart';
 import '../engine/rest_policy.dart';
 import '../flame/baseball_game.dart';
 import '../model/zone.dart';
+import 'widgets/patient_status_card.dart';
 import 'widgets/rest_overlay.dart';
 import 'widgets/session_hud.dart';
 
@@ -98,9 +99,11 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
 
   final RestPolicy _rest = RestPolicy();
 
+  // σ·예측은 **계산은 하되 화면에 숫자로 나가지 않는다.** 휴식 자동 판단과
+  // 관찰 웹 송신이 이 값을 쓴다. 표시는 스태미나 막대 하나뿐이다
+  // (docs/superpowers/specs/2026-08-05-screen-role-split-design.md).
   double? _sigma;
   double? _predicted;
-  final List<({double t, double z})> _history = [];
   int _catches = 0;
   int _inning = 1;
   bool _resting = false;
@@ -167,7 +170,8 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
       }
 
       if (z != _sigma || p != _predicted || _resting != _game.resting) {
-        if (z != null && z != _sigma) _history.add((t: now, z: z));
+        // σ 이력은 폰이 들고 있지 않는다 — 유일한 소비자였던 휴식 화면의 존
+        // 타임라인이 웹으로 갔다. 웹은 자체 링버퍼로 이력을 갖는다.
         setState(() {
           _sigma = z;
           _predicted = p;
@@ -418,18 +422,13 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
                     isSimulated: _isMock,
                   ),
                 ),
-                // 우상단 — 피로 게이지(임상 알맹이는 항상 보인다)
+                // 우상단 — 환자가 읽는 것 하나. σ·존·예측은 관찰 웹이 맡는다.
                 Positioned(
                   right: 10,
                   top: _isMock ? 34 : 8,
                   child: SizedBox(
-                    width: 176,
-                    child: FatiguePanel(
-                      sigma: _sigma,
-                      predicted: _predicted,
-                      horizonSec: _feed.predictionHorizonSec,
-                      compact: true,
-                    ),
+                    width: 160,
+                    child: PatientStatusCard(sigma: _sigma),
                   ),
                 ),
                 // 포구 팝업 — 글러브보다 위, HUD 보다 아래 중간 높이.
@@ -464,8 +463,6 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
             RestOverlay(
               sigma: _sigma,
               remainingSec: _rest.remainingSec(_game.feedNowSec) ?? 0,
-              history: _history,
-              nowSec: _game.feedNowSec,
               inning: _inning,
               onSkip: _finishRest,
             ),
