@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import '../signal/constants.dart';
 import 'device_connection.dart';
 
 /// 자극이 꺼진 이유. 세션 종료 코드(공통 컨텍스트 5장)로 이어진다.
@@ -35,13 +36,57 @@ class StimTransition {
       '${delivered ? '' : ' [NOT DELIVERED]'}';
 }
 
+/// 펌웨어 `STIM_TIMEOUT_MS` (초).
+///
+/// **펌웨어를 고치면 이 값도 같이 고친다.** 아래 상한들이 전부 여기서
+/// 유도되므로, 이 한 줄만 맞으면 앱은 어떤 펌웨어 값에서도 안전하다.
+///
+/// 검증 기록 — 왜 이게 지금까지 문제되지 않았나:
+/// 레거시 앱은 `trigger_stim` 을 한 번도 보내지 않았다. 그래서 실측 88세션
+/// 내내 펌웨어의 `isStimulating` 은 false 였고(마사지기를 손으로 켰다),
+/// 이 타임아웃도 BLE 끊김 페일세이프도 **한 번도 발동한 적이 없다**.
+/// 세션이 중앙 10.2분씩 이어진 것도 그 때문이다.
+/// 앱이 자극을 `trigger_stim` 으로 몰기 시작하면 둘 다 비로소 실재한다.
+const int kFirmwareStimTimeoutSeconds = 180;
+
+/// 펌웨어 타임아웃까지 남겨 두는 여유(초).
+const int kStimSafetyMarginSeconds = 10;
+
+/// 자극 상한을 정한다.
+///
+/// 세션 상한과 "펌웨어 타임아웃 − 여유" 중 **짧은 쪽**.
+/// 순수 함수라 펌웨어 값을 바꿔가며 정책을 검증할 수 있다.
+int effectiveStimCapSeconds({
+  required int firmwareTimeoutS,
+  required int sessionMaxS,
+  int margin = kStimSafetyMarginSeconds,
+}) {
+  final fwCap = firmwareTimeoutS - margin;
+  final safeFw = fwCap < 1 ? (firmwareTimeoutS / 2).floor() : fwCap;
+  return sessionMaxS < safeFw ? sessionMaxS : safeFw;
+}
+
+const int _specSessionMaxSeconds = kSessionMaxMin * 60;
+const int _firmwareCapSeconds =
+    kFirmwareStimTimeoutSeconds - kStimSafetyMarginSeconds;
+
 /// 로컬 자극 상한(초).
 ///
-/// 펌웨어 `STIM_TIMEOUT_MS` 는 180초다. **로컬 자동 종료가 언제나 1차
-/// 안전장치**여야 하므로(하드 제약 8) 이 값은 반드시 그보다 짧다.
-/// 펌웨어 타임아웃이 먼저 걸리면 앱은 자극이 왜 멎었는지 모른 채
-/// 게임을 계속 돌리게 된다.
-const int kLocalMaxStimSeconds = 170;
+/// **로컬 자동 종료가 언제나 1차 안전장치**여야 한다(하드 제약 8).
+/// 펌웨어 타임아웃이 먼저 걸리면 앱은 자극이 왜 멎었는지 모른 채 게임을
+/// 계속 돌린다 — 화면의 손은 쥐어지는데 실제 수축은 없는 상태가 된다.
+const int kLocalMaxStimSeconds = _specSessionMaxSeconds < _firmwareCapSeconds
+    ? _specSessionMaxSeconds
+    : _firmwareCapSeconds;
+
+/// 실질 세션 상한(초).
+///
+/// 세션이 자극보다 오래 살아 있으면 안 되므로 자극 상한과 같다.
+///
+/// 현 펌웨어(180초)에서는 **170초 = 2.8분**이다. 스펙의 15분을 쓰려면
+/// 펌웨어 `STIM_TIMEOUT_MS` 를 960000(16분)으로 올리고 위
+/// [kFirmwareStimTimeoutSeconds] 를 960 으로 맞추면 자동으로 900초가 된다.
+const int kEffectiveSessionMaxSeconds = kLocalMaxStimSeconds;
 
 /// 자극 데이터가 이만큼 끊기면 자극을 멈춘다(초).
 const int kStimDataTimeoutSeconds = 5;

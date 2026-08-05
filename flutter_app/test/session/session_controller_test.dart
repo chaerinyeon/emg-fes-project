@@ -228,14 +228,16 @@ void main() {
       final m = await reachPlaying(link);
       await m.stim.start();
 
-      // 성공률 하락 백업 조건
+      // 성공률 하락 백업 조건.
+      // 실질 세션 상한(kEffectiveSessionMaxSeconds) 안에서 끝나야
+      // timeout 이 아니라 successRateDrop 으로 걸린다.
       for (var i = 0; i < kSuccessRateWindow; i++) {
         await m.onBurst(
-            fatiguePct: 0, contractionOk: true, reliable: true, tSeconds: 60 + i * 1.618);
+            fatiguePct: 0, contractionOk: true, reliable: true, tSeconds: 1 + i * 1.6);
       }
       for (var i = 0; i < kSuccessRateWindow; i++) {
         await m.onBurst(
-            fatiguePct: 0, contractionOk: false, reliable: true, tSeconds: 150 + i * 1.618);
+            fatiguePct: 0, contractionOk: false, reliable: true, tSeconds: 82 + i * 1.6);
       }
 
       expect(m.state, SessionState.report);

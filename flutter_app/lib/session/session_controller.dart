@@ -64,8 +64,14 @@ const int kMaxIntensityLevel = 10;
 /// `SessionController` 와 별개다. 그쪽은 기존 화면이 쓰는 옛 세대라
 /// 건드리지 않았다.
 class SessionMachine {
+  /// [endConditions] 를 주지 않으면 시간 상한을 [kEffectiveSessionMaxSeconds]
+  /// 로 잡는다. 스펙의 15분이 아니라 **자극이 실제로 유지되는 시간**이다.
+  /// 세션이 자극보다 오래 살아 있으면 화면의 손은 쥐어지는데 실제 수축은
+  /// 없는 상태가 되고, 훈련 효과가 조용히 사라진다.
   SessionMachine(this.stim, {EndConditionEvaluator? endConditions})
-      : end = endConditions ?? EndConditionEvaluator() {
+      : end = endConditions ??
+            EndConditionEvaluator(
+                maxSessionSeconds: kEffectiveSessionMaxSeconds) {
     _linkSub = stim.link.stateStream.listen((s) {
       if (s == LinkState.connected) return;
       if (_state == SessionState.idle ||
