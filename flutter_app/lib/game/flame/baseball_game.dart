@@ -1,4 +1,4 @@
-import 'dart:async';
+import 'dart:async' as async;
 import 'dart:math' as math;
 import 'dart:ui';
 
@@ -31,11 +31,17 @@ import 'components/stadium.dart';
 /// ## 2.5D
 ///
 /// 3D 엔진을 쓰지 않는다. 카메라가 고정이라 스타디움은 그림 한 장이면 되고,
-/// 움직이는 것은 공·글러브·투수뿐이다. 원근은 스케일 보간으로 흉내낸다.
+/// 움직이는 것은 공과 포구 오브젝트뿐이다. 원근은 스케일 보간으로 흉내낸다.
 class BaseballGame extends FlameGame {
-  BaseballGame({required this.feed});
+  BaseballGame({required this.feed, this.initialThemeFolder});
+
+  static const Duration themeSwitchInterval = Duration(minutes: 2);
+  static const String _baseballThemeFolder = 'Baseball Catch';
+  static const String _fishingThemeFolder = 'Fishing Catch';
 
   final FatigueFeed feed;
+  final String? initialThemeFolder;
+  final math.Random _rng = math.Random();
 
   late final Stadium stadium;
   late final Pitcher pitcher;
@@ -47,9 +53,15 @@ class BaseballGame extends FlameGame {
   Sprite? gloveOpenSprite;
   Sprite? gloveClosedSprite;
   Sprite? ballSprite;
-  SpriteAnimation? pitcherAnimation;
+  bool showProjectile = true;
+  bool showPitcher = true;
+  bool isFishingTheme = false;
 
-  final List<StreamSubscription<Object?>> _subs = [];
+  final List<_GameTheme> _themes = [];
+  int _activeThemeIndex = 0;
+  async.Timer? _themeTimer;
+
+  final List<async.StreamSubscription<Object?>> _subs = [];
 
   /// 피드 기준 현재 시각(초). 공의 비행 계산이 이 시계를 쓴다.
   double feedNowSec = 0;
@@ -92,10 +104,12 @@ class BaseballGame extends FlameGame {
     await addAll([stadium, pitcher, glove]);
 
     _subs.add(feed.contractions.listen(_onContraction));
-    _subs.add(feed.sigmaNow.listen((z) {
-      sigmaNow = z;
-      stadium.tint = _tintFor(z);
-    }));
+    _subs.add(
+      feed.sigmaNow.listen((z) {
+        sigmaNow = z;
+        stadium.tint = _tintFor(z);
+      }),
+    );
     _subs.add(feed.sigmaPredicted.listen((z) => sigmaPredicted = z));
     await feed.start();
   }
@@ -117,20 +131,145 @@ class BaseballGame extends FlameGame {
       final manifest = await AssetManifest.loadFromAssetBundle(rootBundle);
       available = manifest.listAssets().toSet();
     } catch (_) {
-      return; // 매니페스트를 못 읽으면 전부 코드 드로잉으로 간다
+      // 매니페스트를 못 읽어도 직접 로드 시도로 폴백한다.
+      available = <String>{};
     }
+
+    _discoverThemes(available);
+    final initialCandidates = _themeCandidateIndexes;
+    final requestedIndex = initialThemeFolder == null
+        ? -1
+        : _themes.indexWhere((theme) => theme.folderName == initialThemeFolder);
+    _activeThemeIndex = initialCandidates.contains(requestedIndex)
+        ? requestedIndex
+        : initialCandidates[_rng.nextInt(initialCandidates.length)];
+    await _applyTheme(_themes[_activeThemeIndex]);
+    _startThemeRotation();
+  }
+
+  List<int> get _themeCandidateIndexes {
+    final themed = <int>[];
+    for (var i = 0; i < _themes.length; i++) {
+      if (_themes[i].folderName != null) themed.add(i);
+    }
+    if (themed.isNotEmpty) return themed;
+    return List<int>.generate(_themes.length, (i) => i);
+  }
+
+  void _discoverThemes(Set<String> available) {
+    _themes
+      ..clear()
+      ..add(const _GameTheme(name: 'Classic', folderName: null));
+
+    const prefix = 'assets/game/themes/';
+    final folders = <String>{};
+    for (final path in available) {
+      if (!path.startsWith(prefix)) continue;
+      final rest = path.substring(prefix.length);
+      final slash = rest.indexOf('/');
+      if (slash <= 0) continue;
+      folders.add(Uri.decodeComponent(rest.substring(0, slash)));
+    }
+
+    final sorted = folders.toList()..sort();
+    for (final folder in sorted) {
+      _themes.add(_GameTheme(name: folder, folderName: folder));
+    }
+
+    final hasBaseball = _themes.any(
+      (theme) => theme.folderName == _baseballThemeFolder,
+    );
+    if (!hasBaseball) {
+      _themes.add(
+        const _GameTheme(
+          name: _baseballThemeFolder,
+          folderName: _baseballThemeFolder,
+        ),
+      );
+    }
+  }
+
+  void _startThemeRotation() {
+    _themeTimer?.cancel();
+    if (_themeCandidateIndexes.length < 2) return;
+
+    _themeTimer = async.Timer.periodic(themeSwitchInterval, (_) {
+      async.unawaited(_switchThemeRandomly());
+    });
+  }
+
+  Future<void> _switchThemeRandomly() async {
+    final candidates = _themeCandidateIndexes;
+    if (!isMounted || candidates.length < 2) return;
+    var next = _activeThemeIndex;
+    while (next == _activeThemeIndex) {
+      next = candidates[_rng.nextInt(candidates.length)];
+    }
+    _activeThemeIndex = next;
+    await _applyTheme(_themes[_activeThemeIndex]);
+  }
+
+  Future<void> _applyTheme(_GameTheme theme) async {
+    isFishingTheme = theme.folderName == _fishingThemeFolder;
+    showProjectile = !isFishingTheme;
+    showPitcher = theme.folderName == _baseballThemeFolder;
 
     Future<Sprite?> loadIfPresent(String name) async {
-      if (!available.contains('${images.prefix}$name')) return null;
-      return Sprite.load(name, images: images);
+      final candidates = <String>{name, Uri.encodeFull(name)};
+      for (final candidate in candidates) {
+        try {
+          return await Sprite.load(candidate, images: images);
+        } catch (_) {
+          // 다음 후보 경로를 시도한다.
+        }
+      }
+      return null;
     }
 
+    Future<Sprite?> loadThemeAsset(String filename) async {
+      for (final candidate in theme.candidates(filename)) {
+        final sprite = await loadIfPresent(candidate);
+        if (sprite != null) return sprite;
+      }
+      return null;
+    }
+
+    Future<Sprite?> loadThemeFirstThenBaseball(String filename) async {
+      if (theme.folderName != null) {
+        final themed = await loadIfPresent(
+          'game/themes/${theme.folderName}/$filename',
+        );
+        if (themed != null) return themed;
+      }
+      final baseball = await loadIfPresent(
+        'game/themes/$_baseballThemeFolder/$filename',
+      );
+      if (baseball != null) return baseball;
+      return loadThemeAsset(filename);
+    }
+
+    Future<Sprite?> loadBaseballThemeAsset(String filename) async {
+      final sprite = await loadIfPresent(
+        'game/themes/$_baseballThemeFolder/$filename',
+      );
+      if (sprite != null) return sprite;
+      return loadThemeAsset(filename);
+    }
+
+    // 필수 기본 에셋은 Baseball Catch 를 공통 폴백으로 사용한다.
     // background.png 를 먼저 보고, 없으면 stadium.png 로 떨어진다.
-    stadiumSprite = await loadIfPresent('game/background.png') ??
-        await loadIfPresent('game/stadium.png');
-    gloveOpenSprite = await loadIfPresent('game/glove_open.png');
-    gloveClosedSprite = await loadIfPresent('game/glove_closed.png');
-    ballSprite = await loadIfPresent('game/ball.png');
+    stadiumSprite =
+        await loadThemeFirstThenBaseball('background.png') ??
+        await loadThemeFirstThenBaseball('stadium.png');
+    if (theme.folderName == _fishingThemeFolder) {
+      gloveOpenSprite = await loadThemeAsset('fish_open.png');
+      gloveClosedSprite = await loadThemeAsset('fish_closed.png');
+    } else {
+      gloveOpenSprite = await loadThemeFirstThenBaseball('glove_open.png');
+      gloveClosedSprite = await loadThemeFirstThenBaseball('glove_closed.png');
+    }
+    // 공(야구볼)은 항상 Baseball Catch 에셋을 우선 사용한다.
+    ballSprite = await loadBaseballThemeAsset('ball.png');
   }
 
   /// σ 존 색을 아주 옅게 깐다. **연출 전용** — 게임 규칙에는 영향이 없다.
@@ -177,11 +316,13 @@ class BaseballGame extends FlameGame {
 
       // 날아오던 공이 있으면 글러브 안에 들어가고, 없으면(예측이 어긋났거나 첫
       // 수축이면) 글러브만 닫힌다. 어느 쪽이든 벌점은 없다.
-      final ball =
-          children.whereType<Ball>().where((b) => !b.caught).firstOrNull;
+      final ball = children
+          .whereType<Ball>()
+          .where((b) => !b.caught)
+          .firstOrNull;
       ball?.hold(holdSec: math.max(hold, Glove.minHoldSec));
 
-      add(CatchEffect(position: Vector2(size.x * 0.5, glovePlateY)));
+      add(CatchEffect(position: glove.catchPoint));
       onCatch?.call();
     }
   }
@@ -242,7 +383,8 @@ class BaseballGame extends FlameGame {
   /// 공이 자기 update 안에서 removeFromParent() 를 불러도 실제로 지워지지 않아
   /// 글러브에 무한히 쌓였다. 부모가 직접 remove 하면 정상 처리된다.
   void _sweepDeadBalls() {
-    for (final b in children.whereType<Ball>().where((b) => b.isDone).toList()) {
+    for (final b
+        in children.whereType<Ball>().where((b) => b.isDone).toList()) {
       remove(b);
     }
   }
@@ -268,10 +410,33 @@ class BaseballGame extends FlameGame {
 
   @override
   void onRemove() {
+    _themeTimer?.cancel();
     for (final s in _subs) {
       s.cancel();
     }
     feed.dispose();
     super.onRemove();
+  }
+}
+
+class _GameTheme {
+  const _GameTheme({required this.name, required this.folderName});
+
+  final String name;
+  final String? folderName;
+
+  Iterable<String> get assetDirectories sync* {
+    if (folderName != null) {
+      yield 'game/themes/$folderName/';
+    }
+    yield 'game/';
+  }
+
+  Iterable<String> candidates(String filename) sync* {
+    if (folderName != null) {
+      yield 'game/themes/$folderName/$filename';
+    }
+    // 테마 파일이 비어 있어도 기존 기본 에셋으로 즉시 폴백된다.
+    yield 'game/$filename';
   }
 }

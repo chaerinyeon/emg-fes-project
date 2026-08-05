@@ -14,6 +14,23 @@ Flame 은 2D 엔진이라 GLB 를 직접 못 읽는다. 대신 **3D 모델을 �
 **에셋이 없어도 게임은 돌아간다.** 각 컴포넌트가 같은 구도로 코드 드로잉 폴백을
 갖고 있다. 파일을 넣으면 자동으로 교체된다.
 
+## 테마 폴더
+
+- 기본 테마: `assets/game/` 아래 파일 사용
+- 커스텀 테마: `assets/game/themes/<테마이름>/`
+- 2분마다 테마 목록 중 하나가 랜덤으로 적용된다(같은 테마 연속 선택 방지).
+
+테마별로 아래 파일명을 맞추면 자동 인식된다.
+
+- `background.png` (또는 `stadium.png`)
+- `glove_open.png`
+- `glove_closed.png`
+- `ball.png`
+
+Fishing Catch는 포구 오브젝트로 `fish_open.png`와 `fish_closed.png`를 사용한다.
+
+예시: `assets/game/themes/Baseball Catch/`
+
 ## 다시 굽기
 
 `tools/glb_render.py` (numpy + Pillow, Blender 불필요):
@@ -31,8 +48,6 @@ python3 $R "~/Desktop/baseball 3d model.glb" assets/game/ball.png --size 256 --y
 - 노출은 자동이다. 이 모델들의 텍스처가 어둡다(평균 0.13) — 그대로 쓰면 화면에서
   검게 뭉개진다.
 
-## 아직 없는 것
+## 별도 스프라이트가 없는 것
 
-- **투수 스프라이트**: `pitcherAnimation` 필드는 있으나 로더가 없다. 지금은 항상
-  코드 드로잉이다.
-- **야수·관중**: 배경 그림에 들어 있고 별도 스프라이트는 없다.
+- **야수·관중**: 배경 그림에 들어 있다.

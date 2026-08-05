@@ -1,10 +1,11 @@
 import 'dart:async';
 
-import 'package:flame/game.dart';
 import 'package:flame_test/flame_test.dart';
 import 'package:flutter_app/game/data/fatigue_feed.dart';
 import 'package:flutter_app/game/flame/baseball_game.dart';
 import 'package:flutter_app/game/flame/components/ball.dart';
+import 'package:flutter_app/game/flame/components/catch_effect.dart';
+import 'package:flutter_app/game/flame/components/glove.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// 테스트가 시각과 이벤트를 직접 미는 피드.
@@ -38,14 +39,16 @@ class ScriptedFeed implements FatigueFeed {
   double get predictionHorizonSec => 30;
 
   @override
-  double? get nextContractionEta =>
-      (_lastContraction ?? 0) + period;
+  double? get nextContractionEta => (_lastContraction ?? 0) + period;
 
   /// 시각만 민다(수축 없이).
   void advanceTo(double t) => _now = t;
 
-  Future<void> fireContraction(double t, double sigma,
-      {double holdSec = 0.31}) async {
+  Future<void> fireContraction(
+    double t,
+    double sigma, {
+    double holdSec = 0.31,
+  }) async {
     _now = t;
     _lastContraction = t;
     _contractions.add(ContractionEvent(t, holdSec: holdSec));
@@ -83,7 +86,10 @@ void main() {
   void gameTest(String desc, Future<void> Function(BaseballGame) body) {
     testWithGame<BaseballGame>(
       desc,
-      () => BaseballGame(feed: ScriptedFeed()),
+      () => BaseballGame(
+        feed: ScriptedFeed(),
+        initialThemeFolder: 'Baseball Catch',
+      ),
       body,
     );
   }
@@ -143,18 +149,123 @@ void main() {
       // 전에는 onGameResize 에서 캔버스 크기와 컴포넌트 크기를 헷갈려
       // position.y 가 1029(화면 844)로 잡혀 통째로 화면 밖에 있었다.
       // 앵커가 bottomCenter 라 position.y 가 글러브 아랫변이다.
-      expect(g.position.y, lessThanOrEqualTo(game.size.y),
-          reason: '글러브 아랫변 ${g.position.y} 이 화면 높이 ${game.size.y} 밖이다');
-      expect(g.position.y, greaterThan(game.size.y * 0.7),
-          reason: '글러브는 화면 아래쪽(포수 시점)에 있어야 한다');
-      expect(g.position.y - g.size.y, greaterThan(0),
-          reason: '글러브 윗변이 화면 위로 잘리면 안 된다');
-      expect(g.position.x, closeTo(game.size.x / 2, 1),
-          reason: '가로 중앙');
+      expect(
+        g.position.y,
+        lessThanOrEqualTo(game.size.y),
+        reason: '글러브 아랫변 ${g.position.y} 이 화면 높이 ${game.size.y} 밖이다',
+      );
+      expect(
+        g.position.y,
+        greaterThan(game.size.y * 0.7),
+        reason: '글러브는 화면 아래쪽(포수 시점)에 있어야 한다',
+      );
+      expect(
+        g.position.y - g.size.y,
+        greaterThan(0),
+        reason: '글러브 윗변이 화면 위로 잘리면 안 된다',
+      );
+      expect(g.position.x, closeTo(game.size.x / 2, 1), reason: '가로 중앙');
+    });
+  });
+
+  group('★ 낚시 테마 배치 (회귀)', () {
+    void fishingTest(String desc, Future<void> Function(BaseballGame) body) {
+      testWithGame<BaseballGame>(
+        desc,
+        () => BaseballGame(
+          feed: ScriptedFeed(),
+          initialThemeFolder: 'Fishing Catch',
+        ),
+        body,
+      );
+    }
+
+    fishingTest('낚싯대 손잡이가 화면 밖으로 나간다', (game) async {
+      game.update(0);
+      final g = game.glove;
+      // 두 원화 모두 손잡이가 이미지 아랫변을 뚫고 나가도록 그려져 있다.
+      // 스프라이트 아랫변이 화면 안에서 끝나면 손잡이가 뭉툭하게 잘린다 —
+      // 야구 글러브 상수를 공유하던 시절 화면 바닥 12.7% 위에 떠 있었다.
+      expect(
+        g.position.y,
+        greaterThanOrEqualTo(game.size.y),
+        reason: '아랫변 ${g.position.y} 이 화면(${game.size.y}) 안이면 손잡이가 잘린다',
+      );
+    });
+
+    fishingTest('물고기와 물보라가 물 위에 있다', (game) async {
+      game.update(0);
+      final g = game.glove;
+      final splashBottom =
+          g.position.y - g.size.y * (1 - Glove.fishSplashBottom);
+      expect(
+        splashBottom,
+        lessThanOrEqualTo(game.size.y * Glove.fishDeckEdgeY + 0.5),
+        reason: '물보라가 부두 경계 아래면 물고기가 나무 바닥 위에서 튄다',
+      );
+    });
+
+    fishingTest('테마가 바뀌면 배치를 다시 잡는다', (game) async {
+      game.update(0);
+      final fishingWidth = game.glove.size.x;
+
+      // 테마 회전(2분마다)은 리사이즈를 일으키지 않는다. 배치를 리사이즈에만
+      // 걸어 두면 낚싯대를 글러브 크기로, 글러브를 낚싯대 크기로 그리게 된다.
+      game.isFishingTheme = false;
+      game.update(0);
+      expect(
+        game.glove.size.x,
+        closeTo(game.size.x * Glove.widthRatio, 0.001),
+        reason: '야구로 돌아오면 글러브 배치여야 한다',
+      );
+
+      game.isFishingTheme = true;
+      game.update(0);
+      expect(game.glove.size.x, closeTo(fishingWidth, 0.001));
+    });
+
+    fishingTest('포구 이펙트가 물고기 위에서 터진다', (game) async {
+      final feed = game.feed as ScriptedFeed;
+      await feed.fireContraction(1.618, 0.4, holdSec: 0.629);
+      game.update(0.016);
+      // 추가는 큐에 들어가고, CatchEffect 의 onLoad 가 async 라 마이크로태스크가
+      // 한 번 돌아야 붙는다.
+      await Future<void>.delayed(Duration.zero);
+      game.updateTree(0);
+
+      final point = game.glove.catchPoint;
+      final effect = game.children.whereType<CatchEffect>().first;
+      expect(effect.position.x, closeTo(point.x, 0.001));
+      expect(effect.position.y, closeTo(point.y, 0.001));
+      // 전에는 테마와 무관하게 화면 중앙 아래 — 물고기가 없는 빈 데크에서 터졌다.
+      expect(
+        (point.x - game.size.x * 0.5).abs(),
+        greaterThan(game.size.x * 0.15),
+        reason: '물고기는 화면 중앙이 아니라 왼쪽에 있다',
+      );
     });
   });
 
   group('★ 수축하는 동안 공을 잡고 있는다', () {
+    testWithGame<BaseballGame>(
+      'Fishing Catch는 open 상태에서 수축 즉시 fish_closed로 바뀐다',
+      () => BaseballGame(
+        feed: ScriptedFeed(),
+        initialThemeFolder: 'Fishing Catch',
+      ),
+      (game) async {
+        expect(game.isFishingTheme, isTrue);
+        expect(game.glove.currentSprite, same(game.gloveOpenSprite));
+
+        final feed = game.feed as ScriptedFeed;
+        await feed.fireContraction(1.618, 0.4, holdSec: 0.629);
+        game.update(0.016);
+
+        expect(game.glove.currentSprite, same(game.gloveClosedSprite));
+        expect(game.glove.closeAmount, 1);
+      },
+    );
+
     gameTest('자극 + 이완 시간만큼 쥐고 있는다', (game) async {
       final feed = game.feed as ScriptedFeed;
       const stim = 0.629; // 실측 자극 지속
@@ -166,8 +277,11 @@ void main() {
       for (var i = 0; i < 38; i++) {
         game.update(0.016);
       }
-      expect(game.glove.isHolding, isTrue,
-          reason: '자극 종료 직후 놓으면 화면에서 너무 빨리 놓는 것처럼 보인다');
+      expect(
+        game.glove.isHolding,
+        isTrue,
+        reason: '자극 종료 직후 놓으면 화면에서 너무 빨리 놓는 것처럼 보인다',
+      );
       expect(game.glove.closeAmount, closeTo(1.0, 0.01));
 
       // 자극 + 이완을 넘기면 편다.
@@ -204,8 +318,11 @@ void main() {
         game.update(0.016);
         frames++;
       }
-      expect(frames, greaterThan(55),
-          reason: '자극 0.629 + 이완 0.35 = 0.98초 ≈ 61프레임');
+      expect(
+        frames,
+        greaterThan(55),
+        reason: '자극 0.629 + 이완 0.35 = 0.98초 ≈ 61프레임',
+      );
       expect(ball.isDone, isFalse, reason: '글러브가 펴지기 전에 공이 사라지면 안 된다');
     });
 
@@ -224,15 +341,18 @@ void main() {
       }
       expect(ball.isDone, isFalse, reason: '쥐고 있는 동안 사라지면 안 된다');
       expect(ball.opacity, 1.0, reason: '쥐고 있는 동안은 또렷해야 한다');
-      expect(ball.position.y, closeTo(game.glovePlateY, game.size.y * 0.05),
-          reason: '글러브 위에 머물러야 한다');
+      expect(
+        ball.position.y,
+        closeTo(game.glovePlateY, game.size.y * 0.05),
+        reason: '글러브 위에 머물러야 한다',
+      );
     });
   });
 
   group('★ 에셋이 실제로 쓰인다', () {
     gameTest('배경·글러브·공 스프라이트가 로드된다', (game) async {
       // pubspec 에 등록만 하고 로더에 안 붙이면 PNG 를 넣어도 코드 드로잉이
-      // 계속 나온다 — 실제로 투수가 그랬다.
+      // 계속 나온다.
       expect(game.stadiumSprite, isNotNull, reason: 'background.png');
       expect(game.gloveOpenSprite, isNotNull, reason: 'glove_open.png');
       expect(game.gloveClosedSprite, isNotNull, reason: 'glove_closed.png');
@@ -245,8 +365,11 @@ void main() {
       final o = game.gloveOpenSprite!.srcSize;
       final c = game.gloveClosedSprite!.srcSize;
       final ao = o.y / o.x, ac = c.y / c.x;
-      expect((ao - ac).abs(), greaterThan(0.01),
-          reason: '비율이 같다면 이 방어가 필요 없다 — 에셋이 바뀐 것');
+      expect(
+        (ao - ac).abs(),
+        greaterThan(0.01),
+        reason: '비율이 같다면 이 방어가 필요 없다 — 에셋이 바뀐 것',
+      );
       // 렌더가 비율을 보존하는지는 폭 기준으로 높이를 계산하는지로 확인한다.
       final g = game.glove;
       expect(g.size.x, greaterThan(0));
@@ -257,8 +380,11 @@ void main() {
       game.update(0);
       // 배경 이미지의 홈플레이트가 세로 88% 지점이다.
       final plate = game.size.y * 0.88;
-      expect((game.glovePlateY - plate).abs(), lessThan(game.size.y * 0.12),
-          reason: '글러브가 홈플레이트에서 멀면 포구가 허공에서 일어난다');
+      expect(
+        (game.glovePlateY - plate).abs(),
+        lessThan(game.size.y * 0.12),
+        reason: '글러브가 홈플레이트에서 멀면 포구가 허공에서 일어난다',
+      );
     });
   });
 
@@ -334,7 +460,6 @@ void main() {
     // dt 를 크게 줘도 게임 시각은 피드를 따라야 한다.
     feed.advanceTo(42.0);
     game.update(3.0);
-    expect(game.feedNowSec, 42.0,
-        reason: 'dt 를 누적하면 재생 배속과 갈라져 공 계산이 무너진다');
+    expect(game.feedNowSec, 42.0, reason: 'dt 를 누적하면 재생 배속과 갈라져 공 계산이 무너진다');
   });
 }

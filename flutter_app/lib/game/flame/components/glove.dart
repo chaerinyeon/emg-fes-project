@@ -24,8 +24,50 @@ class Glove extends PositionComponent with HasGameReference<BaseballGame> {
   /// 가까워진다. 포구 순간이 화면에서 확실히 읽혀야 해서 넉넉하게 잡는다.
   static const double widthRatio = 0.44;
 
+  // ── 낚시 테마 배치 ────────────────────────────────────────────
+  //
+  // 낚싯대에 야구 글러브 상수를 그대로 물렸더니 두 가지가 깨졌다.
+  //  (1) 두 원화 모두 손잡이가 이미지 아랫변을 뚫고 나가도록 그려져 있는데
+  //      스프라이트 아랫변이 화면 바닥 12.7% 위에서 끝나, 손잡이가 데크
+  //      한가운데서 뭉툭하게 잘린 채 공중에 떠 있었다.
+  //  (2) 물고기와 물보라가 부두 앞 경계보다 아래, 즉 나무 바닥 위에서 튀었다.
+  //
+  // 그래서 낚시 테마는 "물보라 아랫단을 부두 경계에 맞추고, 남는 길이는 화면
+  // 밖으로 흘린다"로 배치를 역산한다. 아래 값은 fish_closed.png(784x1024)와
+  // background.png(853x1844) 를 픽셀로 실측한 것이다 — **그림을 갈아끼우면
+  // 다시 재야 한다.**
+
+  /// 원화에서 물보라 아랫단 (스프라이트 높이 대비).
+  static const double fishSplashBottom = 0.724;
+
+  /// 원화에서 물보라 왼쪽 끝 (스프라이트 폭 대비). 이 점을 화면 왼쪽에 맞춘다.
+  static const double fishSplashLeft = 0.190;
+
+  /// 배경의 부두 앞 경계 (화면 높이 대비). 이 선 아래는 전부 나무 바닥이다.
+  static const double fishDeckEdgeY = 0.784;
+
+  /// 스프라이트 아랫변을 화면 바닥보다 이만큼 내린다. 손잡이가 화면 밖으로
+  /// 확실히 나가야 "쥐고 있는 대"로 읽힌다.
+  static const double fishSpriteBottom = 1.02;
+
+  /// fish_open 의 낚싯대를 fish_closed 쪽으로 끌어오는 보정 (스프라이트 대비).
+  ///
+  /// 두 원화가 낚싯대를 서로 다른 자리에 그려 놨다. 보정 없이 두면 포구 때마다
+  /// 대가 통째로 가로 ~188px 튄다. 릴(스풀) 중심을 실측해 맞춘 값이다.
+  /// 원화의 **크기**까지는 못 맞춘다(릴 폭이 open 100px : closed 223px) —
+  /// 그건 그림을 다시 뽑아야 풀린다.
+  static const double fishOpenDx = 0.1095;
+  static const double fishOpenDy = 0.0253;
+
+  /// 원화에서 물고기 몸통 중심 (스프라이트 대비). 포구 이펙트가 여기서 터진다.
+  static const double fishBodyCx = 0.3169;
+  static const double fishBodyCy = 0.5444;
+
   /// 0 = 활짝 폄, 1 = 완전히 쥠.
   double closeAmount = 0;
+
+  Sprite? get currentSprite =>
+      closeAmount > 0.5 ? game.gloveClosedSprite : game.gloveOpenSprite;
 
   /// 근육이 수축 중인가 — 이 동안 공을 잡고 있다.
   bool get isHolding => _holdLeft > 0;
@@ -45,25 +87,80 @@ class Glove extends PositionComponent with HasGameReference<BaseballGame> {
   /// 수축 시작 — [holdSec] 동안 쥐고 있다가 편다.
   void beginContraction(double holdSec) {
     _holdLeft = math.max(holdSec, minHoldSec);
-    _closeIn = closeSec;
+    if (game.isFishingTheme) {
+      closeAmount = 1;
+      _closeIn = 0;
+    } else {
+      _closeIn = closeSec;
+    }
   }
 
   @override
   void onGameResize(Vector2 size) {
     super.onGameResize(size);
-    // ★ 파라미터 size 는 **캔버스** 크기고, this.size 는 컴포넌트 크기다.
+    relayout(size);
+  }
+
+  /// 배치를 다시 잡는다.
+  ///
+  /// 리사이즈뿐 아니라 **테마가 바뀔 때도** 불려야 한다 — 야구와 낚시는 배치
+  /// 규칙 자체가 다르고, 테마는 2분마다 회전한다.
+  void relayout(Vector2 canvas) {
+    _laidOutFishing = game.isFishingTheme;
+
+    if (game.isFishingTheme) {
+      // 물보라 아랫단이 부두 경계에 닿도록 높이를 역산한다. 폭은 원화 비율을
+      // 그대로 따라가므로, 남는 손잡이는 자연히 화면 밖으로 흘러나간다.
+      final drawH =
+          canvas.y * (fishSpriteBottom - fishDeckEdgeY) / (1 - fishSplashBottom);
+      size = Vector2(drawH * _srcAspect, drawH);
+      // 물보라 왼쪽 끝을 화면 왼쪽 모서리에 맞춘다(앵커가 bottomCenter 다).
+      position = Vector2(
+        size.x * (0.5 - fishSplashLeft),
+        canvas.y * fishSpriteBottom,
+      );
+      return;
+    }
+
+    // ★ 파라미터 canvas 는 **캔버스** 크기고, this.size 는 컴포넌트 크기다.
     //   전에 이 둘을 헷갈려 position.y 를 캔버스 높이로 계산하는 바람에
     //   세로 폰에서 1029(화면 844)가 되어 글러브가 통째로 화면 밖에 있었다.
-    final canvas = size;
-    final gloveSize =
-        Vector2(canvas.x * widthRatio, canvas.x * widthRatio * 0.88);
-    this.size = gloveSize;
+    final gloveSize = Vector2(
+      canvas.x * widthRatio,
+      canvas.x * widthRatio * 0.88,
+    );
+    size = gloveSize;
     position = Vector2(canvas.x * 0.5, game.glovePlateY + gloveSize.y * 0.30);
+  }
+
+  /// 마지막으로 배치를 잡을 때의 테마. 회전으로 바뀌면 다시 잡는다.
+  bool? _laidOutFishing;
+
+  /// 원화의 가로/세로 비. 두 포즈가 같은 크기라 어느 쪽을 봐도 같다.
+  double get _srcAspect {
+    final src = game.gloveClosedSprite?.srcSize ?? game.gloveOpenSprite?.srcSize;
+    return src == null ? 784 / 1024 : src.x / src.y;
+  }
+
+  /// 포구 이펙트가 터질 자리 — "잡은 것"이 실제로 그려진 지점.
+  ///
+  /// 낚시 테마에서 화면 중앙 아래에 터뜨리면 물고기가 아니라 빈 데크에서
+  /// 빛이 퍼진다. 되먹임은 잡은 대상 위에서 일어나야 읽힌다.
+  Vector2 get catchPoint {
+    if (game.isFishingTheme) {
+      return Vector2(
+        position.x - size.x * (0.5 - fishBodyCx),
+        position.y - size.y * (1 - fishBodyCy),
+      );
+    }
+    return Vector2(game.size.x * 0.5, game.glovePlateY);
   }
 
   @override
   void update(double dt) {
     super.update(dt);
+    // 테마 회전은 리사이즈를 일으키지 않는다 — 여기서 스스로 알아채고 고친다.
+    if (_laidOutFishing != game.isFishingTheme) relayout(game.size);
     if (_holdLeft > 0) {
       // 닫히는 구간이 끝나면 수축이 이어지는 내내 완전히 쥔 상태를 유지한다.
       _closeIn = math.max(0, _closeIn - dt);
@@ -78,9 +175,7 @@ class Glove extends PositionComponent with HasGameReference<BaseballGame> {
 
   @override
   void render(Canvas canvas) {
-    final sprite = closeAmount > 0.5
-        ? game.gloveClosedSprite
-        : game.gloveOpenSprite;
+    final sprite = currentSprite;
     if (sprite != null) {
       // ★ 두 스프라이트의 비율이 다르다(열림 0.92, 쥠 0.84). 같은 상자에 늘려
       //   그리면 쥘 때 글러브가 세로로 늘어나며 튄다. 각자 비율을 지키고
@@ -88,9 +183,17 @@ class Glove extends PositionComponent with HasGameReference<BaseballGame> {
       final src = sprite.srcSize;
       final drawW = size.x;
       final drawH = drawW * src.y / src.x;
+      var dx = 0.0;
+      var dy = size.y - drawH;
+      // 두 원화의 낚싯대 위치가 어긋나 있다 — 손잡이(릴)를 기준으로 맞춘다.
+      // 실제 낚싯대는 손잡이가 고정되고 끝만 휘므로, 이쪽이 원화보다 옳다.
+      if (game.isFishingTheme && closeAmount <= 0.5) {
+        dx = fishOpenDx * drawW;
+        dy += fishOpenDy * drawH;
+      }
       sprite.render(
         canvas,
-        position: Vector2(0, size.y - drawH),
+        position: Vector2(dx, dy),
         size: Vector2(drawW, drawH),
       );
       return;

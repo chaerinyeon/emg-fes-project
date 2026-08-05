@@ -15,7 +15,7 @@ import '../baseball_game.dart';
 /// 장치다 — 수축과 포구가 같은 순간에 일어나야 되먹임이 성립한다.
 class Ball extends PositionComponent with HasGameReference<BaseballGame> {
   Ball({required this.spawnSec, required this.arrivalSec})
-      : super(priority: 10, anchor: Anchor.center);
+    : super(priority: 10, anchor: Anchor.center);
 
   /// 던져진 시각(초).
   final double spawnSec;
@@ -54,7 +54,7 @@ class Ball extends PositionComponent with HasGameReference<BaseballGame> {
   static const double _minScale = 0.12;
   static const double _maxScale = 1.0;
 
-  /// 공이 출발하는 높이 (화면 높이 대비). 투수의 릴리스 지점.
+  /// 공이 출발하는 높이 (화면 높이 대비).
   static const double releaseHeightRatio = 0.42;
 
   /// 도착했을 때 공의 반지름 (화면 폭 대비).
@@ -80,10 +80,7 @@ class Ball extends PositionComponent with HasGameReference<BaseballGame> {
     final r = w * _arrivalRadiusRatio * s;
     size = Vector2.all(r * 2);
 
-    // 투수 → 글러브. 살짝 좌우로 흔들어 궤적을 만든다.
-    // 투수는 마운드(세로 50%)에 서 있고 키가 0.19w 이라 릴리스 지점이 대략
-    // 세로 42% 다. 거기서 출발해야 공이 손에서 나오는 것처럼 보이고, 비행
-    // 거리도 21% 길어져 다가오는 게 눈에 들어온다.
+    // 원경 → 포구 지점. 살짝 좌우로 흔들어 궤적을 만든다.
     final fromY = h * releaseHeightRatio, toY = game.glovePlateY;
     final sway = math.sin(p * math.pi) * w * 0.05;
     position = Vector2(
@@ -112,7 +109,7 @@ class Ball extends PositionComponent with HasGameReference<BaseballGame> {
   void render(Canvas canvas) {
     // 수명이 끝났으면 그리지 않는다. 제거가 한 프레임 늦어도 화면에는 안 남는다
     // — 이 프로젝트에서 컴포넌트 제거 타이밍이 신뢰할 수 없었던 적이 있다.
-    if (_dead) return;
+    if (_dead || !game.showProjectile) return;
     final r = size.x / 2;
     final o = Offset(r, r);
     final a = opacity;
@@ -139,11 +136,7 @@ class Ball extends PositionComponent with HasGameReference<BaseballGame> {
       r,
       Paint()..color = Color.fromRGBO(0, 0, 0, 0.25 * a),
     );
-    canvas.drawCircle(
-      o,
-      r,
-      Paint()..color = Color.fromRGBO(245, 242, 234, a),
-    );
+    canvas.drawCircle(o, r, Paint()..color = Color.fromRGBO(245, 242, 234, a));
 
     // 실밥 두 줄 — 작을 땐 생략(어차피 안 보이고 비용만 든다)
     if (r > 6) {

@@ -70,8 +70,10 @@ flutter:
 
   assets:
     - .env
-    # 게임 에셋(배경·글러브·투수 스프라이트). 비어 있어도 코드 드로잉으로 동작한다.
+    # 게임 에셋(배경·포구 오브젝트·공)
     - assets/game/
+    - assets/game/themes/Baseball Catch/
+    - assets/game/themes/Fishing Catch/
     # 웹 관찰 화면. 폰이 이 파일을 그대로 서빙한다.
     - assets/web/
 

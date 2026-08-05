@@ -1,0 +1,940 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>근피로 스태미나 모니터 · SPC σ 편차</title>
+<!--
+  ============================================================================
+  근피로 스태미나 모니터 — SPC(통계적 공정관리) σ 편차 실시간 시각화
+  단일 HTML. 외부 의존성 없음(폰트 CDN·차트 라이브러리·네트워크 요청 전무).
+
+  ── 설계 원칙 ──────────────────────────────────────────────────────────────
+
+  1) 개인 자기기준(self-referential baseline)
+     피로를 남과 비교하지 않는다. 각 사람의 세션 초기(fresh) 구간을 평균 μ,
+     표준편차 σ 로 잡고, 이후 신호를 z = (x − μ) / σ 로 표준화한다.
+     그래서 근육 크기·전극 위치·피부 임피던스 때문에 생기는 사람 간 진폭
+     스케일 차이가 사라진다. 게이지의 "100%"는 언제나 그 사람 자신의
+     초기 상태이지, 어떤 집단 평균이 아니다.
+
+  2) 인과적(causal) · 실시간
+     시각 t 의 판정은 t 이하의 데이터만 쓴다. 미래 표본을 참조하는 전역
+     정규화·양방향 필터·사후 리샘플링을 쓰지 않는다. 그래서 이 화면은
+     기록을 되돌려 보는 리포트가 아니라 측정 중에 그대로 돌릴 수 있다.
+     (재생 슬라이더는 이미 끝난 세션을 되짚어 보는 용도일 뿐, 판정 로직은
+      커서 위치까지의 값만 사용한다.)
+
+  3) 딥러닝 없는 조기경보
+     존 경계는 학습된 것이 아니라 SPC 의 Western Electric 규칙에서 나온
+     순수 통계 규칙이다(1σ 주의 / 2σ 경고 / 3σ 관리이탈). 학습 데이터가
+     쌓이기 전에도, 새 피험자 첫 세션에도 그대로 동작한다. 2σ 도달과 3σ
+     도달 사이의 시간이 곧 "선제 대응 여유(리드타임)"다.
+
+  ── 색 선택 근거 ───────────────────────────────────────────────────────────
+     존 4색은 상태(status) 스케일이다. 카드 표면 #111a28 기준으로 네 색
+     모두 대비 3:1 이상, 색각이상(protan/deutan/tritan) 인접쌍 최악 분리도
+     ΔE 11.0 으로 목표(8)를 넘긴다. 다만 정상시력 인접 최악은 경고↔위험
+     ΔE 14.7 로 권장 바닥 15 에 근소하게 못 미친다 — 주황과 빨강이 색상환
+     이웃이라 4단계 신호등에선 구조적으로 피할 수 없다. 그래서 색은
+     결코 단독으로 의미를 나르지 않는다: 존 라벨·아이콘·바늘 각도·σ 숫자·
+     스태미나 바 길이·배너 문구가 각각 독립적으로 같은 상태를 전달한다.
+
+  ── 보안 ───────────────────────────────────────────────────────────────────
+     외부에서 붙여넣은 JSON 을 그리므로 DOM 은 전부 createElement(NS) +
+     textContent 로만 만든다. innerHTML 경로가 하나도 없어 문자열 주입이
+     마크업으로 해석될 여지가 없다.
+  ============================================================================
+-->
+<style>
+  /* ── 토큰 ─────────────────────────────────────────────────────────── */
+  :root {
+    /* 표면: 딥네이비 3단 */
+    --plane:      #080d16;
+    --surface:    #111a28;
+    --surface-2:  #18233a;
+    --hairline:   #24314b;
+
+    /* 잉크 */
+    --ink:        #ffffff;
+    --ink-2:      #c8d3e4;
+    --ink-3:      #8b9ab2;
+    --ink-4:      #5d6b82;
+
+    /* 존(상태) — 검증된 고정 스케일. 절대 시리즈 색으로 재사용하지 않는다. */
+    --z0: #12b012;  /* 정상 */
+    --z1: #f7c122;  /* 주의 */
+    --z2: #f0821c;  /* 경고 */
+    --z3: #e33d3d;  /* 위험 */
+
+    --r:    14px;
+    --r-sm: 9px;
+
+    --sans: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo",
+            Pretendard, "Malgun Gothic", "Noto Sans KR", sans-serif;
+    /* 계측 수치는 폭이 흔들리면 안 된다 — 등폭 + tabular-nums */
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo,
+            "Cascadia Mono", "Roboto Mono", monospace;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+
+  body {
+    background: var(--plane);
+    /* 계기판 질감: 아주 옅은 방사 글로우 + 미세 스캔라인 */
+    background-image:
+      radial-gradient(900px 460px at 50% -8%, #16233a 0%, transparent 62%),
+      repeating-linear-gradient(0deg, rgba(255,255,255,.014) 0 1px, transparent 1px 3px);
+    background-attachment: fixed;
+    color: var(--ink-2);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    padding: clamp(14px, 3.4vw, 34px);
+    padding-bottom: 56px;
+  }
+
+  .wrap { max-width: 860px; margin: 0 auto; }
+
+  /* ── 헤더 ─────────────────────────────────────────────────────────── */
+  header { margin-bottom: 20px; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .22em;
+    text-transform: uppercase;
+    color: var(--ink-4);
+    display: flex; align-items: center; gap: 10px;
+  }
+  .eyebrow::after {
+    content: ""; flex: 1; height: 1px;
+    background: linear-gradient(90deg, var(--hairline), transparent);
+  }
+
+  h1 {
+    font-size: clamp(21px, 4.6vw, 29px);
+    line-height: 1.2;
+    margin: 9px 0 4px;
+    color: var(--ink);
+    font-weight: 700;
+    letter-spacing: -.018em;
+  }
+
+  .sub { font-size: 13px; color: var(--ink-3); margin: 0; }
+  .sub b { color: var(--ink-2); font-weight: 600; font-family: var(--mono); }
+
+  /* ── 카드 ─────────────────────────────────────────────────────────── */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: var(--r);
+    padding: clamp(15px, 3vw, 22px);
+    margin-bottom: 14px;
+    box-shadow: 0 1px 0 rgba(255,255,255,.035) inset,
+                0 14px 34px rgba(0,0,0,.42);
+  }
+
+  .card-h {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .19em;
+    text-transform: uppercase;
+    color: var(--ink-4);
+    margin: 0 0 14px;
+    display: flex; align-items: baseline; gap: 10px;
+  }
+  .card-h span {
+    color: var(--ink-3); letter-spacing: .04em;
+    text-transform: none; font-size: 11px;
+  }
+
+  /* ── 1. 게이지 ────────────────────────────────────────────────────── */
+  .gauge-card { padding-bottom: 6px; }
+  .gauge-wrap { position: relative; }
+  svg.gauge { display: block; width: 100%; height: auto; overflow: visible; }
+
+  .needle   { transition: transform .32s cubic-bezier(.34,1.4,.5,1); transform-origin: 200px 200px; }
+  .needle-l { stroke-width: 3.5; stroke-linecap: round; }
+  .hub      { fill: var(--surface); stroke-width: 3; }
+  .tick     { stroke: var(--ink-4); stroke-width: 1.5; }
+  .tick-lbl { fill: var(--ink-4); font-family: var(--mono); font-size: 13px; text-anchor: middle; }
+
+  /* 게이지 중앙 리드아웃 — 허브(뷰박스에서 하단 10% 지점)보다 위에 절대 배치.
+     화면 폭이 바뀌어도 숫자·배지가 바늘 축을 침범하지 않는다. */
+  .readout { position: absolute; left: 0; right: 0; bottom: 17.5%; text-align: center; }
+
+  .sigma {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: clamp(46px, 12vw, 68px);
+    font-weight: 600;
+    line-height: 1;
+    letter-spacing: -.045em;
+    transition: color .3s ease;
+  }
+  .sigma small { font-size: .36em; font-weight: 500; letter-spacing: 0; margin-left: 3px; opacity: .72; }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    margin-top: 9px; padding: 5px 15px 5px 11px;
+    border-radius: 999px;
+    font-size: 13.5px; font-weight: 700; letter-spacing: .03em;
+    border: 1px solid currentColor;
+    transition: color .3s ease, background-color .3s ease;
+  }
+  .badge i { font-style: normal; font-size: 14px; line-height: 1; }
+
+  /* ── 3. 스태미나 바 ───────────────────────────────────────────────── */
+  .stam-top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 9px; }
+  .stam-label { font-size: 13px; color: var(--ink-3); }
+  .stam-pct {
+    font-family: var(--mono); font-variant-numeric: tabular-nums;
+    font-size: 21px; font-weight: 600; letter-spacing: -.02em;
+    transition: color .3s ease;
+  }
+  .stam-pct small { font-size: .55em; opacity: .7; margin-left: 1px; }
+
+  .stam-track {
+    position: relative; height: 17px; border-radius: 9px;
+    background: var(--surface-2);
+    border: 1px solid var(--hairline);
+    overflow: hidden;
+  }
+  .stam-fill {
+    height: 100%; border-radius: 8px 3px 3px 8px;
+    transition: width .32s cubic-bezier(.4,0,.2,1), background-color .3s ease;
+  }
+  /* 25% 눈금 — 색 없이도 대략의 잔량을 읽게 한다 */
+  .stam-ticks { position: absolute; inset: 0; pointer-events: none; }
+  .stam-ticks i { position: absolute; top: 0; bottom: 0; width: 1px; background: rgba(8,13,22,.55); }
+
+  /* ── 4. 행동 배너 ─────────────────────────────────────────────────── */
+  .banner {
+    display: flex; align-items: center; gap: 12px;
+    border-radius: var(--r-sm);
+    padding: 13px 16px;
+    border: 1px solid;
+    font-size: 14.5px; font-weight: 600; line-height: 1.4;
+    transition: color .3s, background-color .3s, border-color .3s;
+  }
+  .banner i { font-style: normal; font-size: 19px; line-height: 1; flex: none; }
+  .banner.pulse { animation: pulse 1.5s ease-in-out infinite; }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(227,61,61,.32); }
+    50%      { box-shadow: 0 0 0 7px rgba(227,61,61,0); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .banner.pulse { animation: none; }
+    .needle, .stam-fill, .tl-cursor { transition: none !important; }
+  }
+
+  /* ── 5. 타임라인 ──────────────────────────────────────────────────── */
+  .tl-wrap { position: relative; }
+  svg.tl { display: block; width: 100%; height: auto; overflow: visible; }
+  .tl-cursor { transition: transform .1s linear; }
+  .tl-hit { fill: transparent; cursor: crosshair; }
+
+  /* 도달 마커 라벨 — 화면 폭과 무관하게 고정 크기 */
+  .tl-labels { position: relative; height: 19px; margin-top: 3px; }
+  .tl-labels span {
+    position: absolute; top: 0; white-space: nowrap;
+    font-family: var(--mono); font-variant-numeric: tabular-nums;
+    font-size: 11.5px; font-weight: 700; letter-spacing: -.01em;
+  }
+
+  .tip {
+    position: absolute; pointer-events: none; opacity: 0;
+    transform: translate(-50%, -100%);
+    background: var(--surface-2);
+    border: 1px solid var(--hairline);
+    border-radius: 8px;
+    padding: 7px 10px;
+    font-size: 12px; white-space: nowrap;
+    box-shadow: 0 8px 22px rgba(0,0,0,.55);
+    transition: opacity .12s;
+    z-index: 5;
+  }
+  .tip b { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--ink); }
+  .tip .zn { font-weight: 700; margin-left: 3px; }
+
+  /* ── 6. 통계 요약 ─────────────────────────────────────────────────── */
+  .stats { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); }
+  .stat {
+    background: var(--surface-2);
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-sm);
+    padding: 12px 13px;
+  }
+  /* uppercase 를 쓰지 않는다 — σ 가 Σ 로 바뀐다. */
+  .stat .k {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .12em;
+    color: var(--ink-4);
+    display: flex; align-items: center; gap: 5px;
+  }
+  .stat .k em { font-style: normal; width: 7px; height: 7px; border-radius: 2px; flex: none; }
+  .stat .v {
+    font-family: var(--mono); font-variant-numeric: tabular-nums;
+    font-size: 20px; font-weight: 600; color: var(--ink);
+    margin-top: 5px; letter-spacing: -.02em;
+  }
+  .stat .v.none { color: var(--ink-4); font-size: 16px; }
+  .stat .n { font-size: 11.5px; color: var(--ink-4); margin-top: 1px; min-height: 1.3em; }
+
+  .stat.lead { border-color: rgba(240,130,28,.42); background: rgba(240,130,28,.07); }
+  .stat.lead .v { color: var(--z2); }
+
+  /* ── 컨트롤 ───────────────────────────────────────────────────────── */
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+  button {
+    font-family: inherit; font-size: 13.5px; font-weight: 600;
+    color: var(--ink-2);
+    background: var(--surface-2);
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-sm);
+    padding: 9px 15px; cursor: pointer;
+    transition: background-color .15s, border-color .15s, color .15s;
+  }
+  button:hover  { background: #1f2c47; color: var(--ink); }
+  button:active { transform: translateY(1px); }
+  button.primary { background: #1d3f6b; border-color: #2c5da0; color: #eaf2ff; }
+  button.primary:hover { background: #245090; }
+  button:focus-visible { outline: 2px solid #4d8ce0; outline-offset: 2px; }
+
+  .speed { margin-left: auto; display: flex; gap: 4px; align-items: center; }
+  .speed > span {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--ink-4); margin-right: 3px;
+  }
+  .speed button { padding: 6px 10px; font-family: var(--mono); font-size: 12px; }
+  .speed button[aria-pressed="true"] { background: #1d3f6b; border-color: #2c5da0; color: #eaf2ff; }
+
+  input[type=range] {
+    -webkit-appearance: none; appearance: none;
+    width: 100%; height: 22px; background: transparent;
+    margin: 14px 0 2px; cursor: pointer;
+  }
+  input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: var(--hairline); }
+  input[type=range]::-moz-range-track { height: 4px; border-radius: 2px; background: var(--hairline); }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: var(--ink); border: 3px solid #2c5da0;
+    margin-top: -6px; box-shadow: 0 2px 7px rgba(0,0,0,.6);
+  }
+  input[type=range]::-moz-range-thumb {
+    width: 16px; height: 16px; border-radius: 50%;
+    background: var(--ink); border: 3px solid #2c5da0;
+    box-shadow: 0 2px 7px rgba(0,0,0,.6);
+  }
+  input[type=range]:focus-visible { outline: 2px solid #4d8ce0; outline-offset: 4px; }
+
+  .time-row {
+    display: flex; justify-content: space-between;
+    font-family: var(--mono); font-variant-numeric: tabular-nums;
+    font-size: 12px; color: var(--ink-3);
+  }
+
+  /* ── 데이터 입력 / 표 보기 ────────────────────────────────────────── */
+  details {
+    border: 1px solid var(--hairline); border-radius: var(--r-sm);
+    background: var(--surface); margin-bottom: 14px;
+  }
+  summary {
+    cursor: pointer; padding: 12px 16px;
+    font-size: 13px; font-weight: 600; color: var(--ink-3);
+    list-style: none;
+  }
+  summary::-webkit-details-marker { display: none; }
+  summary::before { content: "▸ "; color: var(--ink-4); }
+  details[open] summary::before { content: "▾ "; }
+  summary:hover { color: var(--ink-2); }
+  .details-body { padding: 0 16px 16px; }
+  .details-body code { font-family: var(--mono); font-size: .93em; color: var(--ink-2); }
+
+  textarea {
+    width: 100%; min-height: 116px;
+    background: var(--plane); color: var(--ink-2);
+    border: 1px solid var(--hairline); border-radius: 8px;
+    font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
+    padding: 11px; resize: vertical;
+  }
+  textarea:focus-visible { outline: 2px solid #4d8ce0; outline-offset: 1px; }
+
+  .err { color: var(--z3); font-size: 12.5px; margin-top: 8px; min-height: 1.2em; font-weight: 600; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 9px; border-bottom: 1px solid var(--hairline); }
+  th {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .13em;
+    text-transform: uppercase; color: var(--ink-4); font-weight: 500;
+  }
+  td { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--ink-2); }
+  td.zone { display: flex; align-items: center; gap: 7px; font-family: var(--sans); }
+  td.zone em { font-style: normal; width: 9px; height: 9px; border-radius: 2px; flex: none; }
+  tbody tr:last-child td { border-bottom: none; }
+
+  @media (max-width: 430px) {
+    .controls button { flex: 1 1 auto; }
+    .speed { margin-left: 0; width: 100%; justify-content: flex-end; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">SPC · Western Electric</div>
+    <h1>근피로 스태미나 모니터</h1>
+    <p class="sub">세션 <b id="sessLabel">—</b> · 초기 상태 대비 σ 편차를 근육 여력으로 환산</p>
+  </header>
+
+  <!-- 1+2. 반원 게이지 · 수치 리드아웃 -->
+  <section class="card gauge-card" aria-labelledby="gaugeH">
+    <h2 class="card-h" id="gaugeH">현재 편차 <span>0 – 4σ</span></h2>
+    <div class="gauge-wrap">
+      <svg class="gauge" viewBox="10 8 380 212" role="img" aria-labelledby="gaugeDesc">
+        <title id="gaugeDesc">0에서 4σ까지의 반원 게이지</title>
+        <g id="arcs"></g>
+        <g id="ticks"></g>
+        <g class="needle" id="needle">
+          <line class="needle-l" id="needleL" x1="200" y1="200" x2="200" y2="70"></line>
+        </g>
+        <circle class="hub" id="hub" cx="200" cy="200" r="13"></circle>
+        <circle id="hubDot" cx="200" cy="200" r="4"></circle>
+      </svg>
+      <div class="readout">
+        <div class="sigma" id="sigmaVal"><span id="sigmaNum">0.0</span><small>σ</small></div>
+        <div class="badge" id="zoneBadge"><i id="zoneIcon">✅</i><span id="zoneName">정상</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. 스태미나 바 -->
+  <section class="card" aria-labelledby="stamH">
+    <h2 class="card-h" id="stamH">근육 여력 <span>100 − (z / 4) × 100</span></h2>
+    <div class="stam-top">
+      <span class="stam-label">남은 스태미나</span>
+      <span class="stam-pct" id="stamPct"><span id="stamNum">100</span><small>%</small></span>
+    </div>
+    <div class="stam-track">
+      <div class="stam-fill" id="stamFill" style="width:100%"></div>
+      <div class="stam-ticks"><i style="left:25%"></i><i style="left:50%"></i><i style="left:75%"></i></div>
+    </div>
+  </section>
+
+  <!-- 4. 행동 배너 -->
+  <div class="banner" id="banner" role="status" aria-live="polite">
+    <i id="bannerIcon">✅</i><span id="bannerText">정상</span>
+  </div>
+  <div style="height:14px"></div>
+
+  <!-- 5. 타임라인 -->
+  <section class="card" aria-labelledby="tlH">
+    <h2 class="card-h" id="tlH">세션 타임라인 <span>존 구간 · σ 궤적</span></h2>
+    <div class="tl-wrap" id="tlWrap">
+      <svg class="tl" id="tl" viewBox="0 0 700 110" preserveAspectRatio="none"
+           role="img" aria-labelledby="tlDesc">
+        <title id="tlDesc">세션 전체의 존 색 띠와 σ 궤적, 1σ·2σ·3σ 도달 시점</title>
+        <g id="tlBand"></g>
+        <path id="tlLine" fill="none" stroke="rgba(255,255,255,.62)" stroke-width="2"
+              stroke-linejoin="round" vector-effect="non-scaling-stroke"></path>
+        <g id="tlMarks"></g>
+        <line class="tl-cursor" id="tlCursor" x1="0" y1="0" x2="0" y2="104"
+              stroke="#fff" stroke-width="2" vector-effect="non-scaling-stroke"></line>
+        <rect class="tl-hit" id="tlHit" x="0" y="0" width="700" height="110"></rect>
+      </svg>
+      <!-- 도달 마커 라벨은 SVG 밖 HTML 로 둔다 — SVG 안에 두면 폭에 비례해
+           축소돼 좁은 화면에서 읽을 수 없는 크기가 된다. -->
+      <div class="tl-labels" id="tlLabels"></div>
+      <div class="tip" id="tip"></div>
+    </div>
+
+    <input type="range" id="scrub" min="0" max="0" value="0" step="1" aria-label="세션 시점 이동">
+    <div class="time-row"><span id="tNow">0:00</span><span id="tEnd">0:00</span></div>
+
+    <div class="controls" style="margin-top:14px">
+      <button class="primary" id="btnPlay">▶ 재생</button>
+      <button id="btnReset">↺ 리셋</button>
+      <div class="speed">
+        <span>속도</span>
+        <button data-sp="1"  aria-pressed="false">1×</button>
+        <button data-sp="8"  aria-pressed="true">8×</button>
+        <button data-sp="30" aria-pressed="false">30×</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6. 통계 요약 -->
+  <section class="card" aria-labelledby="statH">
+    <h2 class="card-h" id="statH">도달 시각 · 선제 대응 여유</h2>
+    <div class="stats">
+      <div class="stat">
+        <div class="k"><em style="background:var(--z1)"></em>1σ 주의</div>
+        <div class="v" id="s1">—</div><div class="n" id="s1n"></div>
+      </div>
+      <div class="stat">
+        <div class="k"><em style="background:var(--z2)"></em>2σ 경고</div>
+        <div class="v" id="s2">—</div><div class="n" id="s2n"></div>
+      </div>
+      <div class="stat">
+        <div class="k"><em style="background:var(--z3)"></em>3σ 위험</div>
+        <div class="v" id="s3">—</div><div class="n" id="s3n"></div>
+      </div>
+      <div class="stat lead">
+        <div class="k">2σ → 3σ 리드타임</div>
+        <div class="v" id="sLead">—</div>
+        <div class="n">선제 대응 여유</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 접근성: 색 없이도 읽히는 표 -->
+  <details>
+    <summary>표로 보기 (존별 체류 시간)</summary>
+    <div class="details-body">
+      <table>
+        <thead><tr><th>존</th><th>범위</th><th>체류</th><th>비율</th><th>진입</th></tr></thead>
+        <tbody id="zoneTable"></tbody>
+      </table>
+    </div>
+  </details>
+
+  <!-- 데이터 주입 -->
+  <details>
+    <summary>데이터 불러오기 (JSON)</summary>
+    <div class="details-body">
+      <p style="font-size:12.5px;color:var(--ink-3);margin:0 0 9px">
+        <code>{ session, t[], z[], t1, t2, t3 }</code> — <code>t</code>는 초,
+        <code>z</code>는 σ 편차. <code>t1/t2/t3</code>가 <code>null</code>이면 z에서 자동 계산합니다.
+      </p>
+      <textarea id="jsonIn" spellcheck="false" aria-label="세션 JSON"></textarea>
+      <div class="controls" style="margin-top:9px">
+        <button class="primary" id="btnLoad">적용</button>
+        <button id="btnSample">샘플 되돌리기</button>
+      </div>
+      <div class="err" id="jsonErr"></div>
+    </div>
+  </details>
+
+</div>
+
+<script>
+"use strict";
+
+/* ══════════════════════════════════════════════════════════════════════
+   안전한 DOM 헬퍼
+   외부 JSON 이 흘러들어오므로 마크업 문자열을 만들지 않는다 — 노드는
+   createElement(NS) 로, 텍스트는 textContent 로만 넣는다.
+   ════════════════════════════════════════════════════════════════════ */
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function svgEl(tag, attrs) {
+  const n = document.createElementNS(SVG_NS, tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  return n;
+}
+function htmlEl(tag, attrs, text) {
+  const n = document.createElement(tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (text != null) n.textContent = text;
+  return n;
+}
+function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+function fill(node, children) { clear(node); for (const c of children) node.appendChild(c); }
+
+const $ = id => document.getElementById(id);
+
+/* ══════════════════════════════════════════════════════════════════════
+   존 정의 — SPC Western Electric 규칙
+   경계는 학습이 아니라 통계 규칙에서 나온다. 그래서 학습 데이터가 없는
+   새 피험자 첫 세션에도 그대로 적용된다. (설계 원칙 3)
+   ════════════════════════════════════════════════════════════════════ */
+const ZONES = [
+  { name: "정상", icon: "✅", lo: 0, hi: 1,        color: "#12b012",
+    msg: "정상" },
+  { name: "주의", icon: "👀", lo: 1, hi: 2,        color: "#f7c122",
+    msg: "주의 — 피로 누적 시작 감지" },
+  { name: "경고", icon: "⚠",  lo: 2, hi: 3,        color: "#f0821c",
+    msg: "경고 — 곧 위험 구간, 선제 대응 권장" },
+  { name: "위험", icon: "🛑", lo: 3, hi: Infinity, color: "#e33d3d",
+    msg: "위험! 관리이탈 — 자극 강도 낮추거나 휴식" },
+];
+
+const Z_MAX = 4;                       // 게이지 상한 (4σ)
+const zoneOf = z => z < 1 ? ZONES[0] : z < 2 ? ZONES[1] : z < 3 ? ZONES[2] : ZONES[3];
+const clamp  = (v, a, b) => v < a ? a : v > b ? b : v;
+
+const fmtTime = s => {
+  if (s == null || !isFinite(s)) return "—";
+  const m = Math.floor(s / 60), r = Math.round(s % 60);
+  return m + ":" + String(r).padStart(2, "0");
+};
+
+/* ══════════════════════════════════════════════════════════════════════
+   샘플 데이터
+   이 프로젝트의 실측 흐름을 따른다 — 초기엔 오히려 증강(z가 살짝 음수)되고,
+   그 뒤 완만히 상승해 1σ → 2σ → 3σ를 차례로 통과한다. 결정론적 난수라
+   새로고침해도 같은 세션이 나온다.
+   ════════════════════════════════════════════════════════════════════ */
+function makeSample() {
+  let seed = 20260803;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff - .5;
+
+  const t = [], z = [];
+  const dur = 420, step = 2;                    // 7분, 2초 간격
+  for (let s = 0; s <= dur; s += step) {
+    const dip   = -0.62 * Math.exp(-Math.pow((s - 55) / 46, 2));   // 초기 증강 딥
+    const rise  = 3.55 / (1 + Math.exp(-(s - 262) / 61));          // 로지스틱 피로 상승
+    const drift = 0.16 * (s / dur);
+    const noise = 0.115 * rnd() + 0.055 * Math.sin(s / 11);
+    t.push(s);
+    z.push(+(dip + rise + drift + noise).toFixed(3));
+  }
+  return { session: "141940", t, z, t1: null, t2: null, t3: null };
+}
+
+/* 최초 상향 통과 시각 — 인과적으로, 앞에서부터 훑는다. (설계 원칙 2) */
+function firstCross(t, z, level) {
+  for (let i = 0; i < z.length; i++) if (z[i] >= level) return t[i];
+  return null;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   상태
+   ════════════════════════════════════════════════════════════════════ */
+let D = null;        // { session, t, z, t1, t2, t3 }
+let idx = 0;
+let playing = false;
+let speed = 8;
+let rafId = null;
+let lastFrame = 0;
+
+/* ── 게이지 정적 요소(아크·눈금) 1회 렌더 ──────────────────────────── */
+const CX = 200, CY = 200, R = 148, ARC_W = 19;
+
+function polar(v, r) {                            // v: 0..4 → 반원 좌표
+  const a = (180 + (clamp(v, 0, Z_MAX) / Z_MAX) * 180) * Math.PI / 180;
+  return [CX + r * Math.cos(a), CY + r * Math.sin(a)];
+}
+
+function arcPath(v0, v1, r) {
+  const p0 = polar(v0, r), p1 = polar(v1, r);
+  return "M " + p0[0].toFixed(2) + " " + p0[1].toFixed(2) +
+         " A " + r + " " + r + " 0 0 1 " + p1[0].toFixed(2) + " " + p1[1].toFixed(2);
+}
+
+function drawGaugeChrome() {
+  // 존 아크 — 사이에 2px 표면 간격을 둬 경계가 스스로 읽히게 한다.
+  const gapV = (2 / (Math.PI * R)) * Z_MAX;       // 2px를 σ 단위로 환산
+  fill($("arcs"), ZONES.map((zn, i) => {
+    const last = i === ZONES.length - 1;
+    const a = i === 0 ? 0 : zn.lo + gapV / 2;
+    const b = (last ? Z_MAX : zn.hi) - (last ? 0 : gapV / 2);
+    return svgEl("path", {
+      d: arcPath(a, b, R), stroke: zn.color, "stroke-width": ARC_W,
+      fill: "none", "stroke-linecap": "butt", opacity: ".92",
+    });
+  }));
+
+  // 눈금 0~4 — 숫자는 아크 **바깥**에 둔다. 안쪽에 두면 바늘이 지나가며 가린다.
+  const g = [];
+  for (let v = 0; v <= Z_MAX; v++) {
+    const p1 = polar(v, R + ARC_W / 2 + 3);
+    const p2 = polar(v, R + ARC_W / 2 + 9);
+    const pl = polar(v, R + ARC_W / 2 + 21);
+    g.push(svgEl("line", {
+      class: "tick", x1: p1[0].toFixed(1), y1: p1[1].toFixed(1),
+      x2: p2[0].toFixed(1), y2: p2[1].toFixed(1),
+    }));
+    const label = svgEl("text", { class: "tick-lbl", x: pl[0].toFixed(1), y: (pl[1] + 4.5).toFixed(1) });
+    label.textContent = String(v);
+    g.push(label);
+  }
+  fill($("ticks"), g);
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   타임라인 — 존 색 띠 + σ 궤적 + 도달 마커
+   ════════════════════════════════════════════════════════════════════ */
+const TL_W = 700, BAND_Y = 6, BAND_H = 30, PLOT_Y = 44, PLOT_H = 60;
+
+/* 라벨을 좌우 끝에서 잘리지 않게 배치한다. */
+function placeLabel(span, pct) {
+  if (pct < 7)       { span.style.left = "0";        span.style.transform = "none"; }
+  else if (pct > 93) { span.style.left = "100%";     span.style.transform = "translateX(-100%)"; }
+  else               { span.style.left = pct + "%";  span.style.transform = "translateX(-50%)"; }
+}
+
+function drawTimeline() {
+  const t = D.t, z = D.z;
+  const tEnd = t[t.length - 1] || 1;
+  const X = s => (s / tEnd) * TL_W;
+  const Y = v => PLOT_Y + PLOT_H - (clamp(v, 0, Z_MAX) / Z_MAX) * PLOT_H;
+
+  // 같은 존이 이어지는 구간을 하나의 사각형으로 병합 — 샘플 수와 무관하게 가볍다.
+  const band = [];
+  let runStart = 0, runZone = zoneOf(z[0]);
+  for (let i = 1; i <= z.length; i++) {
+    const zn = i < z.length ? zoneOf(z[i]) : null;
+    if (zn !== runZone) {
+      const x0 = X(t[runStart]), x1 = X(i < t.length ? t[i] : tEnd);
+      band.push(svgEl("rect", {
+        x: x0.toFixed(2), y: BAND_Y,
+        width: Math.max(0.6, x1 - x0).toFixed(2), height: BAND_H,
+        fill: runZone.color, opacity: ".9",
+      }));
+      runStart = i; runZone = zn;
+    }
+  }
+  fill($("tlBand"), band);
+
+  $("tlLine").setAttribute("d", z.map((v, i) =>
+    (i ? "L " : "M ") + X(t[i]).toFixed(2) + " " + Y(v).toFixed(2)).join(" "));
+
+  // 1σ/2σ/3σ 도달 마커 — 점선은 SVG, 라벨은 HTML(고정 크기)
+  const marks = [], labels = [];
+  [[D.t1, "1σ", ZONES[1].color], [D.t2, "2σ", ZONES[2].color], [D.t3, "3σ", ZONES[3].color]]
+    .filter(m => m[0] != null)
+    .forEach(m => {
+      const x = X(m[0]);
+      marks.push(svgEl("line", {
+        x1: x.toFixed(2), y1: BAND_Y, x2: x.toFixed(2), y2: PLOT_Y + PLOT_H,
+        stroke: m[2], "stroke-width": 1.5, "stroke-dasharray": "3 3",
+        "vector-effect": "non-scaling-stroke",
+      }));
+      const span = htmlEl("span", { style: "color:" + m[2] }, m[1] + " " + fmtTime(m[0]));
+      placeLabel(span, (x / TL_W) * 100);
+      labels.push(span);
+    });
+  fill($("tlMarks"), marks);
+  fill($("tlLabels"), labels);
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   프레임 갱신 — 커서 위치까지의 값만 사용한다. (설계 원칙 2)
+   ════════════════════════════════════════════════════════════════════ */
+function render() {
+  const z  = D.z[idx];
+  const zn = zoneOf(z);
+  const tEnd = D.t[D.t.length - 1] || 1;
+
+  // 1. 바늘
+  $("needle").style.transform = "rotate(" + ((clamp(z, 0, Z_MAX) / Z_MAX) * 180 - 90) + "deg)";
+  $("needleL").setAttribute("stroke", zn.color);
+  $("hub").setAttribute("stroke", zn.color);
+  $("hubDot").setAttribute("fill", zn.color);
+
+  // 2. 수치 + 배지
+  $("sigmaNum").textContent = Math.max(0, z).toFixed(1);
+  $("sigmaVal").style.color = zn.color;
+  $("zoneName").textContent = zn.name;
+  $("zoneIcon").textContent = zn.icon;
+  const badge = $("zoneBadge");
+  badge.style.color = zn.color;
+  badge.style.backgroundColor = zn.color + "1f";
+
+  // 3. 스태미나 — 여력 = 100 − (z/4)×100
+  const pct = clamp(100 - (Math.max(0, z) / Z_MAX) * 100, 0, 100);
+  $("stamNum").textContent = String(Math.round(pct));
+  $("stamPct").style.color = zn.color;
+  $("stamFill").style.width = pct + "%";
+  $("stamFill").style.backgroundColor = zn.color;
+
+  // 4. 배너
+  const b = $("banner");
+  $("bannerIcon").textContent = zn.icon;
+  $("bannerText").textContent = zn.msg;
+  b.style.color = zn.color;
+  b.style.backgroundColor = zn.color + "14";
+  b.style.borderColor = zn.color + "59";
+  b.classList.toggle("pulse", zn === ZONES[3]);
+
+  // 5. 커서
+  $("tlCursor").setAttribute("transform", "translate(" + (D.t[idx] / tEnd) * TL_W + ",0)");
+
+  $("scrub").value = idx;
+  $("tNow").textContent = fmtTime(D.t[idx]);
+}
+
+/* ── 통계 요약 + 표 ───────────────────────────────────────────────── */
+function renderStats() {
+  const tEnd = D.t[D.t.length - 1] || 1;
+  const put = (id, nid, v, note) => {
+    const el = $(id);
+    el.textContent = v == null ? "미도달" : fmtTime(v);
+    el.classList.toggle("none", v == null);
+    $(nid).textContent = v == null ? "세션 내 도달 없음" : note;
+  };
+  put("s1", "s1n", D.t1, "최초 상향 통과");
+  put("s2", "s2n", D.t2, "최초 상향 통과");
+  put("s3", "s3n", D.t3, "관리이탈");
+
+  const lead = (D.t2 != null && D.t3 != null) ? D.t3 - D.t2 : null;
+  $("sLead").textContent = lead == null ? "—" : fmtTime(lead);
+  $("sLead").classList.toggle("none", lead == null);
+
+  // 존별 체류 시간 — 색 없이도 읽히는 표
+  const dwell = [0, 0, 0, 0], entry = [null, null, null, null];
+  for (let i = 0; i < D.z.length; i++) {
+    const k = ZONES.indexOf(zoneOf(D.z[i]));
+    dwell[k] += i < D.t.length - 1 ? D.t[i + 1] - D.t[i] : 0;
+    if (entry[k] == null) entry[k] = D.t[i];
+  }
+
+  fill($("zoneTable"), ZONES.map((zn, k) => {
+    const tr = htmlEl("tr");
+    const tdZone = htmlEl("td", { class: "zone" });
+    tdZone.appendChild(htmlEl("em", { style: "background:" + zn.color }));
+    tdZone.appendChild(document.createTextNode(zn.name));
+    tr.appendChild(tdZone);
+    tr.appendChild(htmlEl("td", null, zn.hi === Infinity ? "≥ 3σ" : zn.lo + "–" + zn.hi + "σ"));
+    tr.appendChild(htmlEl("td", null, fmtTime(dwell[k])));
+    tr.appendChild(htmlEl("td", null, (tEnd ? Math.round(dwell[k] / tEnd * 100) : 0) + "%"));
+    tr.appendChild(htmlEl("td", null, entry[k] == null ? "—" : fmtTime(entry[k])));
+    return tr;
+  }));
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   재생
+   ════════════════════════════════════════════════════════════════════ */
+function tick(now) {
+  if (!playing) return;
+  const dt = (now - lastFrame) / 1000;
+  lastFrame = now;
+
+  const target = D.t[idx] + dt * speed;
+  while (idx < D.t.length - 1 && D.t[idx + 1] <= target) idx++;
+  render();
+
+  if (idx >= D.t.length - 1) { setPlaying(false); return; }
+  rafId = requestAnimationFrame(tick);
+}
+
+function setPlaying(on) {
+  playing = on;
+  $("btnPlay").textContent = on ? "⏸ 일시정지" : "▶ 재생";
+  if (on) {
+    if (idx >= D.t.length - 1) idx = 0;
+    lastFrame = performance.now();
+    rafId = requestAnimationFrame(tick);
+  } else if (rafId) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   데이터 적용
+   ════════════════════════════════════════════════════════════════════ */
+function load(data) {
+  if (!data || typeof data !== "object") throw new Error("객체 형태의 JSON이 필요합니다.");
+  if (!Array.isArray(data.t) || !Array.isArray(data.z)) throw new Error("t 와 z 배열이 필요합니다.");
+  if (data.t.length !== data.z.length)
+    throw new Error("t(" + data.t.length + ") 와 z(" + data.z.length + ") 길이가 다릅니다.");
+  if (!data.t.length) throw new Error("데이터가 비어 있습니다.");
+
+  const t = data.t.map(Number), z = data.z.map(Number);
+  if (t.some(v => !isFinite(v)) || z.some(v => !isFinite(v)))
+    throw new Error("t·z 에 숫자가 아닌 값이 있습니다.");
+
+  D = {
+    session: data.session == null ? "—" : String(data.session),
+    t, z,
+    t1: data.t1 == null ? firstCross(t, z, 1) : Number(data.t1),
+    t2: data.t2 == null ? firstCross(t, z, 2) : Number(data.t2),
+    t3: data.t3 == null ? firstCross(t, z, 3) : Number(data.t3),
+  };
+
+  setPlaying(false);
+  idx = 0;
+  $("sessLabel").textContent = D.session;
+  $("scrub").max = D.t.length - 1;
+  $("tEnd").textContent = fmtTime(D.t[D.t.length - 1]);
+  drawTimeline();
+  renderStats();
+  render();
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   이벤트
+   ════════════════════════════════════════════════════════════════════ */
+$("btnPlay").onclick  = () => setPlaying(!playing);
+$("btnReset").onclick = () => { setPlaying(false); idx = 0; render(); };
+$("scrub").oninput    = e => { setPlaying(false); idx = +e.target.value; render(); };
+
+document.querySelectorAll(".speed button").forEach(b => {
+  b.onclick = () => {
+    speed = +b.dataset.sp;
+    document.querySelectorAll(".speed button")
+      .forEach(o => o.setAttribute("aria-pressed", String(o === b)));
+  };
+});
+
+/* 타임라인 hover — 차트에는 기본으로 hover 레이어를 둔다. */
+const tip = $("tip"), tlWrap = $("tlWrap");
+
+function sampleAt(ev) {
+  const r = tlWrap.getBoundingClientRect();
+  const px = clamp((ev.clientX - r.left), 0, r.width);
+  const tEnd = D.t[D.t.length - 1] || 1;
+  const ts = (px / r.width) * tEnd;
+  let i = 0;
+  while (i < D.t.length - 1 && D.t[i + 1] < ts) i++;
+  return { i, px };
+}
+
+$("tlHit").addEventListener("pointermove", ev => {
+  const s = sampleAt(ev), zn = zoneOf(D.z[s.i]);
+  clear(tip);
+  tip.appendChild(htmlEl("b", null, fmtTime(D.t[s.i])));
+  tip.appendChild(document.createTextNode(" · "));
+  tip.appendChild(htmlEl("b", null, Math.max(0, D.z[s.i]).toFixed(2) + "σ"));
+  tip.appendChild(htmlEl("span", { class: "zn", style: "color:" + zn.color }, " " + zn.name));
+  tip.style.left = s.px + "px";
+  // 툴팁 아래끝을 SVG 아래끝에 맞춘다 — 화면 폭에 따라 SVG 높이가 변해도
+  // 카드 밖으로 넘치지 않고 항상 그래프 위에 뜬다.
+  tip.style.top = $("tl").getBoundingClientRect().height + "px";
+  tip.style.opacity = "1";
+});
+$("tlHit").addEventListener("pointerleave", () => { tip.style.opacity = "0"; });
+$("tlHit").addEventListener("pointerdown", ev => {
+  setPlaying(false); idx = sampleAt(ev).i; render();
+});
+
+/* 키보드: 좌우 화살표로 한 표본씩, 스페이스로 재생/정지 */
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "TEXTAREA") return;
+  if (e.key === "ArrowRight")     { setPlaying(false); idx = Math.min(D.t.length - 1, idx + 1); render(); }
+  else if (e.key === "ArrowLeft") { setPlaying(false); idx = Math.max(0, idx - 1); render(); }
+  else if (e.key === " ")         { e.preventDefault(); setPlaying(!playing); }
+});
+
+$("btnLoad").onclick = () => {
+  try { load(JSON.parse($("jsonIn").value)); $("jsonErr").textContent = ""; }
+  catch (ex) { $("jsonErr").textContent = "✕ " + ex.message; }
+};
+$("btnSample").onclick = () => {
+  const s = makeSample();
+  $("jsonIn").value = JSON.stringify(s);
+  $("jsonErr").textContent = "";
+  load(s);
+};
+
+/* ── 부팅 ─────────────────────────────────────────────────────────── */
+drawGaugeChrome();
+const sample = makeSample();
+$("jsonIn").value = JSON.stringify({
+  session: sample.session,
+  t: sample.t.slice(0, 6).concat(["…"]),
+  z: sample.z.slice(0, 6).concat(["…"]),
+  t1: null, t2: null, t3: null,
+}, null, 1);
+load(sample);
+</script>
+</body>
+</html>

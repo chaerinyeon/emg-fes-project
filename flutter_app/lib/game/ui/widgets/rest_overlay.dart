@@ -47,7 +47,7 @@ class RestOverlay extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               const Text(
-                '🛑 투수 교체 — 휴식 이닝',
+                '휴식 이닝',
                 style: TextStyle(
                   color: Color(0xFFE74C3C),
                   fontSize: 26,
@@ -71,8 +71,10 @@ class RestOverlay extends StatelessWidget {
                   height: 1,
                 ),
               ),
-              const Text('초 후 다음 이닝',
-                  style: TextStyle(color: Color(0xFF8B949E), fontSize: 13)),
+              const Text(
+                '초 후 다음 이닝',
+                style: TextStyle(color: Color(0xFF8B949E), fontSize: 13),
+              ),
               const SizedBox(height: 24),
               SigmaGauge(sigma: sigma),
               const SizedBox(height: 20),
@@ -109,8 +111,10 @@ class RestOverlay extends StatelessWidget {
                 const SizedBox(height: 18),
                 TextButton(
                   onPressed: onSkip,
-                  child: const Text('휴식 건너뛰기',
-                      style: TextStyle(color: Color(0xFF8B949E))),
+                  child: const Text(
+                    '휴식 건너뛰기',
+                    style: TextStyle(color: Color(0xFF8B949E)),
+                  ),
                 ),
               ],
             ],
@@ -135,15 +139,15 @@ class _Card extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: const Color(0xFF161B22),
-          border: Border.all(color: const Color(0xFF21262D)),
-          borderRadius: BorderRadius.circular(16),
-        ),
-        child: child,
-      );
+    width: double.infinity,
+    padding: const EdgeInsets.all(16),
+    decoration: BoxDecoration(
+      color: const Color(0xFF161B22),
+      border: Border.all(color: const Color(0xFF21262D)),
+      borderRadius: BorderRadius.circular(16),
+    ),
+    child: child,
+  );
 }
 
 class _Stat extends StatelessWidget {
@@ -155,22 +159,28 @@ class _Stat extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(label,
-              style: const TextStyle(color: Color(0xFF8B949E), fontSize: 11)),
-          Text(value,
-              style: const TextStyle(
-                color: Color(0xFFE6EDF3),
-                fontSize: 18,
-                fontWeight: FontWeight.w700,
-              )),
-          if (hint != null)
-            Text(hint!,
-                style: const TextStyle(color: Color(0xFF6E7681), fontSize: 10)),
-        ],
-      );
+    mainAxisSize: MainAxisSize.min,
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(
+        label,
+        style: const TextStyle(color: Color(0xFF8B949E), fontSize: 11),
+      ),
+      Text(
+        value,
+        style: const TextStyle(
+          color: Color(0xFFE6EDF3),
+          fontSize: 18,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+      if (hint != null)
+        Text(
+          hint!,
+          style: const TextStyle(color: Color(0xFF6E7681), fontSize: 10),
+        ),
+    ],
+  );
 }
 
 /// 존 배너 한 줄 — 화면 어디서든 현재 상태 문구를 띄운다.
