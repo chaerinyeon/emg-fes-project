@@ -41,7 +41,13 @@ class SessionOrchestrator extends ChangeNotifier {
        _clockMs = clockMs ?? (() => DateTime.now().millisecondsSinceEpoch) {
     stim = StimController(link);
     machine = SessionMachine(stim);
-    machine.states.listen((_) => notifyListeners());
+    machine.states.listen((s) {
+      // 동기화 구간부터 자극이 나가야 한다. 여기서 주기를 잡고 A_ref 를
+      // 워밍업하기 때문이다 — 자극이 없으면 버스트도 없고 세션이 영원히
+      // syncing 에 머문다.
+      if (s == SessionState.syncing) unawaited(stim.start());
+      notifyListeners();
+    });
   }
 
   final DeviceLink link;

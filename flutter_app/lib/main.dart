@@ -11,6 +11,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:hive_flutter/hive_flutter.dart';
+import 'features/refit_play_app.dart';
 import 'screens/splash_screen.dart';
 import 'services/profile_service.dart';
 
@@ -22,7 +23,11 @@ Future<void> main() async {
   } catch (_) {}
   await Hive.initFlutter();
   await gProfileService.init();
-  runApp(const EmgFesApp());
+
+  // 진입점 전환 — RE-FIT Play(환자 화면).
+  // 기존 모니터 앱으로 되돌리려면 아래 한 줄을 `const EmgFesApp()` 으로 바꾼다.
+  // EmgFesApp 과 lib/screens/ 는 그대로 살아 있다.
+  runApp(const RefitPlayApp());
 }
 
 class EmgFesApp extends StatelessWidget {

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:flutter_app/ble/device_connection.dart';
+import 'package:flutter_app/ble/stim_controller.dart';
 import 'package:flutter_app/data/local/session_store.dart';
 import 'package:flutter_app/features/intensity_wizard/intensity_wizard_screen.dart';
 import 'package:flutter_app/features/play/play_screen.dart';
@@ -57,6 +58,18 @@ Future<SessionOrchestrator> playingOrchestrator(FakeLink link) async {
   return o;
 }
 
+/// 자극이 켜지길 기다렸다가 끈다.
+///
+/// syncing 에 들어가면 조립부가 자극을 켜고, StimController 가 170초짜리
+/// 상한 타이머를 건다. testWidgets 는 살아 있는 타이머를 실패로 본다.
+/// stop() 은 첫 await 이전에 타이머를 동기적으로 취소하므로 await 하지 않아도
+/// 된다(fake-async 존에서는 StreamController.close 가 완결되지 않는다).
+Future<void> settle(WidgetTester tester, SessionOrchestrator o) async {
+  await tester.pump();
+  unawaited(o.stim.stop(reason: StimStopReason.sessionEnd));
+  await tester.pump();
+}
+
 /// 화면에 그려진 모든 Text 를 모은다.
 List<String> allText(WidgetTester tester) => tester
     .widgetList<Text>(find.byType(Text))
@@ -82,7 +95,7 @@ void main() {
       await tester.pumpWidget(MaterialApp(
           theme: RefitTheme.material,
           home: PlayScreen(orchestrator: o)));
-      await tester.pump();
+      await settle(tester, o);
 
       final texts = allText(tester);
       expect(texts, isNotEmpty);
@@ -113,7 +126,7 @@ void main() {
       await tester.pumpWidget(MaterialApp(
           theme: RefitTheme.material,
           home: IntensityWizardScreen(orchestrator: o)));
-      await tester.pump();
+      await settle(tester, o);
 
       for (final t in allText(tester)) {
         expect(t, isNot(contains('%')));
@@ -128,7 +141,7 @@ void main() {
       await tester.pumpWidget(MaterialApp(
           theme: RefitTheme.material,
           home: PlayScreen(orchestrator: o)));
-      await tester.pump();
+      await settle(tester, o);
 
       expect(find.text('오늘은 여기까지'), findsOneWidget);
     });
@@ -138,7 +151,7 @@ void main() {
       await tester.pumpWidget(MaterialApp(
           theme: RefitTheme.material,
           home: PlayScreen(orchestrator: o)));
-      await tester.pump();
+      await settle(tester, o);
 
       final screen = tester.getSize(find.byType(MaterialApp)).height;
       final stopTop = tester.getTopLeft(find.text('오늘은 여기까지')).dy;
@@ -153,7 +166,7 @@ void main() {
       await tester.pumpWidget(MaterialApp(
           theme: RefitTheme.material,
           home: PlayScreen(orchestrator: o)));
-      await tester.pump();
+      await settle(tester, o);
 
       for (final b in tester.widgetList<RefitButton>(
           find.byType(RefitButton))) {
@@ -171,7 +184,7 @@ void main() {
       await tester.pumpWidget(MaterialApp(
           theme: RefitTheme.material,
           home: PlayScreen(orchestrator: o)));
-      await tester.pump();
+      await settle(tester, o);
 
       for (final t in allText(tester)) {
         for (final bad in ['실패', '놓침', '실수', '틀렸']) {

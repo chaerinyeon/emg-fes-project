@@ -176,11 +176,12 @@ class _HandPainter extends CustomPainter {
       canvas.restore();
     }
 
-    // 엄지 — 반대쪽에서 감싸듯 들어온다.
+    // 엄지 — 손바닥 옆구리에서 비스듬히 나온다.
+    // 너무 눕히면(≈70°) 팔에서 떨어진 막대처럼 보여 손으로 읽히지 않는다.
     canvas.save();
-    canvas.translate(palmRect.left + palmW * 0.06, center.dy + palmH * 0.06);
-    canvas.rotate(-math.pi / 2.6 + (1 - openness) * 0.6);
-    final thumbLen = palmH * (0.34 + 0.20 * openness);
+    canvas.translate(palmRect.left + palmW * 0.18, center.dy + palmH * 0.22);
+    canvas.rotate(-math.pi / 3.6 + (1 - openness) * 0.7);
+    final thumbLen = palmH * (0.46 + 0.22 * openness);
     canvas.drawRRect(
       RRect.fromRectAndRadius(
         Rect.fromLTWH(
