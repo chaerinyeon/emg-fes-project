@@ -24,10 +24,12 @@ class _AttachmentCheckScreenState extends State<AttachmentCheckScreen> {
 
   Future<void> _run() async {
     setState(() => _checking = true);
-    // 자동 판정: 무자극 baseline / 테스트 펄스 / 기기 상태.
+    // 자동 판정: 무자극 baseline / 자극 검출 / 기기 상태.
     // 실제 판정은 신호 엔진과 StimController 가 하고, 여기서는 결과만 받는다.
-    await Future<void>.delayed(const Duration(milliseconds: 900));
-    final r = widget.orchestrator.runAttachmentCheck();
+    //
+    // 신호가 아직 안 왔을 뿐인 상태를 "안 붙었다"로 말하지 않는다 —
+    // 판정이 설 때까지 기다린다.
+    final r = await widget.orchestrator.awaitAttachmentCheck();
     if (!mounted) return;
     setState(() {
       _result = r;

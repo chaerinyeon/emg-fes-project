@@ -5,7 +5,6 @@ import 'dart:async';
 import '../ble/device_connection.dart';
 import '../data/local/hive_session_store.dart';
 import '../data/local/session_store.dart';
-import '../session/session_controller.dart';
 import 'dev/synthetic_link.dart';
 import 'refit_play_flow.dart';
 import 'refit_theme.dart';
@@ -40,6 +39,9 @@ class StartScreen extends StatefulWidget {
 class _StartScreenState extends State<StartScreen> {
   bool _starting = false;
 
+  /// 기기를 못 찾았다. 환자 탓으로 들리지 않게, 다음 할 일과 함께 말한다.
+  bool _noDevice = false;
+
   /// `--dart-define=AUTO_PREVIEW=1` 로 빌드하면 합성 세션이 바로 시작된다.
   /// 시뮬레이터에는 탭 자동화가 없어서 화면 확인용으로 둔다.
   static const bool _autoPreview =
@@ -56,7 +58,10 @@ class _StartScreenState extends State<StartScreen> {
   }
 
   Future<void> _start({required bool synthetic}) async {
-    setState(() => _starting = true);
+    setState(() {
+      _starting = true;
+      _noDevice = false;
+    });
 
     final DeviceLink link =
         synthetic ? SyntheticFesLink() : BleDeviceConnection();
@@ -78,6 +83,21 @@ class _StartScreenState extends State<StartScreen> {
     );
 
     await link.connect();
+
+    // 기기를 못 찾았으면 여기서 멈춘다. 그대로 들어가면 "기기를 찾고 있어요"
+    // 화면에 갇혀 돌아올 길이 없다 — 블루투스가 없는 환경(시뮬레이터)에서
+    // 반드시 걸리는 경로다.
+    if (link.state != LinkState.connected) {
+      o.dispose();
+      if (link is SyntheticFesLink) await link.dispose();
+      if (!mounted) return;
+      setState(() {
+        _starting = false;
+        _noDevice = true;
+      });
+      return;
+    }
+
     await o.begin();
 
     if (_autoPreview) unawaited(_driveDemo(o));
@@ -97,19 +117,21 @@ class _StartScreenState extends State<StartScreen> {
     if (mounted) setState(() => _starting = false);
   }
 
-  /// 데모 전용: 부착 체크·강도 게이트를 자동 통과시켜 훈련 화면까지 간다.
+  /// 데모 전용: **탭만** 대신 눌러 준다.
+  ///
+  /// 판정은 대신하지 않는다 — 부착 체크도 강도 측정도 실제 신호에서 뽑는다.
+  /// 결과를 손으로 넣어 버리면 이 미리보기는 아무것도 검증하지 못하는
+  /// 화면 구경이 되고, 게이트가 실제로 서는지는 끝까지 알 수 없다.
   ///
   /// **컴파일 타임 플래그로만 켜진다**(`AUTO_PREVIEW`). 기본 빌드에는
   /// 이 경로가 아예 들어가지 않으므로 게이트를 우회할 방법이 없다.
   Future<void> _driveDemo(SessionOrchestrator o) async {
-    await Future<void>.delayed(const Duration(seconds: 2));
-    o.submitAttachmentCheck(const AttachmentCheck(
-      emgElectrodeOk: true,
-      stimPadOk: true,
-      deviceOk: true,
-    ));
-    await Future<void>.delayed(const Duration(milliseconds: 600));
-    o.submitIntensity(level: 3, eventsPerBurst: 18);
+    final check = await o.awaitAttachmentCheck();
+    o.submitAttachmentCheck(check);
+    if (!check.passed) return;
+
+    final epb = await o.measureIntensity(3);
+    o.submitIntensity(level: 3, eventsPerBurst: epb);
   }
 
   @override
@@ -138,8 +160,19 @@ class _StartScreenState extends State<StartScreen> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
+                    if (_noDevice)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 14),
+                        child: Text(
+                          '기기를 찾지 못했어요.\n전원을 켠 뒤 다시 눌러 주세요.',
+                          style: RefitTheme.body,
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
                     RefitButton(
-                      label: _starting ? '준비하는 중…' : '시작하기',
+                      label: _starting
+                          ? '준비하는 중…'
+                          : (_noDevice ? '다시 시작하기' : '시작하기'),
                       onPressed:
                           _starting ? null : () => _start(synthetic: false),
                     ),

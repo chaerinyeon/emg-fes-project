@@ -144,6 +144,16 @@ class CoreLoop {
   final Map<int, int> _cueEmittedAt = <int, int>{};
   final Map<int, bool> _results = <int, bool>{};
 
+  /// 가장 최근에 **확인된** 수축 판정.
+  ///
+  /// 버스트 N 의 판정은 그 버스트가 끝나야(자극 591ms 뒤) 나오는데 judge 는
+  /// 자극 15ms 뒤에 나간다 — 자기 버스트 판정은 구조적으로 제때 도착하지
+  /// 않는다. 이걸 null 로 흘리면 화면은 매 버스트 "확인 안 됨"이 되어,
+  /// 수축이 잘 되고 있어도 손이 한 번도 안 쥐어진다. 그래서 직전에 확인된
+  /// 판정으로 되먹인다 — 한 버스트 늦지만 내용은 사실이다.
+  bool? _lastKnownResult;
+  int _lastResultIndex = -1;
+
   final List<CueTiming> _timing = <CueTiming>[];
   final List<CueDriftLog> _drift = <CueDriftLog>[];
   int _lateCueCount = 0;
@@ -167,6 +177,24 @@ class CoreLoop {
 
   /// 다음 자극 예측 시각. 주기를 모르면 null.
   int? get predictedNextOnsetMs => periodMs == null ? null : _planOnsetMs;
+
+  /// [nowMs] 이후 처음 오는 자극 시각. 주기를 모르면 null.
+  ///
+  /// 게임은 공을 원경에서 날려 보내야 해서 **도착할 자리를 미리** 알아야
+  /// 한다. [predictedNextOnsetMs] 는 진행 중인 버스트를 가리켜 이미 지난
+  /// 시각일 수 있으므로, 그럴 때는 주기를 더해 앞을 본다.
+  int? nextOnsetAtOrAfter(int nowMs) {
+    final onset = _planOnsetMs;
+    final p = periodMs;
+    if (onset == null || p == null) return null;
+    final step = p.round();
+    if (step <= 0) return onset;
+    var t = onset;
+    while (t < nowMs) {
+      t += step;
+    }
+    return t;
+  }
 
   /// 다음 큐 예정 시각.
   int? get nextCueAtMs {
@@ -282,8 +310,9 @@ class CoreLoop {
           burstIndex: _planBurstIndex,
           atMs: at,
           emittedAtMs: nowMs,
-          contractionOk:
-              type == CueEventType.judge ? _results[_planBurstIndex] : null,
+          contractionOk: type == CueEventType.judge
+              ? (_results[_planBurstIndex] ?? _lastKnownResult)
+              : null,
         ));
       }
 
@@ -304,6 +333,10 @@ class CoreLoop {
   /// 신호 엔진의 수축 판정을 붙인다. judge 이벤트에 실린다.
   void setContractionResult({required int burstIndex, required bool ok}) {
     _results[burstIndex] = ok;
+    if (burstIndex >= _lastResultIndex) {
+      _lastResultIndex = burstIndex;
+      _lastKnownResult = ok;
+    }
   }
 
   void reset() {
@@ -315,6 +348,8 @@ class CoreLoop {
     _emitted.clear();
     _cueEmittedAt.clear();
     _results.clear();
+    _lastKnownResult = null;
+    _lastResultIndex = -1;
     _timing.clear();
     _drift.clear();
     _lateCueCount = 0;

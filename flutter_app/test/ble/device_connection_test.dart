@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -116,6 +117,38 @@ void main() {
       for (var i = 0; i < 50; i++) {
         expect(p.delayFor(i), lessThanOrEqualTo(const Duration(seconds: 30)));
       }
+    });
+  });
+
+  group('구독 해제가 끝나야 세션 마무리가 진행된다', () {
+    test('표본 스트림 구독을 취소하면 즉시 완료된다', () async {
+      // ★ 여기서 막히면 세션 저장이 통째로 사라진다.
+      //   _finish() 는 `await _sampleSub.cancel()` 뒤에 기록을 저장한다.
+      //   취소가 완결되지 않으면 그 뒤 코드가 한 줄도 실행되지 않는다.
+      final packets = StreamController<List<int>>.broadcast();
+      addTearDown(packets.close);
+
+      final sub = rawSamples(packets.stream).listen((_) {});
+      packets.add(packet(1000, const [10, 20, 30]));
+      await pumpEventQueue();
+
+      await sub.cancel().timeout(
+            const Duration(seconds: 2),
+            onTimeout: () => fail('취소가 완결되지 않았다 — 세션 기록이 저장되지 않는다'),
+          );
+    });
+
+    test('패킷이 더 오지 않아도 취소가 완결된다', () async {
+      final packets = StreamController<List<int>>.broadcast();
+      addTearDown(packets.close);
+
+      final sub = rawSamples(packets.stream).listen((_) {});
+      await pumpEventQueue();
+
+      await sub.cancel().timeout(
+            const Duration(seconds: 2),
+            onTimeout: () => fail('취소가 완결되지 않았다'),
+          );
     });
   });
 }

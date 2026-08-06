@@ -17,6 +17,12 @@ import '../../signal/signal_pipeline.dart';
 /// 화면이 읽는 신호 품질. **숫자가 아니라 상태다.**
 enum SignalStatus { good, checkSensor, lost }
 
+/// 자극 데이터 워치독을 되감는 최소 간격(ms).
+///
+/// 표본은 초당 1000개가 들어온다. 매번 되감으면 초당 1000개의 타이머를
+/// 만들고 버리게 된다. 워치독 시한(30초)에 비해 충분히 촘촘하면 된다.
+const int kWatchdogFeedIntervalMs = 250;
+
 /// [SignalPipeline] → [SessionMachine] → [CoreLoop] → 저장/업로드를 잇는 조립부.
 ///
 /// 화면은 이 클래스만 본다. 피로도 퍼센트는 **밖으로 내보내지 않는다**
@@ -37,9 +43,10 @@ class SessionOrchestrator extends ChangeNotifier {
     this.fwVersion = 'unknown',
     DateTime Function()? now,
     int Function()? clockMs,
+    Duration? stimDataTimeout,
   }) : _now = now ?? DateTime.now,
        _clockMs = clockMs ?? (() => DateTime.now().millisecondsSinceEpoch) {
-    stim = StimController(link);
+    stim = StimController(link, dataTimeout: stimDataTimeout);
     machine = SessionMachine(stim);
     machine.states.listen((s) {
       // 동기화 구간부터 자극이 나가야 한다. 여기서 주기를 잡고 A_ref 를
@@ -72,6 +79,17 @@ class SessionOrchestrator extends ChangeNotifier {
 
   StreamSubscription<(int, int)>? _sampleSub;
   Timer? _cueTimer;
+
+  final _cues = StreamController<CueEvent>.broadcast();
+
+  /// 큐 이벤트 원본. 게임이 여기에 물린다.
+  ///
+  /// 화면이 [notifyListeners] 로 매번 다시 그려지는 것과 별개로, 게임은
+  /// **이벤트 하나하나**가 필요하다(포구는 프레임이 아니라 사건이다).
+  Stream<CueEvent> get cues => _cues.stream;
+
+  /// 게임이 읽는 시계. 큐 이벤트의 `atMs` 와 같은 기준이어야 한다.
+  int nowMs() => _clockMs();
 
   final List<BurstRow> _pendingRows = <BurstRow>[];
   DateTime? _startedAt;
@@ -145,6 +163,28 @@ class SessionOrchestrator extends ChangeNotifier {
     );
   }
 
+  /// 판정이 설 때까지 기다렸다가 돌려준다.
+  ///
+  /// 화면을 켠 직후에는 DC 캘리브도, 버스트도 아직 없다. 그 상태에서 바로
+  /// 판정하면 **멀쩡히 붙인 사람에게 "다시 붙이세요"가 뜬다** — 부착 체크는
+  /// 신뢰를 만드는 화면이라 이 오경보가 특히 비싸다. "아직 안 왔다"와
+  /// "안 붙었다"는 다른 사건이므로 전자는 기다린다.
+  ///
+  /// [timeout] 안에 서지 않으면 그때의 판정을 그대로 돌려준다 — 영원히
+  /// 기다리지 않는다.
+  Future<AttachmentCheck> awaitAttachmentCheck({
+    Duration timeout = const Duration(seconds: 12),
+    Duration poll = const Duration(milliseconds: 200),
+  }) async {
+    final deadline = _now().add(timeout);
+    var r = runAttachmentCheck();
+    while (!r.passed && _now().isBefore(deadline)) {
+      await Future<void>.delayed(poll);
+      r = runAttachmentCheck();
+    }
+    return r;
+  }
+
   void submitAttachmentCheck(AttachmentCheck r) {
     machine.submitAttachmentCheck(r);
     notifyListeners();
@@ -189,8 +229,27 @@ class SessionOrchestrator extends ChangeNotifier {
     await _finish(SessionEndReason.userStop);
   }
 
+  /// 워치독을 마지막으로 되감은 표본 시각.
+  int? _lastWatchdogFeedMs;
+
   void _onSample((int, int) s) {
     final (t, adc) = s;
+
+    // 자극 데이터 워치독은 **모든 상태에서** 되감아야 한다.
+    //
+    // 전에는 버스트 처리(playing 전용)에서만 되감았다. 그러면 동기화
+    // 구간 30초를 버티지 못하고 한가운데서 자극이 꺼지는데, 아무도 다시
+    // 켜지 않으므로 그 뒤 세션 전체가 자극 없이 흘러간다. 화면은 멀쩡해
+    // 보여서 아무도 알아채지 못한다.
+    //
+    // 표본마다 부르면 초당 1000개의 타이머를 만들게 되므로 간격을 둔다.
+    if (_lastWatchdogFeedMs == null ||
+        t - _lastWatchdogFeedMs! >= kWatchdogFeedIntervalMs ||
+        t < _lastWatchdogFeedMs!) {
+      _lastWatchdogFeedMs = t;
+      stim.noteDataReceived();
+    }
+
     final r = pipeline.addSample(t, adc);
     if (r == null) return;
     _onBurst(r);
@@ -254,6 +313,7 @@ class SessionOrchestrator extends ChangeNotifier {
     if (events.isEmpty) return;
 
     for (final e in events) {
+      if (!_cues.isClosed) _cues.add(e);
       switch (e.type) {
         case CueEventType.cue:
           cueActive = true;
@@ -353,6 +413,7 @@ class SessionOrchestrator extends ChangeNotifier {
   void dispose() {
     _sampleSub?.cancel();
     _cueTimer?.cancel();
+    unawaited(_cues.close());
     unawaited(machine.dispose());
     super.dispose();
   }

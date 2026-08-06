@@ -244,5 +244,59 @@ void main() {
       final judge = ev.firstWhere((e) => e.type == CueEventType.judge);
       expect(judge.contractionOk, isNull);
     });
+
+    test('판정은 한 버스트 늦게 오므로 가장 최근에 확인된 값을 쓴다', () {
+      // 버스트 N 의 판정은 그 버스트가 **끝나야** 나온다(자극 591ms 뒤).
+      // 그런데 judge 는 자극 15ms 뒤에 나간다 — 자기 버스트 판정은 절대
+      // 제때 도착하지 않는다. 이걸 null 로 두면 화면은 매번 "확인 안 됨"이
+      // 되고, 수축이 잘 되고 있어도 손이 한 번도 안 쥐어진다.
+      final rig = Rig()..loop.setContractionResult(burstIndex: 0, ok: true);
+      rig.run(4);
+
+      final judges = rig.ofType(CueEventType.judge);
+      expect(judges, isNotEmpty);
+      expect(judges.first.contractionOk, isTrue,
+          reason: '직전 버스트가 성공이면 이번 큐도 성공으로 되먹인다');
+    });
+
+    test('자기 버스트 판정이 도착해 있으면 그쪽이 이긴다', () {
+      final loop = CoreLoop();
+      loop.syncTo(
+          burstIndex: 0, stimOnsetMs: 10000, periodMs: kStimPeriodMs.toDouble());
+      loop.setContractionResult(burstIndex: 0, ok: true);
+      loop.setContractionResult(burstIndex: 1, ok: false);
+
+      final onset = loop.predictedNextOnsetMs!;
+      final ev = loop.advanceTo(onset + kMwaveWindowEndMs);
+      final judge = ev.firstWhere((e) => e.type == CueEventType.judge);
+      expect(judge.contractionOk, isFalse);
+    });
+  });
+
+  group('다음 자극 시각 — 게임이 공을 미리 던지려면 필요하다', () {
+    test('아직 오지 않은 자극 시각을 준다', () {
+      final loop = CoreLoop();
+      loop.syncTo(
+          burstIndex: 0, stimOnsetMs: 10000, periodMs: kStimPeriodMs.toDouble());
+
+      final next = loop.nextOnsetAtOrAfter(10000)!;
+      expect(next, greaterThanOrEqualTo(10000));
+      expect(next, 10000 + kStimPeriodMs);
+    });
+
+    test('계획 시각이 이미 지났으면 주기를 더해 다음 것을 준다', () {
+      final loop = CoreLoop();
+      loop.syncTo(
+          burstIndex: 0, stimOnsetMs: 10000, periodMs: kStimPeriodMs.toDouble());
+
+      final planned = loop.predictedNextOnsetMs!;
+      // 계획된 자극이 막 지나간 순간.
+      final next = loop.nextOnsetAtOrAfter(planned + 100)!;
+      expect(next, planned + kStimPeriodMs);
+    });
+
+    test('주기를 모르면 null — 짐작해서 던지지 않는다', () {
+      expect(CoreLoop().nextOnsetAtOrAfter(10000), isNull);
+    });
   });
 }

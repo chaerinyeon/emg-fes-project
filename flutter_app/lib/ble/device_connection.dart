@@ -50,14 +50,21 @@ class ReconnectPolicy {
 /// `firstSampleMs` 는 BLE 끊김 중에도 계속 증가하므로, 유실 구간이 있으면
 /// 표본 시각에 그대로 구멍이 남는다 — 신호 엔진이 그 구멍을 봐야 한다.
 /// 여기서 시각을 새로 만들어 메우면 위상 고정이 조용히 어긋난다.
-Stream<(int, int)> rawSamples(Stream<List<int>> packets) async* {
-  await for (final bytes in packets) {
+/// ★ `async*` + `await for` 로 쓰지 않는다. 그렇게 쓰면 생성기가 다음 패킷을
+/// 기다리며 멈춰 있는 동안 **구독 취소가 영영 완결되지 않는다** — 취소는
+/// 생성기가 깨어나야 끝나는데, 깨울 패킷이 다시 오지 않기 때문이다.
+/// 세션 종료는 `await 구독취소` 뒤에 기록을 저장하므로, 그 한 줄에서 막히면
+/// 세션이 통째로 저장되지 않는다. [Stream.expand] 는 평범한 구독이라
+/// 취소가 즉시 전파된다.
+Stream<(int, int)> rawSamples(Stream<List<int>> packets) {
+  return packets.expand((bytes) {
     final p = RawPacket.parse(bytes);
-    if (p == null) continue; // 잘린 패킷 하나는 버리고 세션은 계속
-    for (var i = 0; i < p.samples.length; i++) {
-      yield (p.firstSampleMs + i, p.samples[i]);
-    }
-  }
+    if (p == null) return const <(int, int)>[]; // 잘린 패킷 하나는 버리고 세션은 계속
+    return Iterable<(int, int)>.generate(
+      p.samples.length,
+      (i) => (p.firstSampleMs + i, p.samples[i]),
+    );
+  });
 }
 
 /// flutter_blue_plus 구현.
