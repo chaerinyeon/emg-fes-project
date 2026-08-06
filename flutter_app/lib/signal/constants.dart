@@ -188,6 +188,13 @@ const int kDcCalibWindowMs = 1500;
 /// DC 캘리브에 필요한 최소 샘플 수.
 const int kDcCalibMinSamples = 200;
 
+/// 부착 체크에서 EMG 전극을 정상으로 볼 잡음 상한(ADC LSB).
+///
+/// 실측 88세션의 도입부 σ 는 대부분 8~40 이었고, 전극이 뜬 세션에서
+/// 311까지 올라갔다(raw_20260730_205037_C_complete.csv).
+// TODO(P0): 실측 분포로 확정
+const double kAttachMaxNoiseSigma = 120.0;
+
 // ===== [H] 적응형 레벨 구간 =====
 
 /// 레벨 시프트 판정 윈도우 (버스트). 최근 W개 중앙값으로 판정.
