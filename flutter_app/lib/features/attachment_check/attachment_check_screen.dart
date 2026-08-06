@@ -4,11 +4,9 @@ import '../../session/session_controller.dart';
 import '../refit_theme.dart';
 import '../session/session_orchestrator.dart';
 
-/// 부착 체크 3항목.
+/// 부착 체크 3항목. 통과하지 않으면 게임에 들어갈 수 없다.
 ///
-/// 통과하지 않으면 게임에 들어갈 수 없다. 각 항목에는 **부착 위치 그림**이
-/// 붙는다 — 텍스트만으로는 매번 실패한다. 지금은 도식 플레이스홀더이고
-/// 실제 일러스트가 오면 [_AttachDiagram] 만 교체하면 된다.
+/// 각 항목에 **부착 위치 그림**이 붙는다 — 텍스트만으로는 매번 실패한다.
 class AttachmentCheckScreen extends StatefulWidget {
   const AttachmentCheckScreen({super.key, required this.orchestrator});
 
@@ -24,11 +22,8 @@ class _AttachmentCheckScreenState extends State<AttachmentCheckScreen> {
 
   Future<void> _run() async {
     setState(() => _checking = true);
-    // 자동 판정: 무자극 baseline / 자극 검출 / 기기 상태.
-    // 실제 판정은 신호 엔진과 StimController 가 하고, 여기서는 결과만 받는다.
-    //
-    // 신호가 아직 안 왔을 뿐인 상태를 "안 붙었다"로 말하지 않는다 —
-    // 판정이 설 때까지 기다린다.
+    // 판정은 신호 엔진이 한다. 신호가 아직 안 왔을 뿐인 상태를
+    // "안 붙었다"로 말하지 않게, 판정이 설 때까지 기다린다.
     final r = await widget.orchestrator.awaitAttachmentCheck();
     if (!mounted) return;
     setState(() {
@@ -44,75 +39,60 @@ class _AttachmentCheckScreenState extends State<AttachmentCheckScreen> {
     return Scaffold(
       body: RefitBackdrop(
         child: SafeArea(
-          child: LayoutBuilder(
-            builder: (context, box) => Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(24, 24, 24, 0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('준비', style: RefitTheme.label),
-                      const SizedBox(height: 10),
-                      Text('붙인 자리를\n확인할게요', style: RefitTheme.display),
-                    ],
-                  ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 24, 24, 0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('준비', style: RefitTheme.label),
+                    const SizedBox(height: 10),
+                    Text('붙인 자리를\n확인할게요', style: RefitTheme.display),
+                  ],
                 ),
-                Expanded(
-                  child: SingleChildScrollView(
-                    padding: const EdgeInsets.fromLTRB(24, 28, 24, 12),
-                    child: Column(
-                      children: [
-                        _CheckRow(
-                          title: 'EMG 전극',
-                          hint: '팔 안쪽, 손목에서 손가락 세 마디 위',
-                          diagram: _AttachDiagram.emg,
-                          state: _stateOf(r?.emgElectrodeOk),
-                        ),
-                        const SizedBox(height: 18),
-                        _CheckRow(
-                          title: '자극 패드',
-                          hint: '전극 아래쪽, 두 장이 닿지 않게',
-                          diagram: _AttachDiagram.pad,
-                          state: _stateOf(r?.stimPadOk),
-                        ),
-                        const SizedBox(height: 18),
-                        _CheckRow(
-                          title: '기기',
-                          hint: '배터리와 연결 상태',
-                          diagram: _AttachDiagram.device,
-                          state: _stateOf(r?.deviceOk),
-                        ),
-                      ],
-                    ),
-                  ),
+              ),
+              Expanded(
+                child: ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(24, 28, 24, 12),
+                  itemCount: _items.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 18),
+                  itemBuilder: (_, i) {
+                    final it = _items[i];
+                    return _CheckRow(
+                      title: it.$1,
+                      hint: it.$2,
+                      diagram: it.$3,
+                      state: _stateOf(it.$4(r)),
+                    );
+                  },
                 ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(24, 0, 24, 20),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (r != null && !r.passed)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 14),
-                          child: Text(
-                            '다시 붙이고 한 번 더 눌러 주세요',
-                            style: RefitTheme.body,
-                            textAlign: TextAlign.center,
-                          ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 0, 24, 20),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (r != null && !r.passed)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 14),
+                        child: Text(
+                          '다시 붙이고 한 번 더 눌러 주세요',
+                          style: RefitTheme.body,
+                          textAlign: TextAlign.center,
                         ),
-                      RefitButton(
-                        label: _checking
-                            ? '확인하는 중…'
-                            : (r == null ? '확인 시작' : '다시 확인'),
-                        onPressed: _checking ? null : _run,
                       ),
-                    ],
-                  ),
+                    RefitButton(
+                      label: _checking
+                          ? '확인하는 중…'
+                          : (r == null ? '확인 시작' : '다시 확인'),
+                      onPressed: _checking ? null : _run,
+                    ),
+                  ],
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),
@@ -125,6 +105,17 @@ class _AttachmentCheckScreenState extends State<AttachmentCheckScreen> {
     false => _RowState.retry,
   };
 }
+
+/// 제목 · 안내 · 도식 · 판정 뽑는 법.
+const _items = <(String, String, _AttachDiagram, bool? Function(AttachmentCheck?))>[
+  ('EMG 전극', '팔 안쪽, 손목에서 손가락 세 마디 위', _AttachDiagram.emg, _emg),
+  ('자극 패드', '전극 아래쪽, 두 장이 닿지 않게', _AttachDiagram.pad, _pad),
+  ('기기', '배터리와 연결 상태', _AttachDiagram.device, _dev),
+];
+
+bool? _emg(AttachmentCheck? r) => r?.emgElectrodeOk;
+bool? _pad(AttachmentCheck? r) => r?.stimPadOk;
+bool? _dev(AttachmentCheck? r) => r?.deviceOk;
 
 enum _RowState { pending, ok, retry }
 
@@ -199,6 +190,7 @@ class _DiagramPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    final w = size.width, h = size.height;
     final stroke = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2
@@ -206,48 +198,34 @@ class _DiagramPainter extends CustomPainter {
       ..color = RefitTheme.inkSoft;
     final fill = Paint()..color = tint.withValues(alpha: 0.85);
 
-    switch (kind) {
-      case _AttachDiagram.emg:
-      case _AttachDiagram.pad:
-        // 팔뚝 실루엣
-        final arm = RRect.fromRectAndRadius(
-          Rect.fromLTWH(
-            size.width * 0.30,
-            size.height * 0.10,
-            size.width * 0.40,
-            size.height * 0.80,
-          ),
-          Radius.circular(size.width * 0.20),
-        );
-        canvas.drawRRect(arm, stroke);
-        final y = kind == _AttachDiagram.emg ? 0.34 : 0.62;
-        canvas.drawRRect(
-          RRect.fromRectAndRadius(
-            Rect.fromLTWH(
-              size.width * 0.36,
-              size.height * y,
-              size.width * 0.28,
-              size.height * 0.13,
-            ),
-            const Radius.circular(4),
-          ),
-          fill,
-        );
-      case _AttachDiagram.device:
-        canvas.drawRRect(
-          RRect.fromRectAndRadius(
-            Rect.fromLTWH(
-              size.width * 0.22,
-              size.height * 0.28,
-              size.width * 0.56,
-              size.height * 0.44,
-            ),
-            const Radius.circular(8),
-          ),
-          stroke,
-        );
-        canvas.drawCircle(Offset(size.width * 0.5, size.height * 0.5), 6, fill);
+    if (kind == _AttachDiagram.device) {
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromLTWH(w * 0.22, h * 0.28, w * 0.56, h * 0.44),
+          const Radius.circular(8),
+        ),
+        stroke,
+      );
+      canvas.drawCircle(Offset(w * 0.5, h * 0.5), 6, fill);
+      return;
     }
+
+    // 팔뚝 실루엣 + 붙이는 자리. 전극은 위, 패드는 아래.
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(w * 0.30, h * 0.10, w * 0.40, h * 0.80),
+        Radius.circular(w * 0.20),
+      ),
+      stroke,
+    );
+    final y = kind == _AttachDiagram.emg ? 0.34 : 0.62;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(w * 0.36, h * y, w * 0.28, h * 0.13),
+        const Radius.circular(4),
+      ),
+      fill,
+    );
   }
 
   @override

@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import '../../signal/stats.dart';
 
 import '../model/zone.dart';
 
@@ -164,8 +165,8 @@ class SigmaTracker {
     final win = <double>[
       for (var j = lo; j < hi; j++) j < i ? _amp[j] : _rawAmp[j],
     ];
-    final m = _median(win);
-    final mad = _median([for (final v in win) (v - m).abs()]) + 1e-9;
+    final m = median(win);
+    final mad = median([for (final v in win) (v - m).abs()]) + 1e-9;
 
     final x = _rawAmp[i];
     _amp.add((x - m).abs() > hampelNSigma * madScale * mad ? m : x);
@@ -217,8 +218,8 @@ class SigmaTracker {
       _mu0 = _sd0 = null;
       return;
     }
-    final m = _median(win);
-    final sd = madScale * _median([for (final v in win) (v - m).abs()]) + 1e-9;
+    final m = median(win);
+    final sd = madScale * median([for (final v in win) (v - m).abs()]) + 1e-9;
 
     // 신호가 사실상 상수면 baseline 을 못 쓴다 — 위 minBaseCv 주석 참고.
     if (m == 0 || sd / m.abs() < minBaseCv) {
@@ -241,12 +242,6 @@ class SigmaTracker {
     return null;
   }
 
-  static double _median(List<double> xs) {
-    final s = [...xs]..sort();
-    final n = s.length;
-    if (n == 0) return 0;
-    return n.isOdd ? s[n ~/ 2] : (s[n ~/ 2 - 1] + s[n ~/ 2]) / 2.0;
-  }
 
   /// 새 세션 시작.
   void reset() {

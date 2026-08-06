@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import 'stats.dart';
 
 import 'constants.dart';
 import 'stim_detector.dart';
@@ -116,7 +117,7 @@ class BurstSegmenter {
     for (var d = kEpochBaselineStartMs; d < kEpochBaselineEndMs; d++) {
       base.add(raw[d]);
     }
-    final baseline = _median(base);
+    final baseline = median(base);
 
     final zeroed = List<double>.generate(kEpochLenMs, (d) => raw[d] - baseline,
         growable: false);
@@ -131,11 +132,4 @@ class BurstSegmenter {
     return _ringT[i] == tMs ? _ringAdc[i] : null;
   }
 
-  static double _median(List<double> xs) {
-    if (xs.isEmpty) return 0.0;
-    final s = List<double>.of(xs)..sort();
-    final n = s.length;
-    if (n.isOdd) return s[n ~/ 2];
-    return (s[n ~/ 2 - 1] + s[n ~/ 2]) / 2.0;
-  }
 }

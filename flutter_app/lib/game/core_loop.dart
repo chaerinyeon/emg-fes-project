@@ -1,4 +1,5 @@
 import '../signal/constants.dart';
+import '../signal/stats.dart';
 
 /// 게임 큐 이벤트 종류.
 enum CueEventType {
@@ -129,12 +130,9 @@ class CoreLoop {
   int _planBurstIndex = 0;
   bool _started = false;
 
-  /// 관측된 자극 시점들. 여기서 주기를 **직접 배운다**.
-  ///
-  /// 신호 엔진이 준 주기 추정은 중앙값이라 실제 변화보다 늦게 따라온다.
-  /// 그 값을 그대로 믿으면 재동기를 해도 매 버스트 같은 크기의 오차가
-  /// 남는다(추정 1618 / 실제 1768 이면 선행이 300 대신 450으로 고정).
-  /// 위상은 화면에서 안 보이므로 이 오차는 조용히 훈련 효과만 갉아먹는다.
+  /// 관측된 자극 시점들. 여기서 주기를 **직접 배운다** — 신호 엔진의
+  /// 중앙값 추정만 믿으면 재동기해도 오차가 남는다(추정 1618 / 실제 1768
+  /// 이면 선행이 300 대신 450 으로 고정). 화면에 안 보이는 종류의 손실이다.
   final List<int> _observedOnsets = <int>[];
 
   /// 주기 학습에 쓰는 최근 관측 수.
@@ -147,10 +145,8 @@ class CoreLoop {
   /// 가장 최근에 **확인된** 수축 판정.
   ///
   /// 버스트 N 의 판정은 그 버스트가 끝나야(자극 591ms 뒤) 나오는데 judge 는
-  /// 자극 15ms 뒤에 나간다 — 자기 버스트 판정은 구조적으로 제때 도착하지
-  /// 않는다. 이걸 null 로 흘리면 화면은 매 버스트 "확인 안 됨"이 되어,
-  /// 수축이 잘 되고 있어도 손이 한 번도 안 쥐어진다. 그래서 직전에 확인된
-  /// 판정으로 되먹인다 — 한 버스트 늦지만 내용은 사실이다.
+  /// 15ms 뒤에 나간다 — 자기 판정은 구조적으로 제때 못 온다. null 로 흘리면
+  /// 화면이 매번 "확인 안 됨"이 된다. 한 버스트 늦지만 내용은 사실이다.
   bool? _lastKnownResult;
   int _lastResultIndex = -1;
 
@@ -161,18 +157,11 @@ class CoreLoop {
 
   /// 지금 쓰는 주기. 관측이 쌓이면 관측값이 이긴다.
   double? get periodMs {
-    if (_observedOnsets.length >= 3) {
-      final gaps = <int>[];
-      for (var i = 1; i < _observedOnsets.length; i++) {
-        gaps.add(_observedOnsets[i] - _observedOnsets[i - 1]);
-      }
-      gaps.sort();
-      final n = gaps.length;
-      return n.isOdd
-          ? gaps[n ~/ 2].toDouble()
-          : (gaps[n ~/ 2 - 1] + gaps[n ~/ 2]) / 2.0;
-    }
-    return _reportedPeriodMs;
+    if (_observedOnsets.length < 3) return _reportedPeriodMs;
+    return median([
+      for (var i = 1; i < _observedOnsets.length; i++)
+        (_observedOnsets[i] - _observedOnsets[i - 1]).toDouble(),
+    ]);
   }
 
   /// 다음 자극 예측 시각. 주기를 모르면 null.

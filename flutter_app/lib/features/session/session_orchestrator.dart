@@ -17,18 +17,13 @@ import '../../signal/signal_pipeline.dart';
 /// 화면이 읽는 신호 품질. **숫자가 아니라 상태다.**
 enum SignalStatus { good, checkSensor, lost }
 
-/// 자극 데이터 워치독을 되감는 최소 간격(ms).
-///
-/// 표본은 초당 1000개가 들어온다. 매번 되감으면 초당 1000개의 타이머를
-/// 만들고 버리게 된다. 워치독 시한(30초)에 비해 충분히 촘촘하면 된다.
+/// 워치독 되감기 간격. 표본은 초당 1000개라 매번 되감으면 타이머만 만든다.
 const int kWatchdogFeedIntervalMs = 250;
 
-/// [SignalPipeline] → [SessionMachine] → [CoreLoop] → 저장/업로드를 잇는 조립부.
+/// [SignalPipeline] → [SessionMachine] → [CoreLoop] → 저장/업로드 조립부.
 ///
-/// 화면은 이 클래스만 본다. 피로도 퍼센트는 **밖으로 내보내지 않는다**
-/// (완료 기준: 앱 어디에도 피로도 퍼센트 숫자가 노출되지 않는다).
-/// 피로는 수축 성공률이 떨어지고 화면의 손이 잘 안 쥐어지는 것으로
-/// 저절로 드러난다.
+/// 화면은 이 클래스만 본다. 피로도 퍼센트는 **밖으로 내보내지 않는다** —
+/// 피로는 잡히는 공이 줄어드는 것으로 저절로 드러난다.
 class SessionOrchestrator extends ChangeNotifier {
   SessionOrchestrator({
     required this.link,
@@ -49,9 +44,7 @@ class SessionOrchestrator extends ChangeNotifier {
     stim = StimController(link, dataTimeout: stimDataTimeout);
     machine = SessionMachine(stim);
     machine.states.listen((s) {
-      // 동기화 구간부터 자극이 나가야 한다. 여기서 주기를 잡고 A_ref 를
-      // 워밍업하기 때문이다 — 자극이 없으면 버스트도 없고 세션이 영원히
-      // syncing 에 머문다.
+      // 동기화부터 자극이 나가야 주기·A_ref 가 잡힌다. 없으면 영영 syncing.
       if (s == SessionState.syncing) unawaited(stim.start());
       notifyListeners();
     });
@@ -82,10 +75,7 @@ class SessionOrchestrator extends ChangeNotifier {
 
   final _cues = StreamController<CueEvent>.broadcast();
 
-  /// 큐 이벤트 원본. 게임이 여기에 물린다.
-  ///
-  /// 화면이 [notifyListeners] 로 매번 다시 그려지는 것과 별개로, 게임은
-  /// **이벤트 하나하나**가 필요하다(포구는 프레임이 아니라 사건이다).
+  /// 큐 이벤트 원본. 게임이 물린다 — 포구는 프레임이 아니라 사건이다.
   Stream<CueEvent> get cues => _cues.stream;
 
   /// 게임이 읽는 시계. 큐 이벤트의 `atMs` 와 같은 기준이어야 한다.
@@ -129,8 +119,7 @@ class SessionOrchestrator extends ChangeNotifier {
 
     _sampleSub = rawSamples(link.rawPackets).listen(_onSample);
 
-    // 큐 스케줄러는 **렌더 루프가 아니라** 별도 타이머로 돈다.
-    // 프레임이 밀려도 타이밍이 밀리면 안 된다.
+    // 큐는 렌더 루프가 아니라 별도 타이머로 돈다 — 프레임이 밀려도 타이밍은 아니다.
     _cueTimer = Timer.periodic(const Duration(milliseconds: 8), (_) {
       _pumpCues();
     });
@@ -139,25 +128,16 @@ class SessionOrchestrator extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 부착 체크 3항목 자동 판정.
-  ///
-  /// 화면이 "느낌"으로 정하지 않고 실제 신호에서 뽑는다.
-  /// - EMG 전극: DC 캘리브가 끝났고, 그 구간이 조용했고, 잡음이 정상 범위인가.
-  ///   ([DcCalibrator.looksQuiet] 이 false 면 자극이 섞였거나 전극이 뜬 것)
-  /// - 자극 패드: 자극이 실제로 검출됐는가 (버스트가 잡혔는가).
-  /// - 기기: 링크가 붙어 있는가.
+  /// 부착 체크 3항목. 화면의 "느낌"이 아니라 실제 신호에서 뽑는다.
   AttachmentCheck runAttachmentCheck() {
-    final calibrated = pipeline.dcOffset != null;
     final noise = pipeline.noiseSigma;
-
     return AttachmentCheck(
-      emgElectrodeOk:
-          calibrated &&
+      // 캘리브가 끝났고, 그 구간이 조용했고, 잡음이 정상 범위인가.
+      emgElectrodeOk: pipeline.dcOffset != null &&
           pipeline.dcWindowLooksQuiet &&
           noise > 0 &&
           noise < kAttachMaxNoiseSigma,
-      // TODO(P0): 최저 강도 테스트 펄스 1회를 쏘고 M-wave 검출을 보는 방식으로
-      //           바꾼다. 지금은 이미 들어온 자극이 검출됐는지로 대신한다.
+      // TODO(P0): 최저 강도 테스트 펄스를 쏘고 M-wave 검출을 보는 방식으로.
       stimPadOk: pipeline.reliability.burstCount > 0,
       deviceOk: link.state == LinkState.connected,
     );
@@ -165,13 +145,9 @@ class SessionOrchestrator extends ChangeNotifier {
 
   /// 판정이 설 때까지 기다렸다가 돌려준다.
   ///
-  /// 화면을 켠 직후에는 DC 캘리브도, 버스트도 아직 없다. 그 상태에서 바로
-  /// 판정하면 **멀쩡히 붙인 사람에게 "다시 붙이세요"가 뜬다** — 부착 체크는
-  /// 신뢰를 만드는 화면이라 이 오경보가 특히 비싸다. "아직 안 왔다"와
-  /// "안 붙었다"는 다른 사건이므로 전자는 기다린다.
-  ///
-  /// [timeout] 안에 서지 않으면 그때의 판정을 그대로 돌려준다 — 영원히
-  /// 기다리지 않는다.
+  /// "아직 안 왔다"와 "안 붙었다"는 다른 사건이다. 켠 직후엔 캘리브도
+  /// 버스트도 없어서, 바로 판정하면 멀쩡히 붙인 사람에게 오경보가 뜬다.
+  /// [timeout] 안에 안 서면 그때 판정을 돌려준다 — 영원히 기다리지 않는다.
   Future<AttachmentCheck> awaitAttachmentCheck({
     Duration timeout = const Duration(seconds: 12),
     Duration poll = const Duration(milliseconds: 200),
@@ -192,9 +168,8 @@ class SessionOrchestrator extends ChangeNotifier {
 
   /// 강도 한 단계를 실제로 걸어 보고 events/burst 를 잰다.
   ///
-  /// 자극을 켜고 몇 버스트를 흘려보낸 뒤 끈다. 강도 자체는 기기 다이얼로
-  /// 조절되므로(오므론 HV-F022-V), 여기서 하는 일은 "이 단계에서 신호가
-  /// 잡히는가"를 재는 것뿐이다.
+  /// 강도는 기기 다이얼로 조절되므로(오므론 HV-F022-V), 여기서 하는 일은
+  /// "이 단계에서 신호가 잡히는가"를 재는 것뿐이다.
   Future<double> measureIntensity(
     int level, {
     Duration window = const Duration(seconds: 6),
@@ -229,23 +204,15 @@ class SessionOrchestrator extends ChangeNotifier {
     await _finish(SessionEndReason.userStop);
   }
 
-  /// 워치독을 마지막으로 되감은 표본 시각.
   int? _lastWatchdogFeedMs;
 
   void _onSample((int, int) s) {
     final (t, adc) = s;
 
-    // 자극 데이터 워치독은 **모든 상태에서** 되감아야 한다.
-    //
-    // 전에는 버스트 처리(playing 전용)에서만 되감았다. 그러면 동기화
-    // 구간 30초를 버티지 못하고 한가운데서 자극이 꺼지는데, 아무도 다시
-    // 켜지 않으므로 그 뒤 세션 전체가 자극 없이 흘러간다. 화면은 멀쩡해
-    // 보여서 아무도 알아채지 못한다.
-    //
-    // 표본마다 부르면 초당 1000개의 타이머를 만들게 되므로 간격을 둔다.
-    if (_lastWatchdogFeedMs == null ||
-        t - _lastWatchdogFeedMs! >= kWatchdogFeedIntervalMs ||
-        t < _lastWatchdogFeedMs!) {
+    // 워치독은 **모든 상태에서** 되감아야 한다. playing 에서만 되감으면
+    // 동기화 30초를 못 버티고 자극이 꺼지는데 아무도 다시 켜지 않는다.
+    final last = _lastWatchdogFeedMs;
+    if (last == null || t - last >= kWatchdogFeedIntervalMs || t < last) {
       _lastWatchdogFeedMs = t;
       stim.noteDataReceived();
     }
@@ -276,16 +243,14 @@ class SessionOrchestrator extends ChangeNotifier {
       signal = SignalStatus.checkSensor;
     }
 
-    _pendingRows.add(
-      BurstRow(
-        sessionId: sessionId,
-        tS: r.tSeconds,
-        p2p: r.p2p,
-        fatigue: r.fatiguePct,
-        contractionOk: r.contractionOk,
-        valid: r.reliable,
-      ),
-    );
+    _pendingRows.add(BurstRow(
+      sessionId: sessionId,
+      tS: r.tSeconds,
+      p2p: r.p2p,
+      fatigue: r.fatiguePct,
+      contractionOk: r.contractionOk,
+      valid: r.reliable,
+    ));
 
     if (machine.state == SessionState.syncing) {
       machine.onSyncProgress(r.tSeconds);
@@ -402,10 +367,11 @@ class SessionOrchestrator extends ChangeNotifier {
       ? 0
       : _pendingRows.map((r) => r.fatigue).reduce((a, b) => a > b ? a : b);
 
+  /// 마지막 ¼ 구간의 평균 피로.
   double get _endFatigue {
     if (_pendingRows.isEmpty) return 0;
-    final q = (_pendingRows.length / 4).ceil();
-    final tail = _pendingRows.sublist(_pendingRows.length - q);
+    final tail = _pendingRows
+        .sublist(_pendingRows.length - (_pendingRows.length / 4).ceil());
     return tail.map((r) => r.fatigue).reduce((a, b) => a + b) / tail.length;
   }
 

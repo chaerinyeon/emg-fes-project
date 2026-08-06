@@ -1,19 +1,19 @@
 import 'dart:collection';
+import 'stats.dart';
 
 import 'constants.dart';
 
 /// [H] 적응형 레벨 구간 추적 + A_ref running-peak.
 ///
-/// 세션 중 접촉·자세 변화로 진폭 레벨이 계단식으로 바뀐다(실측 세션당 평균
-/// 4.1회). 이 계단을 피로로 세면 안 된다.
+/// 접촉·자세 변화로 진폭이 계단식으로 바뀐다(실측 세션당 평균 4.1회).
+/// 이 계단을 피로로 세면 안 된다.
 ///
-/// 시프트 판정은 **인접한 두 창의 중앙값 비교**로 한다.
-/// 구간 시작값을 고정 기준선으로 쓰면, 300버스트에 걸친 완만한 −40% 피로가
-/// 기준선에서 40% 벗어난 순간 "레벨 시프트"로 오인되고 A_ref 가 리셋되어
-/// 피로를 영영 못 잡는다. 인접 창 비교는 **급격함**을 보므로 계단만 잡는다.
+/// 시프트는 **인접한 두 창의 중앙값 비교**로 본다. 구간 시작값을 고정
+/// 기준선으로 쓰면 300버스트에 걸친 완만한 −40% 피로도 시프트로 오인되어
+/// A_ref 가 리셋되고 피로를 영영 못 잡는다. 인접 창은 급격함만 본다.
 ///
-/// A_ref 는 현재 구간의 running-peak 다. 상승 중(전위증강)에는 A_ref 가 현재값을
-/// 따라가므로 피로가 자동으로 0이 되고, 피크 이후 하락분만 피로로 계산된다.
+/// A_ref 는 구간의 running-peak 다. 상승 중(전위증강)엔 현재값을 따라가
+/// 피로가 0이 되고, 피크 이후 하락분만 피로가 된다.
 class LevelTracker {
   LevelTracker({
     this.window = kLevelShiftWindow,
@@ -75,8 +75,8 @@ class LevelTracker {
     if (_burstsInSegment <= window) return;
 
     final xs = _recent.toList(growable: false);
-    final prev = _median(xs.sublist(0, window));
-    final curr = _median(xs.sublist(window));
+    final prev = median(xs.sublist(0, window));
+    final curr = median(xs.sublist(window));
     if (prev.abs() < 1e-12) return;
 
     final rel = (curr - prev).abs() / prev.abs();
@@ -101,10 +101,4 @@ class LevelTracker {
     _aRef = fresh.reduce((a, b) => a > b ? a : b);
   }
 
-  static double _median(List<double> xs) {
-    final s = List<double>.of(xs)..sort();
-    final n = s.length;
-    if (n == 0) return 0.0;
-    return n.isOdd ? s[n ~/ 2] : (s[n ~/ 2 - 1] + s[n ~/ 2]) / 2.0;
-  }
 }

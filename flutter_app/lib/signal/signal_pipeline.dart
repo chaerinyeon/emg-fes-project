@@ -12,30 +12,15 @@ import 'stim_detector.dart';
 class BurstResult {
   final int index;
   final double tSeconds;
-
-  /// Hampel 적용 후 버스트 대표 진폭.
-  final double p2p;
-
-  /// Hampel 적용 전 원값 (진단·검증용).
-  final double p2pRaw;
-
-  /// 적응형 기준 피로도(%).
-  final double fatiguePct;
-
+  final double p2p; // Hampel 적용 후 버스트 대표 진폭
+  final double p2pRaw; // Hampel 적용 전 원값 (진단·검증용)
+  final double fatiguePct; // 적응형 기준
   final bool contractionOk;
   final int eventsInBurst;
-
-  /// 신뢰도 게이팅 통과 여부. false 면 [fatiguePct] 를 믿지 않는다.
-  final bool reliable;
-
+  final bool reliable; // false 면 [fatiguePct] 를 믿지 않는다
   final int levelSegmentIndex;
-
-  /// 위상 고정된 실제 자극 시점.
-  final int stimOnsetMs;
-
-  /// 현재 구간의 A_ref.
-  final double aRef;
-
+  final int stimOnsetMs; // 위상 고정된 실제 자극 시점
+  final double aRef; // 현재 구간의 A_ref
   final FatigueAdvice advice;
 
   const BurstResult({
@@ -60,12 +45,10 @@ class BurstResult {
       '${contractionOk ? 'OK' : 'MISS'}${reliable ? '' : ' UNRELIABLE'})';
 }
 
-/// [A]~[J] 전체를 잇는 파사드.
+/// [A]~[J] 전체를 잇는 파사드. 입력 1kHz ADC, 출력 버스트 단위 [BurstResult].
 ///
-/// 입력은 1kHz 원시 ADC 샘플, 출력은 버스트 단위 [BurstResult] 다.
-/// 오프라인 CSV 와 BLE 스트림이 **같은 경로**를 타야 회귀 테스트가 의미를 갖는다.
-///
-/// 처리 순서는 공통 컨텍스트 2.3 을 그대로 따른다.
+/// 오프라인 CSV 와 BLE 스트림이 **같은 경로**를 타야 회귀가 의미를 갖는다.
+/// 처리 순서는 공통 컨텍스트 2.3 그대로다.
 /// ```
 /// raw → [A] DC → [B] 자극검출·위상 → [C][D] 버스트·에폭영점
 ///     → [E][F] p2p·중앙값 → [G] Hampel → [H] 레벨·A_ref
@@ -117,9 +100,8 @@ class SignalPipeline {
 
   /// 샘플 1개를 넣는다. 버스트가 닫히면 결과를 반환한다.
   ///
-  /// 도입부 [kArtifactScaleWindowMs] 동안은 아티팩트 규모를 재느라 결과가
-  /// 나오지 않는다. 그 구간 샘플은 버려지지 않고, 임계가 확정된 뒤
-  /// 그대로 다시 흘려보낸다(replay). 세션 앞부분 버스트를 잃지 않는다.
+  /// 도입부 [kArtifactScaleWindowMs] 는 아티팩트 규모를 재느라 결과가 없다.
+  /// 그 구간 샘플은 임계 확정 뒤 그대로 replay 되어 버스트를 잃지 않는다.
   BurstResult? addSample(int tMs, int adc) {
     if (_detector == null) {
       _dc.add(adc);

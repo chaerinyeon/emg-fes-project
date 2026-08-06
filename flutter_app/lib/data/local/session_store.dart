@@ -15,10 +15,7 @@ enum SessionEventType {
       SessionEventType.values.firstWhere((e) => e.code == c);
 }
 
-/// `sessions` 한 행.
-///
-/// 웹의 목록·요약 화면 전부를 이 한 행이 커버해야 한다.
-/// [synced] 는 **로컬 전용**이라 업로드 payload 에 들어가지 않는다.
+/// `sessions` 한 행. 웹의 목록·요약 화면 전부를 이 한 행이 커버한다.
 class SessionSummary {
   final String id;
   final String patientId;
@@ -33,7 +30,7 @@ class SessionSummary {
   final int repCount;
   final double successRate;
 
-  /// 전부 **적응형 기준**이다. 전역 기준은 참고용이라 여기 넣지 않는다.
+  /// 전부 **적응형 기준**이다. 전역 기준은 참고용이라 넣지 않는다.
   final double maxFatigue;
   final double endFatigue;
   final double? onsetS;
@@ -47,9 +44,10 @@ class SessionSummary {
   final String appVersion;
   final String fwVersion;
 
-  final bool synced;
+  /// **로컬 전용.** 업로드 payload 에 들어가지 않는다.
+  bool synced;
 
-  const SessionSummary({
+  SessionSummary({
     required this.id,
     required this.patientId,
     required this.deviceId,
@@ -75,33 +73,6 @@ class SessionSummary {
     required this.fwVersion,
     this.synced = false,
   });
-
-  SessionSummary copyWith({bool? synced}) => SessionSummary(
-        id: id,
-        patientId: patientId,
-        deviceId: deviceId,
-        startedAt: startedAt,
-        endedAt: endedAt,
-        durationS: durationS,
-        gameId: gameId,
-        stageId: stageId,
-        intensityLevel: intensityLevel,
-        endReason: endReason,
-        repCount: repCount,
-        successRate: successRate,
-        maxFatigue: maxFatigue,
-        endFatigue: endFatigue,
-        onsetS: onsetS,
-        burstCount: burstCount,
-        detectRate: detectRate,
-        eventsPerBurstMedian: eventsPerBurstMedian,
-        levelChangeCount: levelChangeCount,
-        reliabilityGrade: reliabilityGrade,
-        stimPeriodMs: stimPeriodMs,
-        appVersion: appVersion,
-        fwVersion: fwVersion,
-        synced: synced ?? this.synced,
-      );
 
   /// 업로드 payload. [synced] 는 빠진다.
   Map<String, dynamic> toJson() => {
@@ -269,10 +240,8 @@ class LiveRow {
       };
 }
 
-/// 로컬 저장소.
-///
-/// **오프라인에서도 훈련은 끝까지 되어야 한다.** 업로드는 나중 문제이고,
-/// 기록은 언제나 로컬에 먼저 확정된다.
+/// 로컬 저장소. **오프라인에서도 훈련은 끝까지 되어야 한다** —
+/// 기록은 언제나 로컬에 먼저 확정되고 업로드는 나중 문제다.
 abstract class SessionStore {
   Future<void> saveSession(SessionSummary s);
   Future<SessionSummary?> session(String id);
@@ -311,10 +280,7 @@ class InMemorySessionStore implements SessionStore {
         ..sort((a, b) => a.startedAt.compareTo(b.startedAt));
 
   @override
-  Future<void> markSynced(String id) async {
-    final s = _sessions[id];
-    if (s != null) _sessions[id] = s.copyWith(synced: true);
-  }
+  Future<void> markSynced(String id) async => _sessions[id]?.synced = true;
 
   @override
   Future<void> appendBursts(List<BurstRow> rows) async {

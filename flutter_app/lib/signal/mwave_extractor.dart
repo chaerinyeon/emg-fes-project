@@ -1,5 +1,6 @@
 import 'burst_segmenter.dart';
 import 'constants.dart';
+import 'stats.dart';
 
 /// [E] 5~15ms 창 p2p + [F] 버스트당 중앙값 1개로 집계.
 ///
@@ -35,9 +36,6 @@ class MwaveExtractor {
   /// 대표값이 끌려가지 않게 하기 위해서다.
   static double? burstP2p(BurstEpoch b) {
     if (b.pulses.isEmpty) return null;
-    final xs = pulseP2ps(b);
-    final s = List<double>.of(xs)..sort();
-    final n = s.length;
-    return n.isOdd ? s[n ~/ 2] : (s[n ~/ 2 - 1] + s[n ~/ 2]) / 2.0;
+    return median(pulseP2ps(b));
   }
 }

@@ -1,4 +1,3 @@
-import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_app/ble/device_connection.dart';
@@ -7,35 +6,7 @@ import 'package:flutter_app/session/end_conditions.dart';
 import 'package:flutter_app/session/session_controller.dart';
 import 'package:flutter_app/signal/constants.dart';
 
-class FakeLink implements DeviceLink {
-  final _state = StreamController<LinkState>.broadcast();
-  final _packets = StreamController<List<int>>.broadcast();
-  LinkState _current = LinkState.connected;
-  final sent = <Map<String, dynamic>>[];
-
-  @override
-  LinkState get state => _current;
-  @override
-  Stream<LinkState> get stateStream => _state.stream;
-  @override
-  Stream<List<int>> get rawPackets => _packets.stream;
-  @override
-  Future<void> send(Map<String, dynamic> cmd) async => sent.add(cmd);
-  @override
-  Future<void> connect() async => drop(LinkState.connected);
-  @override
-  Future<void> disconnect() async => drop(LinkState.disconnected);
-
-  void drop(LinkState s) {
-    _current = s;
-    _state.add(s);
-  }
-
-  Future<void> dispose() async {
-    await _state.close();
-    await _packets.close();
-  }
-}
+import '../support/fake_link.dart';
 
 const _goodCheck = AttachmentCheck(
   emgElectrodeOk: true,

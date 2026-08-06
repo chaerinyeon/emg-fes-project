@@ -10,13 +10,9 @@ import 'fatigue_feed.dart';
 /// **다음 수축이 언제 올 것인가**(공을 미리 던지려면 필요하다). 그 이상은
 /// 넘기지 않는다.
 ///
-/// ## 피로 숫자는 넘기지 않는다
-///
-/// [sigmaNow] · [sigmaPredicted] 는 **아무것도 내지 않는다.** 게임의 존 색
-/// 연출이 피로에 묶이면 그것도 결국 피로 표시가 되고, "앱 어디에도 피로도
-/// 숫자가 노출되지 않는다"는 완료 기준이 연출로 새어 나간다. 피로는 수축
-/// 성공률이 떨어지면서 저절로 드러나야 한다 — 잡히는 공이 줄어드는 것으로.
-/// 임상 지표는 치료사 웹에만 있다.
+/// [sigmaNow] · [sigmaPredicted] 는 **아무것도 내지 않는다** — 존 색 연출까지
+/// 피로에 묶이면 그것도 결국 피로 표시다. 피로는 잡히는 공이 줄어드는 것으로
+/// 드러나야 한다. 임상 지표는 치료사 웹에만 있다.
 class SessionFatigueFeed implements FatigueFeed {
   SessionFatigueFeed({
     required Stream<CueEvent> cues,

@@ -1,53 +1,9 @@
-import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_app/ble/device_connection.dart';
 import 'package:flutter_app/ble/stim_controller.dart';
 
-/// 하드웨어 없이 안전 로직을 검증하기 위한 가짜 링크.
-class FakeLink implements DeviceLink {
-  final _state = StreamController<LinkState>.broadcast();
-  final _packets = StreamController<List<int>>.broadcast();
-
-  LinkState _current = LinkState.connected;
-  final sent = <Map<String, dynamic>>[];
-
-  /// true 면 send 가 예외를 던진다 (링크가 죽는 중).
-  bool failSend = false;
-
-  @override
-  LinkState get state => _current;
-
-  @override
-  Stream<LinkState> get stateStream => _state.stream;
-
-  @override
-  Stream<List<int>> get rawPackets => _packets.stream;
-
-  @override
-  Future<void> send(Map<String, dynamic> cmd) async {
-    if (failSend) throw StateError('link down');
-    sent.add(cmd);
-  }
-
-  @override
-  Future<void> connect() async => drop(LinkState.connected);
-
-  @override
-  Future<void> disconnect() async => drop(LinkState.disconnected);
-
-  void drop(LinkState s) {
-    _current = s;
-    _state.add(s);
-  }
-
-  void pushPacket(List<int> bytes) => _packets.add(bytes);
-
-  Future<void> dispose() async {
-    await _state.close();
-    await _packets.close();
-  }
-}
+import '../support/fake_link.dart';
 
 StimController _make(
   FakeLink link, {

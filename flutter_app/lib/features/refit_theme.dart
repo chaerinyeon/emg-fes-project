@@ -16,14 +16,8 @@ class RefitTheme {
   static const Color deep = Color(0xFF0E2E38);
   static const Color shallow = Color(0xFF15414E);
 
-  // 손 — 따뜻한 모래
-  static const Color hand = Color(0xFFE8C9A0);
-  static const Color handShade = Color(0xFFC9A278);
-  static const Color handGlow = Color(0xFFFFD9A0);
-
   // 강조 — 잔잔한 빛
   static const Color glow = Color(0xFF7FE3C4);
-  static const Color glowSoft = Color(0x337FE3C4);
 
   // 텍스트
   static const Color ink = Color(0xFFF2F6F5);
@@ -43,49 +37,32 @@ class RefitTheme {
   /// 주요 버튼 최소 높이. 스펙은 44pt 이지만 한 손·누운 자세를 고려해 키웠다.
   static const double touchMin = 64;
 
-  /// 화면 하단 ⅓ 안에 조작부를 둔다 (한 손 조작).
-  static const double controlZone = 1 / 3;
-
-  static TextStyle get display => const TextStyle(
-    fontSize: 44,
-    height: 1.15,
-    fontWeight: FontWeight.w300,
-    letterSpacing: -0.5,
-    color: ink,
-  );
-
-  static TextStyle get title => const TextStyle(
-    fontSize: 28,
-    height: 1.25,
-    fontWeight: FontWeight.w500,
-    color: ink,
-  );
-
-  static TextStyle get body => const TextStyle(
-    fontSize: 19,
-    height: 1.5,
-    fontWeight: FontWeight.w400,
-    color: inkSoft,
-  );
-
-  static TextStyle get label => const TextStyle(
-    fontSize: 15,
-    height: 1.3,
-    fontWeight: FontWeight.w500,
-    letterSpacing: 1.2,
-    color: inkFaint,
-  );
+  static const display = TextStyle(
+      fontSize: 44,
+      height: 1.15,
+      fontWeight: FontWeight.w300,
+      letterSpacing: -0.5,
+      color: ink);
+  static const title = TextStyle(
+      fontSize: 28, height: 1.25, fontWeight: FontWeight.w500, color: ink);
+  static const body = TextStyle(
+      fontSize: 19, height: 1.5, fontWeight: FontWeight.w400, color: inkSoft);
+  static const label = TextStyle(
+      fontSize: 15,
+      height: 1.3,
+      fontWeight: FontWeight.w500,
+      letterSpacing: 1.2,
+      color: inkFaint);
 
   /// 큰 숫자 — 반복 횟수처럼 **셀 수 있는 성취**에만 쓴다.
   /// 피로도 퍼센트에는 절대 쓰지 않는다.
-  static TextStyle get counter => const TextStyle(
-    fontSize: 72,
-    height: 1.0,
-    fontWeight: FontWeight.w200,
-    letterSpacing: -2,
-    color: ink,
-    fontFeatures: [FontFeature.tabularFigures()],
-  );
+  static const counter = TextStyle(
+      fontSize: 72,
+      height: 1.0,
+      fontWeight: FontWeight.w200,
+      letterSpacing: -2,
+      color: ink,
+      fontFeatures: [FontFeature.tabularFigures()]);
 
   static ThemeData get material => ThemeData(
     useMaterial3: true,
@@ -152,6 +129,10 @@ class RefitButton extends StatelessWidget {
   final bool filled;
   final Color? tone;
 
+  static final _shape =
+      RoundedRectangleBorder(borderRadius: BorderRadius.circular(18));
+  static const _text = TextStyle(fontSize: 20, fontWeight: FontWeight.w600);
+
   @override
   Widget build(BuildContext context) {
     final c = tone ?? RefitTheme.glow;
@@ -166,13 +147,8 @@ class RefitButton extends StatelessWidget {
                 foregroundColor: RefitTheme.abyss,
                 disabledBackgroundColor: const Color(0x1AF2F6F5),
                 disabledForegroundColor: RefitTheme.inkFaint,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(18),
-                ),
-                textStyle: const TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w600,
-                ),
+                shape: _shape,
+                textStyle: _text,
               ),
               child: Text(label),
             )
@@ -181,13 +157,8 @@ class RefitButton extends StatelessWidget {
               style: OutlinedButton.styleFrom(
                 foregroundColor: c,
                 side: BorderSide(color: c.withValues(alpha: 0.55), width: 1.5),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(18),
-                ),
-                textStyle: const TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w600,
-                ),
+                shape: _shape,
+                textStyle: _text,
               ),
               child: Text(label),
             ),

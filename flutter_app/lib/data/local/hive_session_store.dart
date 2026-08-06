@@ -63,7 +63,7 @@ class HiveSessionStore implements SessionStore {
   Future<void> markSynced(String id) async {
     final s = await session(id);
     if (s == null) return;
-    await _sessions.put(id, s.copyWith(synced: true).toLocalJson());
+    await _sessions.put(id, (s..synced = true).toLocalJson());
   }
 
   @override

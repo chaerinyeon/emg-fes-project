@@ -28,25 +28,13 @@ enum FatigueAdvice {
 
 /// 버스트 1회분의 피로·수축 판정 결과.
 class FatigueSample {
-  /// 적응형 기준 피로도(%). 0~100.
-  final double fatiguePct;
-
-  /// 이번 버스트에서 수축이 확인됐는가.
-  final bool contractionOk;
-
-  /// 워밍업(동기화) 구간인가.
-  final bool inWarmup;
-
-  /// 판정이 유효한가. A_ref 가 아직 없으면 false.
-  final bool valid;
-
-  /// 급등이 의심되는가.
+  final double fatiguePct; // 적응형 기준 피로도(%). 0~100.
+  final bool contractionOk; // 이번 버스트에서 수축이 확인됐는가.
+  final bool inWarmup; // 워밍업(동기화) 구간인가.
+  final bool valid; // A_ref 가 아직 없으면 false.
   final bool spikeSuspected;
-
   final FatigueAdvice advice;
-
-  /// 평활된 진폭 (진단용).
-  final double smoothedP2p;
+  final double smoothedP2p; // 평활된 진폭 (진단용).
 
   const FatigueSample({
     required this.fatiguePct,
@@ -66,17 +54,13 @@ class FatigueSample {
 /// contraction_ok = p2p_burst >= A_ref_현재구간 × K
 /// ```
 ///
-/// 지키는 것:
-/// - 진폭만 본다. **MDF·주파수 지표를 쓰지 않는다**(하드 제약 2). 무부하 FES
-///   에서 MDF 는 자극 하모닉(32/64/96Hz)과 혼동되어 무의미하다.
-/// - **RMS 상승을 피로로 보지 않는다**(하드 제약 3). FES 유발 반응의 피로는
-///   진폭 **감소**다. 방향이 반대다.
-/// - 고정 baseline SPC 를 쓰지 않는다(하드 제약 4). A_ref 는 [LevelTracker] 의
-///   구간별 running-peak 로 바깥에서 주입된다.
-/// - 급등은 피로로 처리하지 않고 센서 점검으로 분기한다(하드 제약 5).
+/// 지키는 것 — 진폭만 본다(하드 제약 2: MDF 금지, 무부하 FES 에서는 자극
+/// 하모닉과 구분되지 않는다 / 3: RMS 상승은 피로가 아니다, FES 피로는 진폭
+/// **감소** / 4: 고정 baseline 금지, A_ref 는 [LevelTracker] 가 주입 /
+/// 5: 급등은 센서 점검으로 분기).
 ///
-/// 피로도는 EMA(평활)로, 수축 판정은 **이번 버스트 원값**으로 낸다.
-/// 게임 피드백이 stimOnset+15ms 에 나가야 하므로 평활값을 기다릴 수 없다.
+/// 피로도는 EMA, 수축 판정은 **이번 버스트 원값**이다 — 게임 피드백이
+/// stimOnset+15ms 에 나가야 해서 평활값을 기다릴 수 없다.
 class FatigueEngine {
   FatigueEngine({
     this.alpha = kFatigueEmaAlpha,
@@ -106,12 +90,9 @@ class FatigueEngine {
 
     _ema = _ema == null ? p2p : alpha * p2p + (1 - alpha) * _ema!;
 
-    // post-peak only — 피크 이후만 피로로 카운트한다.
-    //
-    // A_ref 는 running-peak 이므로 `p2p >= aRef` 는 "이번 버스트가 곧 피크"라는
-    // 뜻이다. 아직 새 피크를 만들고 있는 근육은 피로한 게 아니다(전위증강).
-    // 이때 EMA 를 피크까지 끌어올리지 않으면, 평활 지연만큼 없는 피로가
-    // 잡힌다. 결과적으로 상승엔 빠르게, 하강엔 느리게 반응한다.
+    // post-peak only. A_ref 는 running-peak 이라 `p2p >= aRef` 는 "이번이 곧
+    // 피크"라는 뜻이고, 새 피크를 만드는 근육은 피로한 게 아니다(전위증강).
+    // 끌어올리지 않으면 평활 지연만큼 없는 피로가 잡힌다.
     final atPeak = hasRef && p2p >= aRef;
     if (atPeak && p2p > _ema!) _ema = p2p;
 

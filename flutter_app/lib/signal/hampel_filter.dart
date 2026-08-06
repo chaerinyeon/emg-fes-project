@@ -1,4 +1,5 @@
 import 'dart:collection';
+import 'stats.dart';
 
 import 'constants.dart';
 
@@ -31,20 +32,14 @@ class HampelFilter {
       final lo = i - h < 0 ? 0 : i - h;
       final hi = i + h + 1 > n ? n : i + h + 1;
       final win = x.sublist(lo, hi);
-      final med = _median(win);
+      final med = median(win);
       final dev = win.map((v) => (v - med).abs()).toList(growable: false);
-      final mad = _median(dev) + 1e-9;
+      final mad = median(dev) + 1e-9;
       if ((x[i] - med).abs() > sigma * kMadToSigma * mad) out[i] = med;
     }
     return out;
   }
 
-  static double _median(List<double> xs) {
-    final s = List<double>.of(xs)..sort();
-    final n = s.length;
-    if (n == 0) return 0.0;
-    return n.isOdd ? s[n ~/ 2] : (s[n ~/ 2 - 1] + s[n ~/ 2]) / 2.0;
-  }
 }
 
 /// 인과 Hampel — 실시간 경로용.
@@ -71,9 +66,9 @@ class OnlineHampel {
     if (_win.length < _minForJudgement) return v;
 
     final win = _win.toList(growable: false);
-    final med = HampelFilter._median(win);
+    final med = median(win);
     final dev = win.map((w) => (w - med).abs()).toList(growable: false);
-    final mad = HampelFilter._median(dev) + 1e-9;
+    final mad = median(dev) + 1e-9;
 
     if ((v - med).abs() > sigma * kMadToSigma * mad) {
       // 글리치로 판정 — 대표값은 중앙값으로 바꾸되, 창에는 원값을 남겨

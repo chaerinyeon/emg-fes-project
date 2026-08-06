@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'stats.dart';
 
 import 'constants.dart';
 
@@ -57,7 +58,7 @@ class DcCalibrator {
 
   void _finalize() {
     final n = _window.length;
-    final med = _median(_window);
+    final med = median(_window);
 
     var peak = 0.0;
     final dev = List<double>.filled(n, 0.0);
@@ -67,7 +68,7 @@ class DcCalibrator {
       if (d > peak) peak = d;
     }
 
-    final mad = _median(dev);
+    final mad = median(dev);
     _noiseSigma = mad * kMadToSigma;
 
     final quietLimit = math.max(
@@ -79,11 +80,4 @@ class DcCalibrator {
     _offset = med;
   }
 
-  static double _median(List<double> xs) {
-    final s = List<double>.of(xs)..sort();
-    final n = s.length;
-    if (n == 0) return 0.0;
-    if (n.isOdd) return s[n ~/ 2];
-    return (s[n ~/ 2 - 1] + s[n ~/ 2]) / 2.0;
-  }
 }

@@ -30,13 +30,12 @@ enum SessionEndReason {
 ///   2. 수축 성공률 하락 (백업)
 ///   3. 세션 시간 상한 (백업)
 ///
-/// **2·3번 백업은 반드시 살아 있어야 한다.** 적응형 기준은 보수적이라
-/// 실측 58세션 중 47세션에서만 임계가 걸렸다. 백업이 없으면 5~6세션에
-/// 하나꼴로 종료가 안 걸린다. [kFatigueThresholdPct] 가 아직 null 이라
-/// 지금은 사실상 백업만으로 돈다.
+/// **2·3번 백업은 반드시 살아 있어야 한다** — 적응형 기준은 보수적이라
+/// 실측 58세션 중 47세션에서만 걸렸다. [kFatigueThresholdPct] 가 아직
+/// null 이라 지금은 사실상 백업만으로 돈다.
 ///
-/// 외부 사건(중단 버튼·기기 끊김 등)은 자동 조건을 **이긴다**. 그것이
-/// 실제로 멈춘 이유이기 때문이다.
+/// 외부 사건(중단 버튼·기기 끊김)은 자동 조건을 **이긴다** — 그것이 실제로
+/// 멈춘 이유다.
 class EndConditionEvaluator {
   EndConditionEvaluator({
     this.fatigueThresholdPct = kFatigueThresholdPct,

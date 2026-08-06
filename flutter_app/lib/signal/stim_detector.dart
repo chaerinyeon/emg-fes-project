@@ -1,20 +1,15 @@
 import 'dart:math' as math;
 
 import 'constants.dart';
+import 'stats.dart';
 
 /// 검출된 자극 펄스 1발.
 class StimEvent {
-  /// 자극 시점 (그룹의 argmax). 이 값이 M-wave 창의 onset = 0ms 다.
+  /// 자극 시점(그룹의 argmax). 이 값이 M-wave 창의 onset = 0ms 다.
   final int tMs;
-
-  /// 정점의 |신호 − DC| 값.
-  final double peakAbs;
-
-  /// 이 펄스가 새 버스트의 첫 발인가.
+  final double peakAbs; // 정점의 |신호 − DC|
   final bool isBurstStart;
-
-  /// 0부터 시작하는 버스트 번호.
-  final int burstIndex;
+  final int burstIndex; // 0부터
 
   const StimEvent({
     required this.tMs,
@@ -138,12 +133,9 @@ class StimDetector {
 
   /// 샘플 1개를 넣는다. 이번 샘플로 **확정된** 펄스가 있으면 반환한다.
   ///
-  /// 그룹은 **그룹 시작으로부터** [kPulseRefractoryMs] 가 지나야 닫히므로,
-  /// 이벤트는 그만큼 지연되어 나온다.
-  ///
-  /// 불응기를 "마지막 임계 초과 샘플" 기준으로 재면 M-wave(5~15ms)가 다음
-  /// 펄스(31ms)까지 사슬처럼 이어져 두 펄스가 하나로 병합된다. 불응기는
-  /// 검출된 펄스 자신으로부터 재야 한다.
+  /// 그룹은 **그룹 시작으로부터** [kPulseRefractoryMs] 가 지나야 닫힌다.
+  /// "마지막 임계 초과 샘플" 기준으로 재면 M-wave(5~15ms)가 다음 펄스(31ms)
+  /// 까지 사슬처럼 이어져 두 펄스가 하나로 병합된다.
   StimEvent? add(int tMs, int adc) {
     final dev = (adc - dcOffset).abs();
 
@@ -200,9 +192,9 @@ class StimDetector {
 
   /// 버스트 간격의 중앙값으로 주기를 추정한다.
   ///
-  /// 공통 컨텍스트는 자기상관을 명시하지만, 이미 확정된 onset 열에 대해서는
-  /// 중앙값이 같은 값을 O(n log n) 에 주고 버스트 누락에도 더 강하다.
-  /// (자기상관 버전은 [estimatePeriodByAutocorrelation] 으로 따로 둔다.)
+  /// 공통 컨텍스트는 자기상관을 명시하지만, 확정된 onset 열에서는 중앙값이
+  /// 같은 값을 더 싸게 주고 누락에도 강하다([estimatePeriodByAutocorrelation]
+  /// 은 검증용으로 남겨 둔다).
   void _updatePeriod() {
     if (_burstOnsets.length < 4) return;
     final valid = <double>[];
@@ -211,11 +203,7 @@ class StimDetector {
       if (d >= kPeriodSearchMinMs && d <= kPeriodSearchMaxMs) valid.add(d);
     }
     if (valid.length < 3) return;
-    valid.sort();
-    final n = valid.length;
-    _periodMs = n.isOdd
-        ? valid[n ~/ 2]
-        : (valid[n ~/ 2 - 1] + valid[n ~/ 2]) / 2.0;
+    _periodMs = median(valid);
   }
 
   int _predictOnsetFor(int burstIndex) {

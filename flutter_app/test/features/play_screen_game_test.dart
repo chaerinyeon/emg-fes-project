@@ -6,7 +6,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_app/features/play/play_screen.dart';
 import 'package:flutter_app/features/refit_theme.dart';
 
-import 'ui_constraints_test.dart' show FakeLink, playingOrchestrator, settle;
+import '../support/fake_link.dart';
+import 'ui_constraints_test.dart' show playingOrchestrator, settle;
 
 void main() {
   late FakeLink link;

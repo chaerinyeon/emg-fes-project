@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:flutter_app/ble/device_connection.dart';
 import 'package:flutter_app/ble/stim_controller.dart';
 import 'package:flutter_app/data/local/session_store.dart';
 import 'package:flutter_app/features/intensity_wizard/intensity_wizard_screen.dart';
@@ -16,29 +15,7 @@ import 'package:flutter_app/session/session_controller.dart';
 import 'package:flutter_app/signal/constants.dart';
 import 'package:flutter_app/signal/fatigue_engine.dart' show HandState;
 
-class FakeLink implements DeviceLink {
-  final _state = StreamController<LinkState>.broadcast();
-  final _packets = StreamController<List<int>>.broadcast();
-  final sent = <Map<String, dynamic>>[];
-
-  @override
-  LinkState get state => LinkState.connected;
-  @override
-  Stream<LinkState> get stateStream => _state.stream;
-  @override
-  Stream<List<int>> get rawPackets => _packets.stream;
-  @override
-  Future<void> send(Map<String, dynamic> c) async => sent.add(c);
-  @override
-  Future<void> connect() async {}
-  @override
-  Future<void> disconnect() async {}
-
-  Future<void> dispose() async {
-    await _state.close();
-    await _packets.close();
-  }
-}
+import '../support/fake_link.dart';
 
 /// 타이머를 켜지 않고 playing 상태까지 데려간다 (위젯 테스트용).
 Future<SessionOrchestrator> playingOrchestrator(FakeLink link) async {
