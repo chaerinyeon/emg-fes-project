@@ -539,6 +539,7 @@ class _HomePageState extends State<HomePage> {
       // rms/mdf 는 1Hz "full" 메시지에만 들어옴 — 관리도 표본 학습에 사용.
       final hasRms = msg['rms'] != null;
       final hasMdf = msg['mdf'] != null;
+      final isFullTick = msg['hc'] != null;
       final result = _engine.update(
         rmsSlope: _st.rmsSlope,
         mdfSlope: _st.mdfSlope,
@@ -546,6 +547,8 @@ class _HomePageState extends State<HomePage> {
         rms: hasRms ? (msg['rms'] as num).toDouble() : null,
         mdf: hasMdf ? (msg['mdf'] as num).toDouble() : null,
         isStimulating: _st.isStimulating,
+        isFullTick: isFullTick,
+        sessionElapsedSeconds: t,
         mwAmp: hasMw ? (msg['mwa'] as num).toDouble() : null,
         mwArea: hasMw ? (msg['mwc'] as num).toDouble() : null,
         mwLatency: hasMw ? (msg['mwl'] as num).toDouble() : null,
@@ -812,7 +815,7 @@ class _HomePageState extends State<HomePage> {
     _st.mwAmpDeclinePct = null;
     _st.mwAreaDeclinePct = null;
     _st.mwLatencyDeltaMs = null;
-    _send({'cmd': 'start'});
+    _send({'cmd': 'start', 'category': cat.code});
 
     // 세션 시작 직후 '무부하 15초' 안내 팝업.
     // FES 자극기는 수동으로 켜서 매 세션 자극 시작 시점이 다르고 하드웨어로는 알 수 없다.

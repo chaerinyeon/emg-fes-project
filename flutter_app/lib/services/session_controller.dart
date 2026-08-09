@@ -243,7 +243,7 @@ class SessionController extends ChangeNotifier {
     st.engineFatigueDetected = false;
     st.engineConsecutive = 0;
     st.engineReasons = const [];
-    send({'cmd': 'start'});
+    send({'cmd': 'start', 'category': cat.code});
   }
 
   void stopSession() => send({'cmd': 'stop'});
@@ -345,6 +345,7 @@ class SessionController extends ChangeNotifier {
         mdf: msg['mdf'] != null ? (msg['mdf'] as num).toDouble() : null,
         isStimulating: st.isStimulating,
         isFullTick: isFullTick,
+        sessionElapsedSeconds: t,
         mwAmp: hasMw ? (msg['mwa'] as num).toDouble() : null,
         mwArea: hasMw ? (msg['mwc'] as num).toDouble() : null,
         mwLatency: hasMw ? (msg['mwl'] as num).toDouble() : null,

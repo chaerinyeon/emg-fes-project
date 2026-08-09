@@ -24,9 +24,9 @@ class FatigueResult {
 ///
 /// 통일 판정 규칙 (모든 환자 분류 동일):
 ///   피로 = (RMS > UCL  AND  MDF < LCL)
-///          OR
-///          (M-wave 진폭 < LCL  AND  면적 < LCL  AND  잠복기 > UCL)
+///          OR (M-wave 진폭 < LCL  AND  면적 < LCL)
 /// — 각 그룹 내부는 AND, 두 그룹 사이는 OR.
+/// 완전마비 환자는 RMS/MDF 그룹을 비활성화하고 M-wave만 사용한다.
 ///
 /// 5x 연속 카운터로 노이즈 방지. 펌웨어의 fd 필드와 독립적으로 동작.
 class FatigueEngine {
@@ -47,7 +47,6 @@ class FatigueEngine {
   // 가장 최근 M-wave 측정값 (CC 비교용으로 보관)
   double? _lastMwAmp;
   double? _lastMwArea;
-  double? _lastMwLat;
 
   int mwSeen = 0;
   // UI 표시 호환용 — baseline mean 대비 percent decline / latency delta
@@ -69,15 +68,21 @@ class FatigueEngine {
     this.mdfThreshold = -3.0,
     this.consecutiveTrigger = 5,
     double sigmaMultiplier = 2.0,
-  })  : rmsChart = ControlChart(sigmaMultiplier: sigmaMultiplier),
-        mdfChart = ControlChart(sigmaMultiplier: sigmaMultiplier),
-        // M-wave 는 burst 당 1점이라 sample 도착이 느림 → baseline 6점
-        mwAmpChart = ControlChart(
-            baselineSamples: 6, sigmaMultiplier: sigmaMultiplier),
-        mwAreaChart = ControlChart(
-            baselineSamples: 6, sigmaMultiplier: sigmaMultiplier),
-        mwLatChart = ControlChart(
-            baselineSamples: 6, sigmaMultiplier: sigmaMultiplier);
+  }) : rmsChart = ControlChart(sigmaMultiplier: sigmaMultiplier),
+       mdfChart = ControlChart(sigmaMultiplier: sigmaMultiplier),
+       // M-wave 는 burst 당 1점이라 sample 도착이 느림 → baseline 6점
+       mwAmpChart = ControlChart(
+         baselineSamples: 6,
+         sigmaMultiplier: sigmaMultiplier,
+       ),
+       mwAreaChart = ControlChart(
+         baselineSamples: 6,
+         sigmaMultiplier: sigmaMultiplier,
+       ),
+       mwLatChart = ControlChart(
+         baselineSamples: 6,
+         sigmaMultiplier: sigmaMultiplier,
+       );
 
   void resetSession() {
     mwSeen = 0;
@@ -86,7 +91,6 @@ class FatigueEngine {
     lastLatencyDeltaMs = null;
     _lastMwAmp = null;
     _lastMwArea = null;
-    _lastMwLat = null;
     rmsChart.reset();
     mdfChart.reset();
     mwAmpChart.reset();
@@ -96,15 +100,14 @@ class FatigueEngine {
     _latched = false;
   }
 
-  void _ingestMw(double amp, double area, double lat) {
+  void _ingestMw(double amp, double area, double? lat) {
     mwSeen++;
     _lastMwAmp = amp;
     _lastMwArea = area;
-    _lastMwLat = lat;
     // 관리도 학습 — 6점 모이면 mean·stddev 확정
     mwAmpChart.ingest(amp);
     mwAreaChart.ingest(area);
-    mwLatChart.ingest(lat);
+    if (lat != null) mwLatChart.ingest(lat);
     // UI 호환용 baseline mean 대비 percent
     final aBase = mwAmpChart.mean;
     if (aBase != null && aBase > 0) {
@@ -115,30 +118,25 @@ class FatigueEngine {
       lastAreaDeclinePct = 100.0 * (areaBase - area) / areaBase;
     }
     final lBase = mwLatChart.mean;
-    if (lBase != null) {
+    if (lBase != null && lat != null) {
       lastLatencyDeltaMs = lat - lBase;
     }
   }
 
-  /// M-wave 관리도 위반 판정 (그룹 내부 AND):
-  ///   진폭 < LCL  AND  면적 < LCL  AND  잠복기 > UCL  (셋 다 위반해야 성립)
+  /// M-wave 관리도 위반 판정: 진폭 < LCL AND 면적 < LCL.
+  /// 1kHz latency는 1ms 양자화와 artifact 경계에 민감해 판정에서 제외한다.
   bool _mwFatigue(List<String> reasons) {
-    if (!mwAmpChart.isEstablished ||
-        !mwAreaChart.isEstablished ||
-        !mwLatChart.isEstablished) {
+    if (!mwAmpChart.isEstablished || !mwAreaChart.isEstablished) {
       return false;
     }
     final amp = _lastMwAmp;
     final area = _lastMwArea;
-    final lat = _lastMwLat;
     final ampBelow = amp != null && mwAmpChart.belowLower(amp);
     final areaBelow = area != null && mwAreaChart.belowLower(area);
-    final latAbove = lat != null && mwLatChart.exceedsUpper(lat);
-    final triggered = ampBelow && areaBelow && latAbove;
+    final triggered = ampBelow && areaBelow;
     if (triggered) {
       reasons.add('M-wave 진폭 < LCL');
       reasons.add('M-wave 면적 < LCL');
-      reasons.add('M-wave 잠복기 > UCL');
     }
     return triggered;
   }
@@ -157,6 +155,7 @@ class FatigueEngine {
     double? mdf,
     bool isStimulating = false,
     bool isFullTick = false,
+    double sessionElapsedSeconds = 0,
     double? mwAmp,
     double? mwArea,
     double? mwLatency,
@@ -164,14 +163,18 @@ class FatigueEngine {
   }) {
     // 신뢰도(mwValid) 통과한 검출만 SPC baseline·판정에 반영.
     // 무효 검출(노이즈·창끝값)로 즉시 FES 차단이 오작동하는 것을 막는다.
-    if (mwValid && mwAmp != null && mwArea != null && mwLatency != null) {
+    final baselineWindowOpen = sessionElapsedSeconds >= 30.0;
+    if (baselineWindowOpen && mwValid && mwAmp != null && mwArea != null) {
       _ingestMw(mwAmp, mwArea, mwLatency);
     }
 
     // ---- 관리도 — 자극 중 RMS/MDF 값(절대값) 표본 학습 ----
     // (slope SPC 는 baseline 이 거의 0 이라 band 가 너무 좁게 학습됨 → 사용 안 함)
     // rms/mdf 가 10Hz 로 와도 학습은 1Hz(full tick)에서만 → 8표본=8초 가정 유지.
-    if (isStimulating && isFullTick) {
+    if (category != SubjectCategory.complete &&
+        baselineWindowOpen &&
+        isStimulating &&
+        isFullTick) {
       if (rms != null) rmsChart.ingest(rms);
       if (mdf != null) mdfChart.ingest(mdf);
     }
@@ -193,16 +196,24 @@ class FatigueEngine {
 
     // 관리도 기반 RMS/MDF 이상 판정 (개인화 임계치)
     // — 자극 중에만, 현재 값을 학습된 UCL/LCL 과 비교.
-    final rmsHigh = rmsChart.isEstablished &&
-        isStimulating && rms != null && rmsChart.exceedsUpper(rms);
-    final mdfLow = mdfChart.isEstablished &&
-        isStimulating && mdf != null && mdfChart.belowLower(mdf);
+    final rmsHigh =
+        category != SubjectCategory.complete &&
+        rmsChart.isEstablished &&
+        isStimulating &&
+        rms != null &&
+        rmsChart.exceedsUpper(rms);
+    final mdfLow =
+        category != SubjectCategory.complete &&
+        mdfChart.isEstablished &&
+        isStimulating &&
+        mdf != null &&
+        mdfChart.belowLower(mdf);
 
     // ---- 통일 판정 규칙 (모든 환자 분류 동일) ----
-    //   (RMS>UCL AND MDF<LCL)  OR  (진폭<LCL AND 면적<LCL AND 잠복기>UCL)
+    //   (RMS>UCL AND MDF<LCL) OR (진폭<LCL AND 면적<LCL)
     //   두 그룹 각각은 내부 AND, 두 그룹 사이는 OR.
     final rmsMdfGroup = rmsHigh && mdfLow;
-    final mwGroup = _mwFatigue(reasons);     // 성립 시 reasons 에 M-wave 항목 추가
+    final mwGroup = _mwFatigue(reasons); // 성립 시 reasons 에 M-wave 항목 추가
     if (rmsMdfGroup) {
       reasons.add('RMS > UCL');
       reasons.add('MDF < LCL');

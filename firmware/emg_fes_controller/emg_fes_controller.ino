@@ -62,10 +62,16 @@ const int HISTORY_SIZE = 60;               // 60초 분량 RMS/MDF 히스토리
 float RMS_THRESHOLD = 20.0;                // RMS slope +20% 이상
 float MDF_THRESHOLD = -3.0;                // MDF slope -3% 이하 (노이즈 감안 완화)
 const int CONSECUTIVE_TRIGGER = 5;
-const int DC_OFFSET = 1862;                // 실측 휴식 mean (DIAG 로그 기준)
+const int DC_OFFSET_FALLBACK = 1862;       // 동적 캘리브레이션 전 안전 기본값
+const int DC_CALIBRATION_MS = 3000;        // 세션 시작 직후 무자극 휴식 평균
+volatile int dcOffset = DC_OFFSET_FALLBACK;
+volatile int64_t dcCalibrationSum = 0;
+volatile uint32_t dcCalibrationCount = 0;
+volatile bool dcCalibrating = false;
 
 // 베이스라인
 const int BASELINE_SAMPLES = 10;
+const unsigned long BASELINE_DELAY_MS = 30000;  // 준비운동 구간 제외
 const float MUSCLE_LOW_RATIO  = 0.7;
 const float MUSCLE_HIGH_RATIO = 1.5;
 
@@ -79,8 +85,8 @@ const unsigned long DATA_THROTTLE_MS = 100;     // 데이터 송신 최소 간�
 const int MW_ARTIFACT_THRESHOLD = 1000;
 // 창 시작 = artifact 제외용 dead-zone.
 // 5ms 였을 때의 치명적 문제: 이 셋업의 M-wave 양의 정점은 3ms 에 있는데 창이 5ms 부터라
-// argmax 가 항상 창 첫 표본(=5)에 붙었다(실측 99.9%/96.3%). latency=5 가 되어 아래
-// MW_LAT_MIN_MS=6 게이트에 전량 탈락 → MW_Valid ≈ 0%(042118 은 5,363행 중 1행).
+// argmax 가 항상 창 첫 표본(=5)에 붙었다(실측 99.9%/96.3%). 과거 latency>=6 게이트에서
+// 전량 탈락 → MW_Valid ≈ 0%(042118 은 5,363행 중 1행).
 // 진폭 게이트는 100% 통과했으므로 오직 이 모순 때문에 M-wave 가 통째로 버려지고 있었다.
 //
 // 2ms 로 여는 근거: 자극 스파이크는 0~1ms 의 용량성 성분이고, 2~4ms 는 이미 M-wave 다.
@@ -91,25 +97,18 @@ const int MW_WINDOW_START_MS = 2;             // 자극 후 ms (0~1ms 스파이�
 // 창 끝은 '다음 자극이 오기 전'이어야 한다. 실측 자극 간격은 최소 30ms(ISI 분포 30/31/32ms,
 // 평균 31.185ms = 32.078Hz)이므로 30이면 ISI=30ms인 자극(실측 9%)의 마지막 표본이 '다음 자극
 // 스파이크'가 되어 M-wave 를 오염시킨다. 28 이면 항상 다음 자극 앞에서 닫힌다.
-// (M-wave 는 5~15ms 라 28 로 줄여도 손실 없음. MW_LAT_MAX_MS=24 도 그대로 수용)
+// (M-wave 는 5~15ms 라 28 로 줄여도 손실 없음)
 const int MW_WINDOW_END_MS = 28;              // 자극 후 ms
 const int MW_WINDOW_LEN = (MW_WINDOW_END_MS - MW_WINDOW_START_MS) + 1;  // 24 샘플 (1kHz)
 // 불응기는 자극 주기(실측 31.185ms)보다 반드시 작아야 한다.
 // 40ms 였을 때: 40 > 31 이라 자극 하나 걸러 하나만 검출 → 실측 검출률 50.0%(042118),
 // blanking 도 그 절반에만 걸려 놓친 스파이크가 RMS 전력의 76% 를 차지했다.
-// 25ms 면 ISI 최소값 30ms 보다 작아 모든 자극을 잡는다.
-const unsigned long MW_REFRACTORY_MS = 25;    // < 자극주기 31.185ms (실측)
+// 27ms 면 artifact 폭(~18ms)보다 길고 ISI 최소값 30ms 보다 짧아 모든 자극을 잡는다.
+const unsigned long MW_REFRACTORY_MS = 27;    // < 자극주기 31.185ms (실측)
 
 // M-wave 검출 유효성(신뢰도) 판정 파라미터.
-// 목적: 검출 실패(노이즈 피크·창끝값)를 '유효'로 오인해 데이터셋 정답과 SPC baseline을
-//       오염시키는 것을 막는다. 유효하지 않아도 원값은 CSV에 남기되 mwv 플래그로 구분.
+// latency는 진단값으로만 남기고 유효성·피로 판정에는 사용하지 않는다.
 const float MW_AMP_MIN = 80.0f;      // peak-to-peak 이보다 작으면 유발반응 아님(노이즈)
-// 잠복 하한은 '창 시작에 붙은 = 정점을 못 찾은' 검출을 걸러내는 게 목적이다.
-// 창이 2ms 부터이므로 하한은 3 — 창 첫 표본(2ms)에 붙은 것만 버리고 진짜 정점은 통과시킨다.
-// 실측(창 2~28ms): 정점이 3ms 75% / 4ms 17% 에 찍히고 창 시작(2ms)에 붙는 건 7.7% 뿐.
-// (6 이었을 때는 창 시작이 5ms 라 정점이 전부 5 로 찍혀 5<6 으로 전량 탈락했다)
-const int   MW_LAT_MIN_MS = 3;       // 창 시작(2ms) 직후 = 정점 못 찾은 검출 배제
-const int   MW_LAT_MAX_MS = 24;      // 이보다 늦으면(특히 28=창 끝) 피크 못 찾은 검출 실패
 
 // ===== 적응형 자극 트리거 임계값 =====
 // 고정 임계(MW_ARTIFACT_THRESHOLD)는 자극 스파이크가 작아지면(전극·세기 변화) 검출을
@@ -209,6 +208,8 @@ int historyCount = 0;
 // ===== 시스템 상태 =====
 bool systemRunning = false;
 bool isStimulating = false;
+bool completeParalysisProtocol = false;
+unsigned long sessionStartedAtMs = 0;
 int consecutiveCount = 0;
 unsigned long stimStartTime = 0;
 unsigned long lastNotifyMs = 0;
@@ -278,6 +279,8 @@ bool  currentFatigueDetected = false;
 
 float baselineRMS = 0;
 bool  baselineReady = false;
+float baselineRmsSum = 0;
+int baselineRmsSampleCount = 0;
 float rmsRatio = 1.0;
 String muscleState = "idle";
 String sessionMarker = "";
@@ -357,7 +360,16 @@ void samplingTask(void* /*param*/) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
     int raw = analogRead(PIN_EMG_RAW);
-    int centered = raw - DC_OFFSET;
+    if (dcCalibrating) {
+      dcCalibrationSum += raw;
+      dcCalibrationCount++;
+      if (dcCalibrationCount >= (uint32_t)(DC_CALIBRATION_MS * SAMPLE_RATE / 1000)) {
+        dcOffset = (int)((dcCalibrationSum + dcCalibrationCount / 2) /
+                         dcCalibrationCount);
+        dcCalibrating = false;
+      }
+    }
+    int centered = raw - dcOffset;
     int absVal = centered < 0 ? -centered : centered;
     unsigned long nowMs = millis();
 
@@ -687,22 +699,25 @@ void loop() {
           currentMDFSlope = calculateSlopePercent(mdfHistory, historyCount, true);
         }
 
-        // ---- 관리도 baseline 학습 (세션 동작 중 RMS/MDF 표본, 8개면 확정) ----
-        if (systemRunning) {
+        const bool baselineWindowOpen = systemRunning &&
+            (millis() - sessionStartedAtMs >= BASELINE_DELAY_MS);
+
+        // ---- 관리도 baseline 학습 (준비운동 30초 이후 표본만) ----
+        if (baselineWindowOpen && !completeParalysisProtocol) {
           ccIngest(rmsChart, currentRMS);
           ccIngest(mdfChart, currentMDF);
         }
 
-        // ---- 통일 판정 규칙 (앱 FatigueEngine 과 동일) ----
-        bool rmsHigh = systemRunning && ccAbove(rmsChart, currentRMS);
-        bool mdfLow  = systemRunning && ccBelow(mdfChart, currentMDF);
+        // 완전마비 프로토콜에서는 유발파형에 오염되는 RMS/MDF를 판정에 쓰지 않는다.
+        bool rmsHigh = systemRunning && !completeParalysisProtocol &&
+                       ccAbove(rmsChart, currentRMS);
+        bool mdfLow  = systemRunning && !completeParalysisProtocol &&
+                       ccBelow(mdfChart, currentMDF);
         bool rmsMdfGroup = rmsHigh && mdfLow;
         bool mwGroup = currentMwValid &&
                        mwAmpChart.established && mwAreaChart.established &&
-                       mwLatChart.established &&
                        ccBelow(mwAmpChart, currentMwAmp) &&
-                       ccBelow(mwAreaChart, currentMwArea) &&
-                       ccAbove(mwLatChart, currentMwLatency);
+                       ccBelow(mwAreaChart, currentMwArea);
         bool fatigueCondition = rmsMdfGroup || mwGroup;
 
         if (systemRunning && fatigueCondition) {
@@ -738,13 +753,16 @@ void loop() {
           currentFatigueDetected = false;
         }
 
-        // 베이스라인 수집
-        if (systemRunning && !baselineReady && historyCount >= BASELINE_SAMPLES) {
-          float sum = 0;
-          for (int i = 0; i < BASELINE_SAMPLES; i++) sum += rmsHistory[i];
-          baselineRMS = sum / BASELINE_SAMPLES;
-          baselineReady = true;
-          Serial.printf("✅ Baseline RMS: %.1f (%ds 평균)\n", baselineRMS, BASELINE_SAMPLES);
+        // 근활성 상태 표시용 RMS baseline도 30초 이후 새 표본만 수집한다.
+        if (baselineWindowOpen && !baselineReady) {
+          baselineRmsSum += currentRMS;
+          baselineRmsSampleCount++;
+          if (baselineRmsSampleCount >= BASELINE_SAMPLES) {
+            baselineRMS = baselineRmsSum / baselineRmsSampleCount;
+            baselineReady = true;
+            Serial.printf("✅ Baseline RMS: %.1f (t>=30s, %d samples)\n",
+                          baselineRMS, baselineRmsSampleCount);
+          }
         }
 
         // 상태 분류
@@ -791,17 +809,13 @@ void loop() {
       currentMwAmp = (float)(mx - mn);
       currentMwArea = (float)absSum;
       currentMwLatency = (float)(MW_WINDOW_START_MS + peakIdx);
-      // ── 검출 신뢰도 판정 ──
-      // 진폭이 노이즈 수준이거나, 피크가 생리범위를 벗어나면(특히 창 끝=피크 못 찾음)
-      // '무효'로 표시. 원값(amp/area/lat)은 그대로 두어 CSV/학습엔 남기고,
-      // SPC baseline·즉시판정에서만 제외해 오검출로 인한 오작동을 막는다.
-      currentMwValid = (currentMwAmp >= MW_AMP_MIN) &&
-                       (currentMwLatency >= (float)MW_LAT_MIN_MS) &&
-                       (currentMwLatency <= (float)MW_LAT_MAX_MS);
+      // latency는 진단/CSV에만 남기고 유효성은 진폭 노이즈 게이트로만 판정한다.
+      currentMwValid = currentMwAmp >= MW_AMP_MIN;
       mwDirty = true;
       mwCount++;
-      // 관리도 baseline 학습 — 유효한 M-wave만 (세션 동작 중 초반 6회 → mean·σ 확정)
-      if (systemRunning && currentMwValid) {
+      // 관리도 baseline 학습 — 준비운동 30초 이후의 유효 M-wave만.
+      if (systemRunning && currentMwValid &&
+          (millis() - sessionStartedAtMs >= BASELINE_DELAY_MS)) {
         ccIngest(mwAmpChart, currentMwAmp);
         ccIngest(mwAreaChart, currentMwArea);
         ccIngest(mwLatChart, currentMwLatency);
@@ -832,7 +846,15 @@ void handleCommand(JsonDocument& doc) {
   Serial.printf("📥 cmd: %s\n", cmd.c_str());
 
   if (cmd == "start") {
+    // DC 평균에 종료 펄스나 남은 자극이 섞이지 않도록 먼저 확실히 끈다.
+    triggerStimulation(false);
     systemRunning = true;
+    completeParalysisProtocol = doc["category"].as<String>() == "C";
+    sessionStartedAtMs = millis();
+    dcOffset = DC_OFFSET_FALLBACK;
+    dcCalibrationSum = 0;
+    dcCalibrationCount = 0;
+    dcCalibrating = true;
     consecutiveCount = 0;
     metricCycle = 0;           // 1Hz 느린 로직 사이클을 세션 시작에 정렬
     historyIdx = 0;
@@ -843,6 +865,8 @@ void handleCommand(JsonDocument& doc) {
     currentMDFSlope = 0;
     baselineReady = false;
     baselineRMS = 0;
+    baselineRmsSum = 0;
+    baselineRmsSampleCount = 0;
     rmsRatio = 1.0;
     envLPF = 0;
     lastCleanCentered = 0;      // FES blanking hold 값 리셋
@@ -897,8 +921,9 @@ void handleCommand(JsonDocument& doc) {
     lastContractPeak = 0;
     sessionMarker = "session_start";
     sendFullNext = true;   // 다음 송신은 리셋된 상태값 전부 포함
-    Serial.println("→ 시작 (10초간 베이스라인 수집, FES OFF)");
-    triggerStimulation(false);
+    Serial.printf("→ 시작 (DC %d초 캘리브레이션, baseline 30초 이후, protocol=%s)\n",
+            DC_CALIBRATION_MS / 1000,
+            completeParalysisProtocol ? "complete/M-wave" : "voluntary/mixed");
   }
   else if (cmd == "stop") {
     systemRunning = false;
@@ -922,6 +947,13 @@ void handleCommand(JsonDocument& doc) {
     consecutiveCount = 0;
     baselineReady = false;
     baselineRMS = 0;
+    baselineRmsSum = 0;
+    baselineRmsSampleCount = 0;
+    sessionStartedAtMs = millis();
+    dcOffset = DC_OFFSET_FALLBACK;
+    dcCalibrationSum = 0;
+    dcCalibrationCount = 0;
+    dcCalibrating = true;
     rmsRatio = 1.0;
     resetFatigueCharts();          // 관리도 baseline 재학습
     muscleState = systemRunning ? "calibrating" : "idle";
@@ -1182,6 +1214,9 @@ void sendDataUpdate() {
     doc["st"]   = muscleState;
     doc["cm"]   = currentCenteredMean10Hz;
     doc["pk"]   = currentPeakAbs10Hz;
+    doc["dco"]  = dcOffset;
+    doc["dcc"]  = !dcCalibrating;
+    doc["proto"] = completeParalysisProtocol ? "complete" : "mixed";
 
     // 수축 상태머신
     doc["cs"]   = (int)contractState;
