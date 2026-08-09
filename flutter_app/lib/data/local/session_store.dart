@@ -145,6 +145,15 @@ class BurstRow {
   final bool contractionOk;
   final bool valid;
 
+  /// **관찰용 · 로컬 전용.** 업로드 payload 에 들어가지 않는다.
+  ///
+  /// 기록 탭의 "RMS 변화 / MDF 변화" 그래프가 읽는 값이다. 피로 판정은
+  /// [p2p](M-wave 진폭)로만 한다 — `signal/spectrum.dart` 머리말 참고.
+  /// 서버 스키마에 열이 없으므로 [toJson] 에는 넣지 않고 [toLocalJson] 에만
+  /// 넣는다. 웹 계약을 건드리지 않고 앱만 더 보여 주기 위해서다.
+  final double? rms;
+  final double? mdf;
+
   const BurstRow({
     required this.sessionId,
     required this.tS,
@@ -152,6 +161,8 @@ class BurstRow {
     required this.fatigue,
     required this.contractionOk,
     required this.valid,
+    this.rms,
+    this.mdf,
   });
 
   Map<String, dynamic> toJson() => {
@@ -163,6 +174,11 @@ class BurstRow {
         'valid': valid,
       };
 
+  /// 로컬 저장용. 관찰 지표가 함께 들어간다.
+  Map<String, dynamic> toLocalJson() => toJson()
+    ..['rms'] = rms
+    ..['mdf'] = mdf;
+
   static BurstRow fromJson(Map<dynamic, dynamic> j) => BurstRow(
         sessionId: j['session_id'] as String,
         tS: (j['t_s'] as num).toDouble(),
@@ -170,6 +186,8 @@ class BurstRow {
         fatigue: (j['fatigue'] as num).toDouble(),
         contractionOk: j['contraction_ok'] as bool,
         valid: j['valid'] as bool,
+        rms: (j['rms'] as num?)?.toDouble(),
+        mdf: (j['mdf'] as num?)?.toDouble(),
       );
 }
 

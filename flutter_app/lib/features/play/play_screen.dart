@@ -7,6 +7,7 @@ import '../../game/flame/baseball_game.dart';
 import '../../session/session_controller.dart';
 import '../refit_theme.dart';
 import '../session/session_orchestrator.dart';
+import 'therapist_panel.dart';
 
 /// 훈련 화면 — **게임이 화면 자체다.**
 ///
@@ -31,6 +32,9 @@ class PlayScreen extends StatefulWidget {
 class _PlayScreenState extends State<PlayScreen> {
   int _lastPulse = 0;
   late final BaseballGame _game;
+
+  /// 치료사 보기. **기본은 닫힘** — 환자 화면에 임상 지표를 두지 않는다.
+  bool _therapistView = false;
 
   @override
   void initState() {
@@ -92,6 +96,21 @@ class _PlayScreenState extends State<PlayScreen> {
                   syncing: syncing,
                 ),
                 const Spacer(),
+
+                // 치료사 보기 — 하단에서 올라온다. 열려도 중단 버튼은 계속
+                // 화면 하단 ⅓ 안에 남는다(패널이 조작부 **위**에 선다).
+                if (_therapistView)
+                  // Flexible 이라 남는 공간을 넘지 않는다 — 작은 화면에서
+                  // 패널이 중단 버튼을 밀어내면 안 된다.
+                  Flexible(
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxHeight: MediaQuery.of(context).size.height * 0.46,
+                      ),
+                      child: TherapistPanel(orchestrator: o),
+                    ),
+                  ),
+
                 // 조작부에는 **자기 바탕**이 있어야 한다.
                 //
                 // 포구 이펙트가 터지는 자리가 하필 화면 아래쪽이라, 바탕
@@ -108,6 +127,26 @@ class _PlayScreenState extends State<PlayScreen> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
+                      // 이 토글은 세션 요약에 남는다 — 누가 언제 열었는지.
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton.icon(
+                          onPressed: () {
+                            setState(() => _therapistView = !_therapistView);
+                            if (_therapistView) o.noteTherapistViewOpened();
+                          },
+                          style: TextButton.styleFrom(
+                            foregroundColor: RefitTheme.inkFaint,
+                          ),
+                          icon: Icon(
+                            _therapistView
+                                ? Icons.expand_more_rounded
+                                : Icons.expand_less_rounded,
+                            size: 20,
+                          ),
+                          label: const Text('치료사 보기'),
+                        ),
+                      ),
                       if (o.intensityLevel > 1)
                         Padding(
                           padding: const EdgeInsets.only(bottom: 12),

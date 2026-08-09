@@ -6,6 +6,7 @@ import 'hampel_filter.dart';
 import 'level_tracker.dart';
 import 'mwave_extractor.dart';
 import 'reliability.dart';
+import 'spectrum.dart';
 import 'stim_detector.dart';
 
 /// 버스트 1회분의 최종 결과.
@@ -23,6 +24,12 @@ class BurstResult {
   final double aRef; // 현재 구간의 A_ref
   final FatigueAdvice advice;
 
+  /// **관찰용.** 피로 판정에 쓰지 않는다 — `spectrum.dart` 머리말 참고.
+  final double rms;
+
+  /// **관찰용.** 추정이 서지 않으면 null.
+  final double? mdfHz;
+
   const BurstResult({
     required this.index,
     required this.tSeconds,
@@ -36,6 +43,8 @@ class BurstResult {
     required this.stimOnsetMs,
     required this.aRef,
     required this.advice,
+    this.rms = 0,
+    this.mdfHz,
   });
 
   @override
@@ -223,6 +232,13 @@ class SignalPipeline {
       tSeconds: tSeconds,
     );
 
+    // [관찰] RMS·MDF. 에폭은 이미 영점보정이 끝났으므로 이어 붙이면 그대로
+    // 버스트 ON 구간의 신호가 된다. 피로 판정에는 들어가지 않는다.
+    final wave = <double>[];
+    for (final p in burst.pulses) {
+      wave.addAll(p.samples);
+    }
+
     return BurstResult(
       index: burst.index,
       tSeconds: tSeconds,
@@ -236,6 +252,8 @@ class SignalPipeline {
       stimOnsetMs: burst.onsetMs,
       aRef: _level.aRef,
       advice: sample.advice,
+      rms: rmsOf(wave),
+      mdfHz: medianFrequencyHz(wave, fs: kSampleRateHz.toDouble()),
     );
   }
 }

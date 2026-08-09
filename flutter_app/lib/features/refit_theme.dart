@@ -27,6 +27,19 @@ class RefitTheme {
   /// 기기 문제 전용. 수축 실패에는 쓰지 않는다.
   static const Color alert = Color(0xFFE8845C);
 
+  // 오늘의 상태 3단계 — 좋음 · 주의 · 피로.
+  //
+  // **빨강은 쓰지 않는다.** 빨강은 [alert](기기 문제) 전용이고, 피로에 빨강을
+  // 쓰면 환자의 몸 상태 자체를 경고로 만든다. 피로는 실패가 아니라 오늘 몫을
+  // 다 했다는 신호다.
+  static const Color good = glow;
+  static const Color caution = Color(0xFFE9CE7A);
+  static const Color tired = Color(0xFFE0A567);
+
+  /// 카드·타일의 공통 바탕. 배경 그라디언트 위에 얹히는 반투명 판.
+  static const Color panel = Color(0x14F2F6F5);
+  static const Color hairline = Color(0x1FF2F6F5);
+
   static const LinearGradient backdrop = LinearGradient(
     begin: Alignment.topCenter,
     end: Alignment.bottomCenter,
@@ -53,6 +66,18 @@ class RefitTheme {
       fontWeight: FontWeight.w500,
       letterSpacing: 1.2,
       color: inkFaint);
+
+  /// 목록·표처럼 밀도가 필요한 화면용. 환자 화면에는 쓰지 않는다.
+  static const bodySmall = TextStyle(
+      fontSize: 16, height: 1.45, fontWeight: FontWeight.w400, color: inkSoft);
+
+  /// 카드 안의 중간 크기 수치 (쥔 횟수·운동 시간 등).
+  static const figure = TextStyle(
+      fontSize: 30,
+      height: 1.05,
+      fontWeight: FontWeight.w600,
+      color: ink,
+      fontFeatures: [FontFeature.tabularFigures()]);
 
   /// 큰 숫자 — 반복 횟수처럼 **셀 수 있는 성취**에만 쓴다.
   /// 피로도 퍼센트에는 절대 쓰지 않는다.
@@ -162,6 +187,169 @@ class RefitButton extends StatelessWidget {
               ),
               child: Text(label),
             ),
+    );
+  }
+}
+
+/// 배경 위에 얹히는 판. 홈·기록·설정의 모든 묶음이 이 모양이다.
+class RefitCard extends StatelessWidget {
+  const RefitCard({
+    super.key,
+    required this.child,
+    this.onTap,
+    this.tint,
+    this.padding = const EdgeInsets.all(18),
+  });
+
+  final Widget child;
+  final VoidCallback? onTap;
+
+  /// 테두리 색. 상태를 가진 카드(피로도·신호)만 준다.
+  final Color? tint;
+  final EdgeInsets padding;
+
+  @override
+  Widget build(BuildContext context) {
+    final border = tint ?? RefitTheme.hairline;
+    final body = Container(
+      width: double.infinity,
+      padding: padding,
+      decoration: BoxDecoration(
+        color: RefitTheme.panel,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(
+          color: tint == null ? border : border.withValues(alpha: 0.42),
+        ),
+      ),
+      child: child,
+    );
+    if (onTap == null) return body;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(22),
+        child: body,
+      ),
+    );
+  }
+}
+
+/// 상태 알약. **숫자를 넣지 않는다** — 상태 이름만 들어간다.
+class RefitChip extends StatelessWidget {
+  const RefitChip({super.key, required this.label, required this.tone});
+
+  final String label;
+  final Color tone;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: tone.withValues(alpha: 0.16),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: tone.withValues(alpha: 0.45)),
+      ),
+      child: Text(
+        label,
+        style: RefitTheme.bodySmall.copyWith(
+          color: tone,
+          fontSize: 14,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+}
+
+/// 설정·목록의 한 줄. 탭 영역이 [RefitTheme.touchMin] 밑으로 내려가지 않는다.
+class RefitTile extends StatelessWidget {
+  const RefitTile({
+    super.key,
+    required this.title,
+    this.subtitle,
+    this.trailing,
+    this.leading,
+    this.onTap,
+  });
+
+  final String title;
+  final String? subtitle;
+  final Widget? trailing;
+  final IconData? leading;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final sub = subtitle;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          constraints: const BoxConstraints(minHeight: RefitTheme.touchMin),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          child: Row(
+            children: [
+              if (leading != null) ...[
+                Icon(leading, color: RefitTheme.inkSoft, size: 22),
+                const SizedBox(width: 14),
+              ],
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      title,
+                      style: RefitTheme.bodySmall.copyWith(
+                        color: RefitTheme.ink,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    if (sub != null) ...[
+                      const SizedBox(height: 3),
+                      Text(
+                        sub,
+                        style: RefitTheme.bodySmall.copyWith(fontSize: 14),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              if (trailing != null) ...[
+                const SizedBox(width: 12),
+                trailing!,
+              ] else if (onTap != null)
+                const Icon(Icons.chevron_right_rounded,
+                    color: RefitTheme.inkFaint),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 화면 안의 묶음 제목.
+class RefitSectionTitle extends StatelessWidget {
+  const RefitSectionTitle(this.text, {super.key, this.trailing});
+
+  final String text;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 26, 4, 12),
+      child: Row(
+        children: [
+          Expanded(child: Text(text, style: RefitTheme.label)),
+          ?trailing,
+        ],
+      ),
     );
   }
 }

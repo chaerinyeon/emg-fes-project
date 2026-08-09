@@ -73,7 +73,7 @@ class HiveSessionStore implements SessionStore {
     // 부담이 없고, 행마다 키를 만들면 삭제·조회가 오히려 느려진다.
     final byId = <String, List<Map<String, dynamic>>>{};
     for (final r in rows) {
-      (byId[r.sessionId] ??= <Map<String, dynamic>>[]).add(r.toJson());
+      (byId[r.sessionId] ??= <Map<String, dynamic>>[]).add(r.toLocalJson());
     }
     for (final entry in byId.entries) {
       final existing =

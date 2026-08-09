@@ -20,6 +20,22 @@ enum SignalStatus { good, checkSensor, lost }
 /// 워치독 되감기 간격. 표본은 초당 1000개라 매번 되감으면 타이머만 만든다.
 const int kWatchdogFeedIntervalMs = 250;
 
+/// 피로 "발생 시점" 을 결과·기록 화면에 한 문장으로 적기 위한 **표시 전용**
+/// 기준.
+///
+/// 종료 임계([kFatigueThresholdPct])와 다른 값이고 다른 목적이다. 그쪽은
+/// 아직 null 이라 자동 종료를 걸지 않는다. 여기서 정하는 건 "언제부터 힘이
+/// 줄기 시작했는지" 를 말하기 위한 지점일 뿐이며, **어떤 제어에도 쓰이지
+/// 않는다.** 신뢰도가 깨진 버스트는 세지 않는다.
+const double kFatigueOnsetDisplayPct = 50.0;
+const int kFatigueOnsetSustainBursts = 5;
+
+/// 치료사 보기의 실시간 파형 버퍼 — 1kHz 를 이 배수로 솎는다.
+const int kWavePreviewDecim = 8;
+
+/// 파형 버퍼 길이(점). 8배 솎음이므로 1920ms ≈ 자극 한 주기가 보인다.
+const int kWavePreviewLen = 240;
+
 /// [SignalPipeline] → [SessionMachine] → [CoreLoop] → 저장/업로드 조립부.
 ///
 /// 화면은 이 클래스만 본다. 피로도 퍼센트는 **밖으로 내보내지 않는다** —
@@ -84,6 +100,9 @@ class SessionOrchestrator extends ChangeNotifier {
   final List<BurstRow> _pendingRows = <BurstRow>[];
   DateTime? _startedAt;
 
+  /// 이번 세션의 버스트 행. 결과 화면의 **치료사 보기**가 읽는다.
+  List<BurstRow> get bursts => List.unmodifiable(_pendingRows);
+
   // --- 화면이 읽는 상태 ---
 
   /// 화면의 손 상태.
@@ -110,6 +129,29 @@ class SessionOrchestrator extends ChangeNotifier {
 
   /// 세션 경과(초).
   double elapsedS = 0;
+
+  /// 마지막 버스트 결과. **치료사 보기 전용** — 환자 화면은 읽지 않는다.
+  BurstResult? lastBurst;
+
+  /// 피로가 시작된 시각(초). 없으면 null — "끝까지 힘이 남았다".
+  double? get fatigueOnsetS => _onsetS;
+
+  double? _onsetS;
+  int _onsetRun = 0;
+
+  // 치료사 보기의 실시간 파형. 링버퍼라 열려 있지 않아도 비용이 없고,
+  // 열려 있어도 **큐 스케줄러와 무관하다**(하드 제약 7 — 그래프가 게임
+  // 타이밍을 밀면 안 된다). 그래서 여기서는 notifyListeners 를 부르지
+  // 않는다. 패널이 자기 주기로 읽어 간다.
+  final List<double> _wave = List<double>.filled(kWavePreviewLen, 0);
+  int _waveWrite = 0;
+  int _waveDecim = 0;
+
+  /// 오래된 점부터 순서대로 뽑은 파형 스냅샷.
+  List<double> waveSnapshot() => <double>[
+    ..._wave.sublist(_waveWrite),
+    ..._wave.sublist(0, _waveWrite),
+  ];
 
   // --- 수명주기 ---
 
@@ -191,8 +233,30 @@ class SessionOrchestrator extends ChangeNotifier {
 
   bool lowerIntensity() {
     final ok = machine.lowerIntensity();
+    if (ok) {
+      _lastIntensityChange = (atS: elapsedS, reason: '사용자가 줄임');
+    }
     notifyListeners();
     return ok;
+  }
+
+  /// 마지막 강도 변경 — 시각과 이유. 치료사 보기에만 보인다.
+  ({double atS, String reason})? get lastIntensityChange =>
+      _lastIntensityChange;
+
+  ({double atS, String reason})? _lastIntensityChange;
+
+  /// 치료사 보기를 연 횟수와 처음 연 시각.
+  ///
+  /// 임상 지표를 환자 화면 뒤에 숨긴 이상, **누가 언제 열었는지**는 남아야
+  /// 한다. 공유 `session_events` 스키마에는 이 사건의 자리가 없어 여기
+  /// 로컬로만 센다 — 서버 계약을 앱 사정으로 늘리지 않는다.
+  int therapistViewOpens = 0;
+  double? firstTherapistViewAtS;
+
+  void noteTherapistViewOpened() {
+    therapistViewOpens++;
+    firstTherapistViewAtS ??= elapsedS;
   }
 
   /// 중단 버튼. 자극이 **가장 먼저** 꺼진다.
@@ -217,6 +281,12 @@ class SessionOrchestrator extends ChangeNotifier {
       stim.noteDataReceived();
     }
 
+    if (++_waveDecim >= kWavePreviewDecim) {
+      _waveDecim = 0;
+      _wave[_waveWrite] = adc - (pipeline.dcOffset ?? adc.toDouble());
+      _waveWrite = (_waveWrite + 1) % kWavePreviewLen;
+    }
+
     final r = pipeline.addSample(t, adc);
     if (r == null) return;
     _onBurst(r);
@@ -224,6 +294,22 @@ class SessionOrchestrator extends ChangeNotifier {
 
   void _onBurst(BurstResult r) {
     elapsedS = r.tSeconds;
+    lastBurst = r;
+
+    // 피로 발생 시점 — **표시 전용**. 한 번 정해지면 바꾸지 않는다.
+    if (_onsetS == null && r.reliable) {
+      if (r.fatiguePct >= kFatigueOnsetDisplayPct) {
+        _onsetRun++;
+        if (_onsetRun >= kFatigueOnsetSustainBursts) {
+          // 연속 구간이 시작된 지점이 "줄기 시작한" 시각이다.
+          _onsetS = r.tSeconds -
+              (kFatigueOnsetSustainBursts - 1) * (pipeline.periodMs ?? 1618) /
+                  1000.0;
+        }
+      } else {
+        _onsetRun = 0;
+      }
+    }
 
     // 위상을 게임 루프에 물린다.
     loop.syncTo(
@@ -250,6 +336,8 @@ class SessionOrchestrator extends ChangeNotifier {
       fatigue: r.fatiguePct,
       contractionOk: r.contractionOk,
       valid: r.reliable,
+      rms: r.rms,
+      mdf: r.mdfHz,
     ));
 
     if (machine.state == SessionState.syncing) {
@@ -345,7 +433,7 @@ class SessionOrchestrator extends ChangeNotifier {
         successRate: machine.successRate,
         maxFatigue: _maxFatigue,
         endFatigue: _endFatigue,
-        onsetS: null,
+        onsetS: _onsetS,
         burstCount: _pendingRows.length,
         detectRate: gate.detectRate,
         eventsPerBurstMedian: gate.eventsPerBurst,
