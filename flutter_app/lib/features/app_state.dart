@@ -88,6 +88,23 @@ class RefitAppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 준비해 둔 세션이 **지금 환자의 것이 아니다.**
+  ///
+  /// 사전 세팅은 연결한 순간의 환자에게 묶인다(`SessionOrchestrator.patientId`).
+  /// 그 뒤에 환자를 바꾸면 준비만 남고 주인이 달라지는데, 이걸 그대로 두면
+  /// 두 가지가 동시에 어긋난다:
+  ///
+  /// - **기록이 앞사람 이름으로 남는다.** 훈련한 사람과 기록의 주인이 다르다.
+  /// - **앞사람 몸에서 잰 강도로 뒷사람을 자극한다.** 부착 확인도 강도
+  ///   측정도 그 사람의 팔에서 나온 값이라, 환자만 갈아 끼우고 시작할 수
+  ///   있으면 안 된다.
+  ///
+  /// 그래서 이 값이 true 면 준비를 **버리고 처음부터** 다시 한다.
+  bool get preparedSessionIsStale {
+    final o = live;
+    return o != null && o.patientId != patient?.id;
+  }
+
   /// 선택된 환자의 세션만. 환자 간 비교·순위는 만들지 않는다(하드 제약 6).
   List<SessionSummary> get patientSessions {
     final id = patient?.id;
@@ -156,43 +173,180 @@ class RefitAppState extends ChangeNotifier {
       .where((s) => _sameDay(s.startedAt, day))
       .toList();
 
-  /// 오늘의 상태 — 좋음 · 주의 · 피로.
+  /// 오늘 한 운동 요약. **행동 기반 숫자만** 들어간다.
+  DailySummary get todaySummary {
+    final today = sessionsOn(DateTime.now());
+    return DailySummary(
+      sessions: today.length,
+      reps: today.fold(0, (a, s) => a + s.repCount),
+      seconds: today.fold(0, (a, s) => a + s.durationS),
+    );
+  }
+
+  /// 오늘의 상태 — 부족 · 적당 · 충분.
   ///
-  /// **퍼센트를 내보내지 않는다.** 3단계 상태로만 말한다.
+  /// **피로도를 퍼센트로 내보내지 않는다.** 상태 하나로만 말한다.
   ///
-  /// 판정 근거는 종료 사유와 수행 성공률이다. 적응형 피로 게이지
-  /// (`fatigue`) 를 직접 문턱으로 쓰지 않는 이유는 `kFatigueThresholdPct` 가
-  /// 아직 확정되지 않아 절대 기준이 없기 때문이다 — 확정되면 여기가
-  /// 첫 번째로 바뀔 자리다.
+  /// 기준은 두 가지다:
+  ///   1. **자동 종료 사유** — 피로 임계·성공률 하락·목표·시간 상한으로
+  ///      끝났으면 오늘 몫을 다 한 것이다(`충분`).
+  ///   2. **자기 자신의 최근 기록** — 오늘 총 운동 시간이 최근 중앙값의
+  ///      절반에 못 미치면 `부족`. 절대 기준(몇 분 이상)을 두지 않는 이유는
+  ///      그 값을 정할 근거가 없고, 있어도 사람마다 다르기 때문이다.
+  ///      비교는 언제나 같은 환자의 과거 자신하고만 한다(하드 제약 6).
+  ///
+  /// 적응형 피로 게이지(`fatigue`)를 직접 문턱으로 쓰지 않는 이유는
+  /// `kFatigueThresholdPct` 가 아직 확정되지 않아 절대 기준이 없기 때문이다.
   DailyStatus get todayStatus {
     final today = sessionsOn(DateTime.now());
     if (today.isEmpty) return DailyStatus.none;
 
-    final tired = today.any((s) =>
-        s.endReason == SessionEndReason.fatigueThreshold ||
-        s.endReason == SessionEndReason.successRateDrop);
-    if (tired) return DailyStatus.tired;
-
-    final last = today.first;
-    if (today.length >= 2 || last.successRate < 0.6) {
-      return DailyStatus.caution;
+    const done = {
+      SessionEndReason.fatigueThreshold,
+      SessionEndReason.successRateDrop,
+      SessionEndReason.gameComplete,
+      SessionEndReason.timeout,
+    };
+    if (today.any((s) => done.contains(s.endReason))) {
+      return DailyStatus.enough;
     }
+
+    final usual = _medianDailySeconds();
+    final todaySeconds = today.fold(0, (a, s) => a + s.durationS);
+    if (usual != null && todaySeconds < usual / 2) return DailyStatus.more;
+
     return DailyStatus.good;
+  }
+
+  /// 오늘을 뺀 최근 훈련일들의 하루 총 운동 시간 중앙값(초). 없으면 null.
+  int? _medianDailySeconds() {
+    final byDay = <String, int>{};
+    final now = DateTime.now();
+    for (final s in patientSessions) {
+      if (_sameDay(s.startedAt, now)) continue;
+      final k = '${s.startedAt.year}-${s.startedAt.month}-${s.startedAt.day}';
+      byDay[k] = (byDay[k] ?? 0) + s.durationS;
+    }
+    if (byDay.isEmpty) return null;
+    final xs = byDay.values.toList()..sort();
+    return xs[xs.length ~/ 2];
+  }
+
+  // ── 지속 ───────────────────────────────────────────────
+
+  /// 훈련한 날들 (시간 제거, 최신순).
+  List<DateTime> get _trainedDays {
+    final set = <String, DateTime>{};
+    for (final s in patientSessions) {
+      final d = DateTime(s.startedAt.year, s.startedAt.month, s.startedAt.day);
+      set['${d.year}-${d.month}-${d.day}'] = d;
+    }
+    final days = set.values.toList()..sort((a, b) => b.compareTo(a));
+    return days;
+  }
+
+  /// 연속 수행일.
+  ///
+  /// **오늘 아직 안 했다고 해서 끊긴 것으로 세지 않는다.** 어제까지 이어져
+  /// 있으면 그 수를 그대로 돌려준다 — 아침에 앱을 열었을 뿐인데 "0일" 이
+  /// 뜨면, 하루가 시작되기도 전에 실패한 것처럼 보인다.
+  int get streakDays {
+    final days = _trainedDays;
+    if (days.isEmpty) return 0;
+
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final gap = today.difference(days.first).inDays;
+    if (gap > 1) return 0; // 어제도 그제도 안 했다 — 이어지는 중이 아니다
+
+    var streak = 1;
+    for (var i = 1; i < days.length; i++) {
+      if (days[i - 1].difference(days[i]).inDays != 1) break;
+      streak++;
+    }
+    return streak;
+  }
+
+  /// 이번 주(월요일 시작) 훈련한 날 수.
+  int get weekDoneDays {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final monday = today.subtract(Duration(days: today.weekday - 1));
+    return _trainedDays
+        .where((d) => !d.isBefore(monday) && !d.isAfter(today))
+        .length;
+  }
+
+  /// 주간 목표 일수. 설정에서 바꾼다.
+  int get weekGoalDays => settings.weeklyGoalDays;
+
+  /// 어제·이번 주와 견준 한 줄. 없으면 null.
+  ///
+  /// **비교는 같은 환자의 과거 자신하고만 한다**(하드 제약 6). 오늘 한 게
+  /// 없으면 아무 말도 하지 않는다 — 안 한 날에 굳이 견줄 말을 만들면
+  /// 그게 곧 잔소리가 된다.
+  String? get changeNote {
+    final now = DateTime.now();
+    final todayS = sessionsOn(now).fold(0, (a, s) => a + s.durationS);
+    if (todayS <= 0) return null;
+
+    // 이번 주 최고인가.
+    final today = DateTime(now.year, now.month, now.day);
+    final monday = today.subtract(Duration(days: today.weekday - 1));
+    final earlierThisWeek = <String, int>{};
+    for (final s in patientSessions) {
+      final d = DateTime(s.startedAt.year, s.startedAt.month, s.startedAt.day);
+      if (d.isBefore(monday) || !d.isBefore(today)) continue;
+      earlierThisWeek['${d.month}-${d.day}'] =
+          (earlierThisWeek['${d.month}-${d.day}'] ?? 0) + s.durationS;
+    }
+    if (earlierThisWeek.isNotEmpty &&
+        todayS > earlierThisWeek.values.reduce((a, b) => a > b ? a : b)) {
+      return '이번 주 최고 기록이에요';
+    }
+
+    // 어제보다 오래 했는가.
+    final y = now.subtract(const Duration(days: 1));
+    final yesterdayS = sessionsOn(y).fold(0, (a, s) => a + s.durationS);
+    if (yesterdayS > 0 && todayS > yesterdayS) return '어제보다 더 오래 했어요';
+
+    return null;
   }
 
   static bool _sameDay(DateTime a, DateTime b) =>
       a.year == b.year && a.month == b.month && a.day == b.day;
 }
 
-/// 홈이 보여 주는 3단계 상태. 숫자는 여기에 들어오지 않는다.
-enum DailyStatus {
-  none('아직 기록이 없어요'),
-  good('좋음'),
-  caution('주의'),
-  tired('피로');
+/// 오늘 한 운동. 숫자는 **행동 기반**만 — 쥔 횟수와 시간.
+class DailySummary {
+  const DailySummary({
+    required this.sessions,
+    required this.reps,
+    required this.seconds,
+  });
 
-  const DailyStatus(this.label);
+  final int sessions;
+  final int reps;
+  final int seconds;
+
+  bool get isEmpty => sessions == 0;
+}
+
+/// 홈이 보여 주는 상태. **숫자는 여기에 들어오지 않는다.**
+///
+/// 피로도를 직접 말하는 대신 "오늘 얼마나 했는가"로 바꿔 말한다. 환자에게
+/// 필요한 답은 "내 피로가 몇 %인가"가 아니라 "더 해도 되는가"이기 때문이다.
+enum DailyStatus {
+  none('😐', '아직', '오늘은 아직이에요'),
+  more('😐', '부족', '조금 더 해볼 수 있어요'),
+  good('🙂', '적당', '잘 하고 있어요'),
+  enough('😊', '충분', '오늘은 충분해요');
+
+  const DailyStatus(this.emoji, this.label, this.headline);
+
+  final String emoji;
   final String label;
+  final String headline;
 }
 
 /// 앱 설정 — Hive 한 상자.
@@ -215,6 +369,22 @@ class RefitSettings {
   int get defaultIntensity => (_box.get('default_intensity') as int?) ?? 3;
   Future<void> setDefaultIntensity(int v) =>
       _box.put('default_intensity', v.clamp(1, 10));
+
+  /// 노트북에서 보기(관찰 서버)를 켜 둘 것인가.
+  ///
+  /// 기본은 꺼짐이다. 같은 Wi-Fi 안이라도 포트를 열어 두는 건 사용자가
+  /// 고를 일이지 앱이 기본으로 정할 일이 아니다.
+  bool get monitorEnabled => (_box.get('monitor_enabled') as bool?) ?? false;
+  Future<void> setMonitorEnabled(bool v) => _box.put('monitor_enabled', v);
+
+  /// 주간 목표 일수(1~7).
+  ///
+  /// 재활에서 중요한 건 한 번의 강도가 아니라 **지속**이라, 목표는 시간이
+  /// 아니라 날 수로 센다. 기본 5일은 임상 처방이 아니라 출발값이다 —
+  /// 치료사가 환자마다 바꾼다.
+  int get weeklyGoalDays => (_box.get('weekly_goal_days') as int?) ?? 5;
+  Future<void> setWeeklyGoalDays(int v) =>
+      _box.put('weekly_goal_days', v.clamp(1, 7));
 
   /// 기기 없이 전 구간을 돌려 보는 개발 스위치.
   bool get syntheticMode => (_box.get('synthetic_mode') as bool?) ?? false;

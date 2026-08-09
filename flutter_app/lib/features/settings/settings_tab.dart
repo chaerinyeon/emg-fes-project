@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 
 import '../../ble/device_connection.dart';
 import '../../ble/stim_controller.dart';
 import '../../session/session_controller.dart';
 import '../app_state.dart';
+import '../monitor_service.dart';
 import '../patients/patient_select_screen.dart';
 import '../refit_theme.dart';
 
@@ -159,6 +161,115 @@ class _SettingsTabState extends State<SettingsTab> {
           ),
         ),
 
+        // ── 노트북에서 보기 ──
+        const RefitSectionTitle('노트북에서 보기'),
+        RefitCard(
+          tint: gMonitor.isRunning ? RefitTheme.glow : null,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '관찰 화면 열기',
+                          style: RefitTheme.bodySmall.copyWith(
+                            color: RefitTheme.ink,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          '같은 Wi-Fi 의 노트북에서 기록과 실시간 화면을 봅니다',
+                          style: RefitTheme.bodySmall.copyWith(fontSize: 13),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Switch(
+                    value: settings.monitorEnabled,
+                    activeThumbColor: RefitTheme.glow,
+                    onChanged: (v) async {
+                      await settings.setMonitorEnabled(v);
+                      v ? await gMonitor.enable() : await gMonitor.disable();
+                      if (mounted) setState(() {});
+                    },
+                  ),
+                ],
+              ),
+              if (gMonitor.isRunning) ...[
+                const Divider(height: 24, color: RefitTheme.hairline),
+                _AddressRow(label: '기록 보기', url: gMonitor.recordsUrl),
+                const SizedBox(height: 12),
+                _AddressRow(label: '실시간 보기', url: gMonitor.url),
+                const SizedBox(height: 12),
+                Text(
+                  gMonitor.hasLiveSession
+                      ? '지금 훈련이 연결돼 있어요.'
+                      : '훈련을 시작하면 실시간 화면이 채워집니다.',
+                  style: RefitTheme.bodySmall.copyWith(fontSize: 13),
+                ),
+              ] else if (gMonitor.lastError != null) ...[
+                const SizedBox(height: 12),
+                Text(
+                  gMonitor.lastError!,
+                  style: RefitTheme.bodySmall.copyWith(color: RefitTheme.alert),
+                ),
+              ],
+            ],
+          ),
+        ),
+
+        // ── 주간 목표 ──
+        const RefitSectionTitle('주간 목표'),
+        RefitCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.baseline,
+                textBaseline: TextBaseline.alphabetic,
+                children: [
+                  Text('주 ${settings.weeklyGoalDays}',
+                      style: RefitTheme.figure),
+                  const SizedBox(width: 4),
+                  Text('일', style: RefitTheme.bodySmall),
+                ],
+              ),
+              SliderTheme(
+                data: SliderThemeData(
+                  activeTrackColor: RefitTheme.glow,
+                  inactiveTrackColor: RefitTheme.panel,
+                  thumbColor: RefitTheme.glow,
+                  overlayColor: RefitTheme.glow.withValues(alpha: 0.16),
+                  trackHeight: 6,
+                  thumbShape:
+                      const RoundSliderThumbShape(enabledThumbRadius: 14),
+                ),
+                child: Slider(
+                  value: settings.weeklyGoalDays.toDouble(),
+                  min: 1,
+                  max: 7,
+                  divisions: 6,
+                  onChanged: (v) async {
+                    await settings.setWeeklyGoalDays(v.round());
+                    if (mounted) setState(() {});
+                  },
+                ),
+              ),
+              Text(
+                // 강도가 아니라 지속을 센다. 기본 5일은 처방이 아니라 출발값이다.
+                '재활은 한 번의 강도보다 지속이 중요합니다. '
+                '환자에 맞게 치료사가 정해 주세요.',
+                style: RefitTheme.bodySmall.copyWith(fontSize: 13),
+              ),
+            ],
+          ),
+        ),
+
         // ── 환자 관리 ──
         const RefitSectionTitle('환자 관리'),
         RefitCard(
@@ -239,6 +350,58 @@ class _SettingsTabState extends State<SettingsTab> {
               .copyWith(fontSize: 13, color: RefitTheme.inkFaint),
           textAlign: TextAlign.center,
         ),
+      ],
+    );
+  }
+}
+
+/// 노트북에 옮겨 적을 주소 한 줄.
+///
+/// 주소를 감추지 않는다 — 치료사가 손으로 칠 수 있어야 하고, 안 열릴 때
+/// 무엇을 쳤는지 눈으로 확인할 수 있어야 한다.
+class _AddressRow extends StatelessWidget {
+  const _AddressRow({required this.label, required this.url});
+
+  final String label;
+  final String? url;
+
+  @override
+  Widget build(BuildContext context) {
+    final u = url;
+    return Row(
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: RefitTheme.bodySmall
+                    .copyWith(fontSize: 13, color: RefitTheme.inkFaint),
+              ),
+              const SizedBox(height: 3),
+              Text(
+                u ?? 'Wi-Fi 주소를 찾지 못했어요',
+                style: RefitTheme.bodySmall.copyWith(
+                  color: u == null ? RefitTheme.alert : RefitTheme.ink,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+        if (u != null)
+          IconButton(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: u));
+              if (!context.mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('주소를 복사했어요')),
+              );
+            },
+            icon: const Icon(Icons.copy_rounded, size: 18),
+            color: RefitTheme.inkSoft,
+          ),
       ],
     );
   }

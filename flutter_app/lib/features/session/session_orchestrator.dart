@@ -133,6 +133,9 @@ class SessionOrchestrator extends ChangeNotifier {
   /// 마지막 버스트 결과. **치료사 보기 전용** — 환자 화면은 읽지 않는다.
   BurstResult? lastBurst;
 
+  /// 마지막 표본이 도착한 벽시계 시각(ms). 관찰 화면의 정지 판정용.
+  int? lastSampleWallMs;
+
   /// 피로가 시작된 시각(초). 없으면 null — "끝까지 힘이 남았다".
   double? get fatigueOnsetS => _onsetS;
 
@@ -279,6 +282,9 @@ class SessionOrchestrator extends ChangeNotifier {
     if (last == null || t - last >= kWatchdogFeedIntervalMs || t < last) {
       _lastWatchdogFeedMs = t;
       stim.noteDataReceived();
+      // 관찰 화면이 "신호가 멈췄는가"를 볼 때 쓴다. 버스트 알림(1.6초 간격)
+      // 으로는 못 본다 — 표본이 끊긴 것과 버스트 사이인 것이 구분되지 않는다.
+      lastSampleWallMs = _clockMs();
     }
 
     if (++_waveDecim >= kWavePreviewDecim) {

@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RE-FIT 훈련 기록</title>
+<!--
+  ============================================================================
+  RE-FIT 훈련 기록 — 치료사·보호자용 조회 화면
+
+  서버는 폰 안에 있다(MonitorService). 데이터가 이 기기 밖으로 나가지
+  않으므로 CDN·폰트·차트 라이브러리를 일절 쓰지 않는다. 외부 요청이 하나라도
+  있으면 "인터넷 없이 되는 화면"이라는 성질이 깨진다.
+
+  ── 지키는 것 ──────────────────────────────────────────────────────────────
+
+  1) 판정하지 않는다
+     피로 판정의 근거는 M-wave 진폭 하나뿐이고, 그 판단은 폰의 신호 엔진이
+     이미 끝냈다. 여기서는 받은 값을 그릴 뿐이다. 웹이 다시 계산하면 폰과
+     웹이 서로 다른 결론을 말하게 된다.
+
+  2) RMS·MDF 는 관찰용이라고 화면에 적는다
+     완전마비 환자의 EMG 에는 자발 성분이 없어 이 둘은 근육 상태가 아니라
+     자극 하모닉을 재는 값이다. 라벨을 안 붙이면 "RMS 가 떨어졌으니 피로"
+     라는 오독이 반드시 생긴다.
+
+  3) 환자 간 비교·순위를 만들지 않는다
+     목록은 폰에서 선택된 환자 하나로 이미 좁혀져 온다. 비교는 언제나 같은
+     환자의 과거 자신하고만 한다.
+
+  4) DOM 은 textContent 로만 채운다
+     세션 데이터에는 환자 이름처럼 사람이 입력한 문자열이 섞인다. 문자열을
+     이어 붙여 innerHTML 로 밀어 넣는 습관이 한 군데라도 있으면 그 경로가
+     곧 주입 통로가 된다. 여기서는 el() 헬퍼만 쓴다.
+  ============================================================================
+-->
+<style>
+  :root{
+    --bg:#071A20; --deep:#0E2E38; --panel:rgba(242,246,245,.08);
+    --line:rgba(242,246,245,.12); --ink:#F2F6F5; --soft:rgba(242,246,245,.70);
+    --faint:rgba(242,246,245,.40); --glow:#7FE3C4; --amber:#E0A567;
+    --yellow:#E9CE7A; --alert:#E8845C;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:linear-gradient(180deg,#071A20,#0E2E38 55%,#15414E);
+    min-height:100vh; color:var(--ink);
+    font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",
+         "Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+  }
+  header{
+    padding:22px 24px; border-bottom:1px solid var(--line);
+    display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;
+  }
+  h1{font-size:20px; font-weight:600; margin:0}
+  .who{color:var(--soft); font-size:14px}
+  .live{margin-left:auto; font-size:13px; color:var(--faint)}
+  .live a{color:var(--glow); text-decoration:none}
+  main{display:flex; gap:20px; padding:20px 24px; align-items:flex-start;
+       flex-wrap:wrap}
+  .col-list{flex:1 1 300px; min-width:280px; max-width:420px}
+  .col-detail{flex:2 1 460px; min-width:300px}
+  .card{
+    background:var(--panel); border:1px solid var(--line);
+    border-radius:16px; padding:16px; margin-bottom:12px;
+  }
+  .row{cursor:pointer; transition:border-color .15s}
+  .row:hover{border-color:rgba(127,227,196,.45)}
+  .row.on{border-color:var(--glow)}
+  .row .when{font-weight:600; margin-bottom:6px}
+  .row .sub{color:var(--soft); font-size:13px}
+  .chip{
+    display:inline-block; padding:3px 9px; border-radius:20px; font-size:12px;
+    border:1px solid currentColor; margin-left:6px;
+  }
+  .g-A{color:var(--glow)} .g-B{color:var(--yellow)} .g-C{color:var(--amber)}
+  .muted{color:var(--faint)}
+  .stats{display:flex; gap:22px; flex-wrap:wrap; margin-bottom:6px}
+  .stat b{display:block; font-size:24px; font-weight:700; line-height:1.1}
+  .stat span{font-size:12px; color:var(--faint)}
+  table{width:100%; border-collapse:collapse; font-size:13px}
+  th,td{text-align:left; padding:5px 6px; border-bottom:1px solid var(--line)}
+  th{color:var(--faint); font-weight:600}
+  .chart-title{display:flex; align-items:baseline; gap:8px; margin-bottom:8px}
+  .chart-title b{font-size:14px}
+  .chart-title span{font-size:12px; color:var(--faint)}
+  svg{display:block; width:100%; height:120px}
+  .empty{color:var(--soft); padding:26px 0; text-align:center;
+         white-space:pre-line}
+  button{
+    background:transparent; color:var(--glow); font:inherit; font-size:14px;
+    border:1px solid rgba(127,227,196,.45); border-radius:12px;
+    padding:10px 16px; cursor:pointer;
+  }
+  button:hover{background:rgba(127,227,196,.10)}
+  details{margin-top:10px}
+  summary{cursor:pointer; color:var(--soft); font-size:13px}
+  .scroll{max-height:300px; overflow:auto; margin-top:8px}
+</style>
+</head>
+<body>
+<header>
+  <h1>훈련 기록</h1>
+  <div class="who" id="who">불러오는 중…</div>
+  <div class="live">실시간 화면: <a id="livelink" href="#">열기</a></div>
+</header>
+
+<main>
+  <div class="col-list" id="list"></div>
+  <div class="col-detail" id="detail"></div>
+</main>
+
+<script>
+'use strict';
+
+// 접속 토큰은 주소에 있다. 모든 요청에 그대로 붙인다.
+const K = new URLSearchParams(location.search).get('k') || '';
+const api = (p) =>
+  fetch(p + (p.includes('?') ? '&' : '?') + 'k=' + encodeURIComponent(K))
+    .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); });
+
+document.getElementById('livelink').href = '/?k=' + encodeURIComponent(K);
+
+/// 노드 하나. 텍스트는 **항상 textContent** 로 들어간다.
+const el = (t, c, txt) => {
+  const n = document.createElement(t);
+  if (c) n.className = c;
+  if (txt !== undefined) n.textContent = txt;
+  return n;
+};
+
+const showEmpty = (box, text) => box.replaceChildren(el('div', 'card empty', text));
+
+const fmtDur = (s) => {
+  const m = Math.floor(s / 60), r = s % 60;
+  return m === 0 ? r + '초' : m + '분 ' + r + '초';
+};
+
+const fmtWhen = (iso) => {
+  const d = new Date(iso);
+  const p = (n) => String(n).padStart(2, '0');
+  return (d.getMonth() + 1) + '월 ' + d.getDate() + '일 '
+       + p(d.getHours()) + ':' + p(d.getMinutes());
+};
+
+/// 수행 성공률은 **퍼센트 대신 비율 문장**으로 쓴다. 폰 화면과 같은 언어다.
+const fmtRate = (r) => '10번 중 ' + Math.round(r * 10) + '번';
+
+// ── 그래프 ────────────────────────────────────────────────────────────
+//
+// 축·눈금을 그리지 않는다. 여기서 읽어야 하는 것은 절대값이 아니라 모양
+// (줄어드는가·언제부터 줄었는가)이고, 절대값은 아래 표에 그대로 있다.
+function chart(values, color, shadeFrom) {
+  const NS = 'http://www.w3.org/2000/svg';
+  const W = 600, H = 120, PAD = 6;
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+  svg.setAttribute('preserveAspectRatio', 'none');
+
+  const xs = values.filter(v => v !== null && v !== undefined && !isNaN(v));
+  if (xs.length < 2) {
+    const t = document.createElementNS(NS, 'text');
+    t.setAttribute('x', 8); t.setAttribute('y', 24);
+    t.setAttribute('fill', 'rgba(242,246,245,.40)');
+    t.setAttribute('font-size', '13');
+    t.textContent = '표시할 데이터가 없어요';
+    svg.appendChild(t);
+    return svg;
+  }
+
+  const lo = Math.min(...xs), hi = Math.max(...xs);
+  const span = (hi - lo) || 1;
+  const x = (i) => PAD + (W - 2 * PAD) * i / (values.length - 1);
+  const y = (v) => H - PAD - (v - lo) / span * (H - 2 * PAD);
+
+  // 피로 발생 구간 음영. 색은 호박 — 빨강은 기기 문제 전용이다.
+  if (shadeFrom !== null && shadeFrom !== undefined
+      && shadeFrom >= 0 && shadeFrom < 1) {
+    const r = document.createElementNS(NS, 'rect');
+    r.setAttribute('x', PAD + (W - 2 * PAD) * shadeFrom);
+    r.setAttribute('y', 0);
+    r.setAttribute('width', (W - 2 * PAD) * (1 - shadeFrom));
+    r.setAttribute('height', H);
+    r.setAttribute('fill', 'rgba(224,165,103,.14)');
+    svg.appendChild(r);
+  }
+
+  let d = '';
+  values.forEach((v, i) => {
+    if (v === null || v === undefined || isNaN(v)) return;
+    d += (d === '' ? 'M' : 'L') + x(i).toFixed(1) + ' ' + y(v).toFixed(1);
+  });
+  const p = document.createElementNS(NS, 'path');
+  p.setAttribute('d', d);
+  p.setAttribute('fill', 'none');
+  p.setAttribute('stroke', color);
+  p.setAttribute('stroke-width', '2');
+  p.setAttribute('stroke-linejoin', 'round');
+  p.setAttribute('vector-effect', 'non-scaling-stroke');
+  svg.appendChild(p);
+  return svg;
+}
+
+function chartCard(title, note, values, color, shadeFrom) {
+  const card = el('div', 'card');
+  const head = el('div', 'chart-title');
+  head.appendChild(el('b', null, title));
+  head.appendChild(el('span', null, note));
+  card.appendChild(head);
+  card.appendChild(chart(values, color, shadeFrom));
+  return card;
+}
+
+// ── 세부 ──────────────────────────────────────────────────────────────
+
+function renderDetail(d) {
+  const box = document.getElementById('detail');
+  const parts = [];
+
+  const head = el('div', 'card');
+  const stats = el('div', 'stats');
+  const add = (v, k) => {
+    const s = el('div', 'stat');
+    s.appendChild(el('b', null, v));
+    s.appendChild(el('span', null, k));
+    stats.appendChild(s);
+  };
+  add(String(d.rep_count), '번 쥐었어요');
+  add(fmtDur(d.duration_s), '운동 시간');
+  add(fmtRate(d.success_rate), '수행 성공률');
+  head.appendChild(stats);
+  head.appendChild(el('div', 'sub muted',
+    d.onset_s === null || d.onset_s === undefined
+      ? '끝까지 힘이 남았어요'
+      : fmtDur(Math.round(d.onset_s)) + '쯤부터 힘이 줄기 시작했어요'));
+  parts.push(head);
+
+  const shade = (d.onset_s === null || d.onset_s === undefined || !d.duration_s)
+    ? null : Math.max(0, Math.min(1, d.onset_s / d.duration_s));
+
+  const s = d.series || [];
+  parts.push(chartCard('M-wave 진폭', '★ 피로 판정의 근거',
+    s.map(r => r.p2p), '#7FE3C4', shade));
+  parts.push(chartCard('RMS', '관찰용 — 판정에 쓰지 않는다',
+    s.map(r => r.rms), '#E9CE7A', shade));
+  parts.push(chartCard('MDF', '관찰용 — 판정에 쓰지 않는다',
+    s.map(r => r.mdf), '#E0A567', shade));
+
+  const an = el('div', 'card');
+  an.appendChild(el('b', null, '분석 결과'));
+  const t = el('table');
+  const kv = (k, v) => {
+    const tr = el('tr');
+    tr.appendChild(el('td', 'muted', k));
+    const td = el('td', null, v);
+    td.style.textAlign = 'right';
+    tr.appendChild(td);
+    t.appendChild(tr);
+  };
+  kv('종료 이유', d.end_reason_label);
+  kv('최대 피로', d.max_fatigue.toFixed(1) + '%');
+  kv('종료 시점 피로', d.end_fatigue.toFixed(1) + '%');
+  kv('레벨 변화 횟수', d.level_change_count + '회');
+  kv('검출률', d.detect_rate.toFixed(3));
+  kv('events/burst 중앙값', d.events_per_burst_median.toFixed(2));
+  kv('자극 주기 (실측)', d.stim_period_ms + ' ms');
+  kv('강도 단계', d.intensity_level + '단계');
+  kv('신뢰도 등급', d.grade);
+  an.appendChild(t);
+  parts.push(an);
+
+  const raw = el('div', 'card');
+  const det = el('details');
+  det.appendChild(el('summary', null,
+    '원시 데이터 ' + s.length + '행 — 1kHz 파형은 저장하지 않습니다'));
+  const wrap = el('div', 'scroll');
+  const rt = el('table');
+  const hr = el('tr');
+  ['t(s)', 'p2p', '피로', 'RMS', 'MDF', '수축'].forEach(h =>
+    hr.appendChild(el('th', null, h)));
+  rt.appendChild(hr);
+  const num = (v, n) => (v === null || v === undefined) ? '—' : v.toFixed(n);
+  s.forEach(r => {
+    const tr = el('tr');
+    [num(r.t, 1), num(r.p2p, 0), num(r.fatigue, 0),
+     num(r.rms, 0), num(r.mdf, 0), r.ok ? 'O' : '·']
+      .forEach(c => tr.appendChild(el('td', null, c)));
+    rt.appendChild(tr);
+  });
+  wrap.appendChild(rt);
+  det.appendChild(wrap);
+  raw.appendChild(det);
+
+  const btn = el('button', null, 'CSV 내려받기');
+  btn.style.marginTop = '12px';
+  btn.onclick = () => downloadCsv(d);
+  raw.appendChild(btn);
+  parts.push(raw);
+
+  box.replaceChildren(...parts);
+}
+
+function downloadCsv(d) {
+  const lines = [
+    '# session_id,' + d.id,
+    '# started_at,' + d.started_at,
+    '# end_reason,' + d.end_reason_label,
+    '# stim_period_ms,' + d.stim_period_ms,
+    't_s,p2p,fatigue,rms,mdf,contraction_ok',
+  ];
+  (d.series || []).forEach(r => {
+    const n = (v, k) => (v === null || v === undefined) ? '' : v.toFixed(k);
+    lines.push([n(r.t, 3), n(r.p2p, 2), n(r.fatigue, 2),
+                n(r.rms, 2), n(r.mdf, 2), r.ok ? 1 : 0].join(','));
+  });
+  const blob = new Blob([lines.join('\n')], {type: 'text/csv;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'refit_' + d.started_at.replace(/[:.]/g, '') + '.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// ── 목록 ──────────────────────────────────────────────────────────────
+
+function select(id, node) {
+  document.querySelectorAll('.row.on').forEach(n => n.classList.remove('on'));
+  if (node) node.classList.add('on');
+  showEmpty(document.getElementById('detail'), '불러오는 중…');
+  api('/api/sessions/' + encodeURIComponent(id))
+    .then(renderDetail)
+    .catch(() => showEmpty(document.getElementById('detail'),
+      '이 기록을 불러오지 못했어요.'));
+}
+
+function renderList(data) {
+  document.getElementById('who').textContent =
+    (data.patient || '환자 미선택') + ' · ' + data.sessions.length + '회';
+
+  const box = document.getElementById('list');
+  if (data.sessions.length === 0) {
+    showEmpty(box, '아직 훈련 기록이 없어요.');
+    showEmpty(document.getElementById('detail'), '');
+    return;
+  }
+
+  const cards = data.sessions.map((s) => {
+    const c = el('div', 'card row');
+    const when = el('div', 'when', fmtWhen(s.started_at));
+    when.appendChild(el('span', 'chip g-' + s.grade, '신뢰도 ' + s.grade));
+    c.appendChild(when);
+    c.appendChild(el('div', 'sub',
+      s.rep_count + '번 · ' + fmtDur(s.duration_s) + ' · '
+      + s.end_reason_label + (s.synced ? '' : ' · 업로드 대기')));
+    c.onclick = () => select(s.id, c);
+    return c;
+  });
+  box.replaceChildren(...cards);
+
+  // 최근 것을 바로 펼쳐 둔다.
+  select(data.sessions[0].id, cards[0]);
+}
+
+showEmpty(document.getElementById('list'), '불러오는 중…');
+api('/api/sessions').then(renderList).catch(() =>
+  showEmpty(document.getElementById('list'),
+    '폰과 연결하지 못했어요.\n같은 Wi-Fi 인지, 주소 끝의 접속 코드가 맞는지 확인해 주세요.'));
+</script>
+</body>
+</html>

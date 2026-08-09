@@ -4,6 +4,7 @@ import '../app_state.dart';
 import '../history/history_section.dart';
 import '../patients/patient_select_screen.dart';
 import '../refit_theme.dart';
+import '../session_language.dart';
 
 /// 홈 — **오늘 무엇을 할지 3초 안에 알려 주고, 그 아래에 지나온 날들이 있다.**
 ///
@@ -27,7 +28,6 @@ class HomeTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final patient = gApp.patient;
-    final today = gApp.sessionsOn(DateTime.now());
 
     return Column(
       children: [
@@ -96,11 +96,12 @@ class HomeTab extends StatelessWidget {
                 ),
               ),
 
-              // ── 오늘의 상태 ──
+              // ── 오늘 한 운동 ──
               const RefitSectionTitle('오늘'),
               _TodayCard(
                 status: gApp.todayStatus,
-                sessionsToday: today.length,
+                summary: gApp.todaySummary,
+                changeNote: gApp.changeNote,
               ),
 
               // ── 지나온 날들 ──
@@ -129,27 +130,30 @@ class HomeTab extends StatelessWidget {
   }
 }
 
+/// 오늘 한 운동 요약 + 상태 한 줄.
+///
+/// 숫자는 **행동 기반**만 쓴다 — 쥔 횟수와 운동 시간. 피로도는 숫자가 아니라
+/// 표정과 한 문장으로 말한다: 환자에게 필요한 답은 "내 피로가 몇 %인가"가
+/// 아니라 "더 해도 되는가"이기 때문이다.
 class _TodayCard extends StatelessWidget {
-  const _TodayCard({required this.status, required this.sessionsToday});
+  const _TodayCard({
+    required this.status,
+    required this.summary,
+    required this.changeNote,
+  });
 
   final DailyStatus status;
-  final int sessionsToday;
+  final DailySummary summary;
+  final String? changeNote;
 
   @override
   Widget build(BuildContext context) {
-    // 색 규칙: 좋음=민트, 주의=노랑, 피로=호박. **빨강은 쓰지 않는다.**
+    // 색 규칙: 적당=민트, 부족=노랑, 충분=호박. **빨강은 쓰지 않는다.**
     final tone = switch (status) {
       DailyStatus.none => RefitTheme.inkFaint,
+      DailyStatus.more => RefitTheme.caution,
       DailyStatus.good => RefitTheme.good,
-      DailyStatus.caution => RefitTheme.caution,
-      DailyStatus.tired => RefitTheme.tired,
-    };
-
-    final headline = switch (status) {
-      DailyStatus.none => '오늘은 아직 기록이 없어요',
-      DailyStatus.good => '몸 상태가 좋아요',
-      DailyStatus.caution => '조금 무리했을 수 있어요',
-      DailyStatus.tired => '오늘 몫을 다 했어요',
+      DailyStatus.enough => RefitTheme.tired,
     };
 
     return RefitCard(
@@ -159,21 +163,66 @@ class _TodayCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              Text('피로도', style: RefitTheme.label),
-              const Spacer(),
+              Text(status.emoji, style: const TextStyle(fontSize: 22)),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  status.headline,
+                  style: RefitTheme.body.copyWith(color: RefitTheme.ink),
+                ),
+              ),
               RefitChip(label: status.label, tone: tone),
             ],
           ),
-          const SizedBox(height: 14),
-          Text(headline,
-              style: RefitTheme.body.copyWith(color: RefitTheme.ink)),
-          const SizedBox(height: 8),
-          Text(
-            sessionsToday == 0 ? '아직 안 했어요' : '오늘 $sessionsToday회 완료',
-            style: RefitTheme.bodySmall,
-          ),
+
+          if (summary.isEmpty) ...[
+            const SizedBox(height: 14),
+            Text('아직 안 했어요', style: RefitTheme.bodySmall),
+          ] else ...[
+            const SizedBox(height: 18),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Expanded(
+                  child: _Stat(value: '${summary.reps}', unit: '번 쥐었어요'),
+                ),
+                Expanded(
+                  child: _Stat(
+                    value: formatDurationKo(summary.seconds),
+                    unit: '운동했어요',
+                  ),
+                ),
+              ],
+            ),
+            if (changeNote != null) ...[
+              const SizedBox(height: 14),
+              Text(
+                changeNote!,
+                style: RefitTheme.bodySmall.copyWith(color: RefitTheme.glow),
+              ),
+            ],
+          ],
         ],
       ),
+    );
+  }
+}
+
+class _Stat extends StatelessWidget {
+  const _Stat({required this.value, required this.unit});
+
+  final String value;
+  final String unit;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(value, style: RefitTheme.figure),
+        const SizedBox(height: 4),
+        Text(unit, style: RefitTheme.bodySmall.copyWith(fontSize: 14)),
+      ],
     );
   }
 }

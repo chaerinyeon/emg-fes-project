@@ -8,10 +8,13 @@
 // 펌웨어가 매 1초마다 보내는 JSON (짧은 키):
 //   ts, raw, env, rms, mdf, rs, ms, fd, run, stim, hc, cc, rt, mt, ct, b, rr, st, mk
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'features/app_state.dart';
+import 'features/monitor_service.dart';
 import 'features/refit_play_app.dart';
 import 'screens/splash_screen.dart';
 import 'services/profile_service.dart';
@@ -27,6 +30,9 @@ Future<void> main() async {
   // 저장소·설정·기록을 화면보다 먼저 세운다. 홈 탭은 첫 프레임에서 이미
   // "오늘 뭘 했는지" 를 말할 수 있어야 한다.
   await gApp.init();
+  // 설정에서 켜 뒀으면 앱이 뜰 때 관찰 서버도 함께 뜬다. 실패해도
+  // MonitorService 가 삼키고 lastError 에만 남긴다 — 훈련은 그대로 된다.
+  if (gApp.settings.monitorEnabled) unawaited(gMonitor.enable());
 
   // 진입점 전환 — RE-FIT Play(환자 화면).
   // 기존 모니터 앱으로 되돌리려면 아래 한 줄을 `const EmgFesApp()` 으로 바꾼다.

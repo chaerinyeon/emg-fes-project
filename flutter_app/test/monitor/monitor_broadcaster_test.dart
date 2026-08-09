@@ -24,6 +24,8 @@ MonitorBroadcaster _make({String token = '8134'}) => MonitorBroadcaster(
     );
 
 void main() {
+  group('추가 라우트', _extraRouteTests);
+
   test('start 하면 엔드포인트와 토큰이 생긴다', () async {
     final b = _make();
     final ep = await b.start();
@@ -205,5 +207,81 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 150));
     expect(got.any((m) => m['t'] == 'event' && m['kind'] == 'session_stop'),
         isTrue);
+  });
+}
+
+// ── 추가 라우트 (기록 조회) ────────────────────────────────────────────
+//
+// 기록 조회는 앱의 저장소를 읽어야 하는 일이라 방송기 밖(extraHandler)에
+// 산다. 방송기가 SessionStore 를 직접 알게 되면 이 클래스를 하드웨어·저장소
+// 없이 테스트할 수 없다.
+void _extraRouteTests() {
+  MonitorBroadcaster make(
+    Future<MonitorPayload?> Function(Uri) handler, {
+    String token = '8134',
+  }) =>
+      MonitorBroadcaster(
+        pageLoader: () async => '<html><body>모니터</body></html>',
+        helloBuilder: _hello,
+        token: token,
+        extraHandler: handler,
+      );
+
+  Future<HttpClientResponse> get(int port, String path) async {
+    final client = HttpClient();
+    addTearDown(client.close);
+    return (await client.getUrl(Uri.parse('http://127.0.0.1:$port$path')))
+        .close();
+  }
+
+  test('추가 라우트가 본문과 콘텐츠 타입을 그대로 낸다', () async {
+    final b = make((uri) async => uri.path == '/api/sessions'
+        ? const MonitorPayload('{"sessions":[]}')
+        : null);
+    final ep = (await b.start())!;
+    addTearDown(b.stop);
+
+    final res = await get(ep.port, '/api/sessions?k=${ep.token}');
+    expect(res.statusCode, 200);
+    expect(res.headers.contentType!.mimeType, 'application/json');
+    expect(await res.transform(utf8.decoder).join(), contains('sessions'));
+  });
+
+  test('처리기가 null 을 주면 404 다', () async {
+    final b = make((_) async => null);
+    final ep = (await b.start())!;
+    addTearDown(b.stop);
+
+    final res = await get(ep.port, '/api/nope?k=${ep.token}');
+    expect(res.statusCode, 404);
+  });
+
+  // 기록에는 환자 이름과 훈련 이력이 들어 있다. 라이브 화면만 막고 조회
+  // 라우트가 열려 있으면 토큰이 아무 의미가 없다.
+  test('토큰 없이는 추가 라우트도 열리지 않는다', () async {
+    var called = false;
+    final b = make((_) async {
+      called = true;
+      return const MonitorPayload('{}');
+    });
+    final ep = (await b.start())!;
+    addTearDown(b.stop);
+
+    final res = await get(ep.port, '/api/sessions');
+    expect(res.statusCode, 403);
+    expect(called, isFalse, reason: '토큰 검사가 처리기보다 먼저다');
+  });
+
+  test('처리기가 던져도 서버는 살아 있다', () async {
+    final b = make((uri) async {
+      if (uri.path == '/boom') throw StateError('boom');
+      return const MonitorPayload('{"ok":true}');
+    });
+    final ep = (await b.start())!;
+    addTearDown(b.stop);
+
+    await get(ep.port, '/boom?k=${ep.token}');
+    final after = await get(ep.port, '/api/x?k=${ep.token}');
+    expect(after.statusCode, 200);
   });
 }

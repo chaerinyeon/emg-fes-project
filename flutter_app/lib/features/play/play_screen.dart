@@ -21,9 +21,17 @@ import 'therapist_panel.dart';
 ///
 /// 중단 버튼은 상시 노출이고 화면 하단 ⅓ 안에 있다(한 손 조작).
 class PlayScreen extends StatefulWidget {
-  const PlayScreen({super.key, required this.orchestrator});
+  const PlayScreen({
+    super.key,
+    required this.orchestrator,
+    this.monitorUrl,
+  });
 
   final SessionOrchestrator orchestrator;
+
+  /// 치료사 노트북에서 열 관찰 화면 주소. 서버가 못 떴으면 null.
+  /// **환자 화면에는 나오지 않는다** — 치료사 보기 안에만 있다.
+  final String? monitorUrl;
 
   @override
   State<PlayScreen> createState() => _PlayScreenState();
@@ -107,7 +115,10 @@ class _PlayScreenState extends State<PlayScreen> {
                       constraints: BoxConstraints(
                         maxHeight: MediaQuery.of(context).size.height * 0.46,
                       ),
-                      child: TherapistPanel(orchestrator: o),
+                      child: TherapistPanel(
+                        orchestrator: o,
+                        monitorUrl: widget.monitorUrl,
+                      ),
                     ),
                   ),
 

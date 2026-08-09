@@ -65,11 +65,20 @@ class MonitorEndpoint {
       ip == null ? null : monitorUrl(ip: ip!, port: port, token: token);
 }
 
+/// `/` · `/ws` 밖의 경로가 돌려주는 것.
+class MonitorPayload {
+  const MonitorPayload(this.body, {this.contentType = 'application/json'});
+
+  final String body;
+  final String contentType;
+}
+
 class MonitorBroadcaster {
   MonitorBroadcaster({
     required this.pageLoader,
     required this.helloBuilder,
     required this.token,
+    this.extraHandler,
   });
 
   /// HTML 본문 공급자. 앱에서는 에셋 번들, 테스트에서는 문자열 상수.
@@ -77,6 +86,15 @@ class MonitorBroadcaster {
 
   /// 새 클라이언트에게 보낼 hello 를 그때그때 만든다.
   final MonitorHello Function() helloBuilder;
+
+  /// `/` · `/ws` 가 아닌 경로 처리기. null 을 돌려주면 404.
+  ///
+  /// 기록 조회처럼 **앱의 저장소를 읽어야 하는 것**을 여기로 뺀다. 방송기는
+  /// 소켓과 프레임만 알아야 한다 — [SessionStore] 를 직접 알게 되면 이
+  /// 클래스를 하드웨어·저장소 없이 테스트할 수 없다.
+  ///
+  /// 토큰 검사는 이 콜백이 불리기 전에 이미 끝나 있다.
+  final Future<MonitorPayload?> Function(Uri uri)? extraHandler;
 
   /// 접속 토큰. 세션 전체에서 고정 — 호출자([GameScreen])가 [makeToken] 으로
   /// 한 번만 만들어 넘긴다. 여기서 매번 새로 만들면(과거 동작) 백그라운드
@@ -220,6 +238,15 @@ class MonitorBroadcaster {
         await req.response.close();
         return;
       }
+      final extra = await extraHandler?.call(req.uri);
+      if (extra != null) {
+        req.response.headers.contentType = ContentType.parse(extra.contentType);
+        req.response.headers.set('Cache-Control', 'no-store');
+        req.response.write(extra.body);
+        await req.response.close();
+        return;
+      }
+
       req.response.statusCode = HttpStatus.notFound;
       await req.response.close();
     } catch (_) {

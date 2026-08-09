@@ -51,9 +51,41 @@ class _SetupScreenState extends State<SetupScreen> {
   bool _measured = false;
 
   @override
+  void initState() {
+    super.initState();
+    gApp.addListener(_onAppChange);
+  }
+
+  @override
   void dispose() {
+    gApp.removeListener(_onAppChange);
     _teardown();
     super.dispose();
+  }
+
+  /// 환자가 바뀌면 준비를 **버린다.**
+  ///
+  /// 이 화면은 탭 스택 안에서 계속 살아 있어서, 홈에서 환자를 바꾸고
+  /// 돌아와도 앞사람에게 묶인 세션이 그대로 남는다. 그대로 시작하면
+  /// 기록은 앞사람 이름으로 남고, 앞사람 팔에서 잰 강도로 뒷사람을
+  /// 자극하게 된다. 판단은 [RefitAppState.preparedSessionIsStale] 한 곳이
+  /// 내린다.
+  void _onAppChange() {
+    if (gApp.preparedSessionIsStale) {
+      _teardown();
+      _resetPreparation();
+    }
+    if (mounted) setState(() {});
+  }
+
+  /// 부착 확인·강도 측정 결과를 지운다. 다음 사람의 몸에서 다시 잰다.
+  void _resetPreparation() {
+    _linkError = null;
+    _checking = false;
+    _measuring = false;
+    _measured = false;
+    _eventsPerBurst = 0;
+    _level = gApp.settings.defaultIntensity;
   }
 
   void _teardown() {
@@ -178,6 +210,14 @@ class _SetupScreenState extends State<SetupScreen> {
   Future<void> _start() async {
     final o = _o;
     if (o == null) return;
+
+    // 리스너가 놓쳤더라도 여기서 한 번 더 막는다. 세션 저장의 주인은
+    // 이 시점에 정해지므로, 어긋난 채로 들어가면 되돌릴 방법이 없다.
+    if (gApp.preparedSessionIsStale) {
+      _teardown();
+      setState(_resetPreparation);
+      return;
+    }
 
     setState(() => _starting = true);
 

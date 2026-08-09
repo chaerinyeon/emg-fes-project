@@ -58,6 +58,12 @@ class _HistorySectionState extends State<HistorySection> {
             ],
           ),
         ),
+        // 재활에서 중요한 건 한 번의 강도가 아니라 지속이다.
+        if (sessions.isNotEmpty) ...[
+          const _PersistenceCard(),
+          const SizedBox(height: 12),
+        ],
+
         if (sessions.isEmpty)
           _EmptyState(onChanged: () => setState(() {}))
         else if (_calendar)
@@ -73,6 +79,111 @@ class _HistorySectionState extends State<HistorySection> {
               child: SessionCard(session: s),
             ),
       ],
+    );
+  }
+}
+
+/// 지속 — 연속 수행일과 이번 주 목표.
+///
+/// **끊긴 날을 실패로 만들지 않는다.** 연속이 0이어도 "0일" 이라고 쓰지 않고
+/// 경고색도 쓰지 않는다. 재활은 몇 년짜리 일이라 빠지는 날이 반드시 있고,
+/// 그 날을 앱이 나무라기 시작하면 돌아오기가 더 어려워진다. 오늘 아직
+/// 안 했다고 해서 이어지던 수를 깎지도 않는다([RefitAppState.streakDays]).
+///
+/// 주간 목표는 **비율이 아니라 날 수**로 말한다 — "60%" 대신 "5일 중 3일".
+/// 퍼센트는 못 채운 40%를 먼저 읽게 만든다.
+class _PersistenceCard extends StatelessWidget {
+  const _PersistenceCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final streak = gApp.streakDays;
+    final done = gApp.weekDoneDays;
+    final goal = gApp.weekGoalDays;
+    final met = done >= goal;
+
+    return RefitCard(
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('연속', style: RefitTheme.label),
+                const SizedBox(height: 8),
+                Text(
+                  streak == 0 ? '다시 시작해요' : '$streak일째',
+                  style: streak == 0
+                      ? RefitTheme.bodySmall.copyWith(color: RefitTheme.inkSoft)
+                      : RefitTheme.bodySmall.copyWith(
+                          color: RefitTheme.ink,
+                          fontSize: 20,
+                          fontWeight: FontWeight.w700,
+                        ),
+                ),
+              ],
+            ),
+          ),
+          Container(width: 1, height: 40, color: RefitTheme.hairline),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.only(left: 18),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text('이번 주', style: RefitTheme.label),
+                      if (met) ...[
+                        const SizedBox(width: 6),
+                        const Icon(Icons.check_circle_rounded,
+                            size: 14, color: RefitTheme.glow),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '$goal일 중 $done일',
+                    style: RefitTheme.bodySmall.copyWith(
+                      color: RefitTheme.ink,
+                      fontSize: 20,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  _WeekDots(done: done, goal: goal),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _WeekDots extends StatelessWidget {
+  const _WeekDots({required this.done, required this.goal});
+
+  final int done;
+  final int goal;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: List.generate(goal, (i) {
+        final on = i < done;
+        return Container(
+          width: 8,
+          height: 8,
+          margin: const EdgeInsets.only(right: 6),
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            // 못 채운 날은 비워 둘 뿐, 색으로 지적하지 않는다.
+            color: on ? RefitTheme.glow : RefitTheme.panel,
+          ),
+        );
+      }),
     );
   }
 }

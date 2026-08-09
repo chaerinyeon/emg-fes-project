@@ -11,9 +11,12 @@ import 'package:flutter_app/features/history/history_section.dart';
 import 'package:flutter_app/features/history/session_detail_screen.dart';
 import 'package:flutter_app/features/refit_theme.dart';
 import 'package:flutter_app/features/report/report_screen.dart';
+import 'package:flutter_app/features/session/session_orchestrator.dart';
 import 'package:flutter_app/features/shell/refit_shell.dart';
 import 'package:flutter_app/services/profile_service.dart';
 import 'package:flutter_app/session/end_conditions.dart';
+
+import '../support/fake_link.dart';
 
 /// `docs/MENU_STRUCTURE.md` 가 화면으로 실제로 서는지 본다.
 ///
@@ -50,6 +53,38 @@ SessionSummary _session({
       detectRate: 0.95,
       eventsPerBurstMedian: 19,
       levelChangeCount: 2,
+      reliabilityGrade: 'A',
+      stimPeriodMs: 1619,
+      appVersion: '1.0.0',
+      fwVersion: 'fw',
+    );
+
+/// 특정 날짜에 훈련한 세션. 연속 수행일 계산용.
+SessionSummary _daySession({
+  required String id,
+  required String patientId,
+  required DateTime at,
+}) =>
+    SessionSummary(
+      id: id,
+      patientId: patientId,
+      deviceId: 'd1',
+      startedAt: at,
+      endedAt: at.add(const Duration(minutes: 9)),
+      durationS: 540,
+      gameId: 'fishing',
+      stageId: 's1',
+      intensityLevel: 3,
+      endReason: SessionEndReason.userStop,
+      repCount: 300,
+      successRate: 0.8,
+      maxFatigue: 20,
+      endFatigue: 15,
+      onsetS: null,
+      burstCount: 300,
+      detectRate: 0.9,
+      eventsPerBurstMedian: 18,
+      levelChangeCount: 1,
       reliabilityGrade: 'A',
       stimPeriodMs: 1619,
       appVersion: '1.0.0',
@@ -191,8 +226,12 @@ void main() {
     });
   });
 
-  group('홈 — 퍼센트를 쓰지 않는다', () {
-    testWidgets('오늘의 상태는 3단계 상태로만 말한다', (tester) async {
+  group('홈 — 숫자는 행동 기반만, 피로도는 상태로', () {
+    testWidgets('오늘 한 운동을 횟수·시간으로 말하고 퍼센트를 쓰지 않는다', (tester) async {
+      tester.view.physicalSize = const Size(1000, 2400);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
       await tester.runAsync(() async {
         await giveParalysisType(SubjectCategory.complete);
         await gApp.store.saveSession(_session(
@@ -207,8 +246,78 @@ void main() {
       for (final t in allText(tester)) {
         expect(t, isNot(contains('%')), reason: '환자 화면에 퍼센트는 없다: "$t"');
       }
-      expect(find.text('피로'), findsOneWidget);
-      expect(find.textContaining('오늘 1회 완료'), findsOneWidget);
+      // 행동 기반 숫자 — 쥔 횟수와 운동 시간.
+      expect(find.text('340'), findsWidgets);
+      expect(find.text('9분 18초'), findsWidgets);
+      // 피로도는 표정 + 한 문장 + 상태 이름.
+      expect(find.text('😊'), findsOneWidget);
+      expect(find.text('오늘은 충분해요'), findsOneWidget);
+      expect(find.text('충분'), findsOneWidget);
+    });
+
+    testWidgets('아직 안 한 날은 나무라지 않는다', (tester) async {
+      await tester.runAsync(() => giveParalysisType(SubjectCategory.complete));
+      await pumpShell(tester);
+
+      expect(find.text('오늘은 아직이에요'), findsOneWidget);
+      expect(find.text('아직 안 했어요'), findsOneWidget);
+    });
+  });
+
+  group('지속 — 끊긴 날을 실패로 만들지 않는다', () {
+    testWidgets('연속 수행일과 주간 목표를 날 수로 말한다', (tester) async {
+      tester.view.physicalSize = const Size(1000, 2400);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      final now = DateTime.now();
+      await tester.runAsync(() async {
+        await giveParalysisType(SubjectCategory.complete);
+        // 오늘·어제·그제 — 3일 연속.
+        for (var i = 0; i < 3; i++) {
+          await gApp.store.saveSession(_daySession(
+            id: 'd$i',
+            patientId: patient.id,
+            at: now.subtract(Duration(days: i)),
+          ));
+        }
+        await gApp.reloadSessions();
+      });
+
+      expect(gApp.streakDays, 3);
+
+      await pumpShell(tester);
+      expect(find.text('3일째'), findsOneWidget);
+      // 비율이 아니라 날 수로 말한다.
+      expect(find.textContaining('일 중'), findsOneWidget);
+    });
+
+    test('오늘 아직 안 했어도 어제까지 이어진 수를 깎지 않는다', () async {
+      final now = DateTime.now();
+      await giveParalysisType(SubjectCategory.complete);
+      for (var i = 1; i <= 2; i++) {
+        await gApp.store.saveSession(_daySession(
+          id: 'd$i',
+          patientId: patient.id,
+          at: now.subtract(Duration(days: i)),
+        ));
+      }
+      await gApp.reloadSessions();
+
+      expect(gApp.streakDays, 2,
+          reason: '아침에 앱을 열었을 뿐인데 0일이 뜨면 하루가 시작되기 전에 실패가 된다');
+    });
+
+    test('이틀 넘게 비면 연속은 0이지만 그것도 실패로 쓰지 않는다', () async {
+      await giveParalysisType(SubjectCategory.complete);
+      await gApp.store.saveSession(_daySession(
+        id: 'old',
+        patientId: patient.id,
+        at: DateTime.now().subtract(const Duration(days: 5)),
+      ));
+      await gApp.reloadSessions();
+
+      expect(gApp.streakDays, 0);
     });
   });
 
@@ -349,6 +458,43 @@ void main() {
       expect(moved, 1);
       expect(gApp.patient!.id, 'local');
       expect(gApp.patientSessions, hasLength(1));
+    });
+  });
+
+  group('훈련 기록은 훈련한 사람에게 붙는다', () {
+    // 사전 세팅은 연결한 순간의 환자에게 묶인다. 그 뒤 환자를 바꾸면
+    // 준비만 남고 주인이 달라지는데, 그대로 시작하면 기록이 앞사람 이름으로
+    // 남고 앞사람 팔에서 잰 강도로 뒷사람을 자극하게 된다.
+    test('환자를 바꾸면 준비해 둔 세션은 무효가 된다', () async {
+      final link = FakeLink();
+      addTearDown(link.dispose);
+
+      await giveParalysisType(SubjectCategory.complete);
+      final first = gApp.patient!;
+
+      final o = SessionOrchestrator(
+        link: link,
+        store: InMemorySessionStore(),
+        sessionId: 's-prep',
+        patientId: first.id,
+        deviceId: 'd1',
+      );
+      addTearDown(o.dispose);
+      gApp.live = o;
+
+      expect(gApp.preparedSessionIsStale, isFalse,
+          reason: '연결한 환자 그대로면 유효하다');
+
+      await gApp.savePatient(UserProfile(
+        id: 'p_second',
+        name: '다른 환자',
+        age: 61,
+        category: SubjectCategory.incomplete,
+      ));
+      await gApp.selectPatient('p_second');
+
+      expect(gApp.preparedSessionIsStale, isTrue,
+          reason: '앞사람에게 묶인 준비로 뒷사람을 훈련시킬 수 없다');
     });
   });
 

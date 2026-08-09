@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../signal/fatigue_engine.dart' show FatigueAdvice;
 import '../refit_theme.dart';
@@ -22,9 +23,16 @@ import '../session_language.dart';
 /// 렌더 루프와 분리된 타이머로 돌기 때문에(하드 제약 7), 이 패널이 열려
 /// 있어도 자극 타이밍은 흔들리지 않는다. 닫혀 있으면 타이머 자체가 없다.
 class TherapistPanel extends StatefulWidget {
-  const TherapistPanel({super.key, required this.orchestrator});
+  const TherapistPanel({
+    super.key,
+    required this.orchestrator,
+    this.monitorUrl,
+  });
 
   final SessionOrchestrator orchestrator;
+
+  /// 같은 Wi-Fi 의 노트북에서 열 관찰 화면 주소. 서버가 못 떴으면 null.
+  final String? monitorUrl;
 
   @override
   State<TherapistPanel> createState() => _TherapistPanelState();
@@ -164,9 +172,70 @@ class _TherapistPanelState extends State<TherapistPanel> {
                 ),
               ],
             ),
+
+            const Divider(height: 28, color: RefitTheme.hairline),
+            _MonitorAddress(url: widget.monitorUrl),
           ],
         ),
       ),
+    );
+  }
+}
+
+/// 노트북에서 열 관찰 화면 주소.
+///
+/// 서버는 폰 안에 있고 같은 Wi-Fi 안에서만 닿는다 — 인터넷도 계정도 필요
+/// 없다. 주소 뒤의 4자리는 암호가 아니라, 같은 Wi-Fi 의 다른 사람이
+/// 우발적으로 열어보는 것만 막는 값이다.
+class _MonitorAddress extends StatelessWidget {
+  const _MonitorAddress({required this.url});
+
+  final String? url;
+
+  @override
+  Widget build(BuildContext context) {
+    final u = url;
+    return Row(
+      children: [
+        const Icon(Icons.cast_rounded, size: 18, color: RefitTheme.inkFaint),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '노트북에서 보기',
+                style: RefitTheme.bodySmall.copyWith(
+                  fontSize: 13,
+                  color: RefitTheme.inkFaint,
+                ),
+              ),
+              const SizedBox(height: 3),
+              Text(
+                // 못 띄운 이유를 감추지 않는다 — 주소가 없으면 치료사는
+                // 브라우저만 새로고침하며 원인을 영영 모른다.
+                u ?? '관찰 서버를 띄우지 못했어요 (Wi-Fi 확인)',
+                style: RefitTheme.bodySmall.copyWith(
+                  color: u == null ? RefitTheme.alert : RefitTheme.ink,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+        if (u != null)
+          IconButton(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: u));
+              if (!context.mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('주소를 복사했어요')),
+              );
+            },
+            icon: const Icon(Icons.copy_rounded, size: 18),
+            color: RefitTheme.inkSoft,
+          ),
+      ],
     );
   }
 }
