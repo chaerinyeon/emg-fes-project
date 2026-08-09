@@ -50,7 +50,7 @@ class _HomePageState extends State<HomePage> {
   BluetoothDevice? _device;
   BluetoothCharacteristic? _cmdChar;
   StreamSubscription<List<int>>? _dataSub;
-  StreamSubscription<List<int>>? _rawSub; // RAW 1kHz 바이너리 스트림 구독
+  StreamSubscription<List<int>>? _rawSub; // RAW 4kHz 바이너리 스트림 구독
   StreamSubscription<BluetoothConnectionState>? _connSub;
   StreamSubscription<List<ScanResult>>? _scanSub;
   bool _scanning = false;
@@ -134,7 +134,7 @@ class _HomePageState extends State<HomePage> {
   final EnvLogRecorder _envLog = EnvLogRecorder();
   String? _lastEnvCsvPath; // 마지막 저장 경로 — 재공유용
 
-  // RAW 고해상도 로깅 — 1kHz 원신호 전량 기록 → Time(ms),Raw_ADC CSV (raw_*.csv)
+  // RAW 고해상도 로깅 — 4kHz 원신호 전량 기록 → Time(ms),Raw_ADC CSV (raw_*.csv)
   final RawLogRecorder _rawLog = RawLogRecorder();
   String? _pendingEnvMarker; // ENV 로그용 마커 (_pendingMarker는 1Hz 로그가 소비)
   String _sessionCategoryTag = 'unknown';
@@ -260,7 +260,7 @@ class _HomePageState extends State<HomePage> {
       BluetoothCharacteristic? dataChar;
       BluetoothCharacteristic? cmdChar;
       BluetoothCharacteristic?
-      rawChar; // RAW 1kHz (구버전 펌웨어엔 없을 수 있음 → optional)
+      rawChar; // RAW 4kHz (구버전 펌웨어엔 없을 수 있음 → optional)
       for (final s in services) {
         if (s.uuid.toString().toLowerCase() != kServiceUuid) continue;
         for (final c in s.characteristics) {
@@ -286,7 +286,7 @@ class _HomePageState extends State<HomePage> {
       await _dataSub?.cancel();
       _dataSub = dataChar.lastValueStream.listen(_onCharData);
 
-      // RAW 1kHz 바이너리 스트림 — 펌웨어가 지원할 때만 구독 (JSON 채널과 분리).
+      // RAW 4kHz 바이너리 스트림 — 펌웨어가 지원할 때만 구독 (JSON 채널과 분리).
       await _rawSub?.cancel();
       _rawSub = null;
       if (rawChar != null) {
@@ -342,7 +342,7 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // ---------- RAW 1kHz 바이너리 수신 ----------
+  // ---------- RAW 4kHz 바이너리 수신 ----------
   // JSON이 아닌 바이너리 패킷. 세션 기록 중일 때만 raw 로거에 누적된다.
   void _onRawData(List<int> bytes) {
     _rawLog.addPacket(bytes);
@@ -777,7 +777,7 @@ class _HomePageState extends State<HomePage> {
     _sessionCategoryTag =
         gProfileService.active?.category?.fileTag ?? 'unknown';
     _envLog.start(filenameTag: _sessionCategoryTag); // ENV 10Hz 전량 기록 시작
-    _rawLog.start(filenameTag: _sessionCategoryTag); // RAW 1kHz 원신호 전량 기록 시작
+    _rawLog.start(filenameTag: _sessionCategoryTag); // RAW 4kHz 원신호 전량 기록 시작
     _pendingMarker = null;
     _pendingEnvMarker = null;
     _st.sessionMaxRms = 0;
@@ -955,7 +955,7 @@ class _HomePageState extends State<HomePage> {
       _toast('ENV CSV 저장 실패', Colors.orange);
     }
 
-    // RAW 1kHz 원신호 CSV (Time(ms),Raw_ADC) 저장 — 필터링·주파수 재분석·딥러닝용.
+    // RAW 4kHz 원신호 CSV (Time(ms),Raw_ADC) 저장 — 필터링·주파수 재분석·딥러닝용.
     // ★ 공유 시트보다 반드시 '먼저' 저장한다. 공유 시트는 사용자가 닫아야 반환되는
     //   모달이라, 뒤에 두면 시트를 안 닫은 세션의 raw 가 영영 저장되지 않는다.
     final rawSaved = await _rawLog.save(subjectId: gProfileService.active?.id);

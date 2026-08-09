@@ -159,6 +159,16 @@ void main() {
       expect(_rows(await _read(p2!)).length, 8);
     });
 
+    test('4kHz 표본 인덱스를 0.25ms 간격으로 기록한다', () {
+      final log = RawLogRecorder()..start();
+      log.addPacket(packet(0, 5));
+
+      final times = _rows(
+        log.toCsv(),
+      ).map((row) => row.split(',').first).toList();
+      expect(times, ['0', '0.25', '0.5', '0.75', '1']);
+    });
+
     test('펌웨어 카운터 리셋 시 이미 flush 된 이전 세션 행이 파일에 남지 않는다', () async {
       final log = RawLogRecorder()..start();
       log.addPacket(packet(900, 4)); // 이전 세션 잔여 패킷
@@ -173,7 +183,7 @@ void main() {
       expect(rows.first.split(',').first, '0');
 
       // Time(ms) 단조증가 — 이게 깨지면 분석 파이프라인이 망가진다
-      final times = rows.map((r) => int.parse(r.split(',').first)).toList();
+      final times = rows.map((r) => double.parse(r.split(',').first)).toList();
       for (var i = 1; i < times.length; i++) {
         expect(times[i], greaterThan(times[i - 1]));
       }

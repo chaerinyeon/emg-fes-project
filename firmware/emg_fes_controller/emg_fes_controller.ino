@@ -23,7 +23,7 @@
 */
 
 #include <NimBLEDevice.h>
-#include <ArduinoJson.h>
+#include <ArduinoJson.hpp>
 #include <arduinoFFT.h>
 #include <math.h>
 
@@ -33,7 +33,7 @@
 #define SERVICE_UUID     "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
 #define CHAR_DATA_UUID   "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 #define CHAR_CMD_UUID    "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
-#define CHAR_RAW_UUID    "6E400004-B5A3-F393-E0A9-E50E24DCCA9E"  // RAW 1kHz 파형 (binary notify)
+#define CHAR_RAW_UUID    "6E400004-B5A3-F393-E0A9-E50E24DCCA9E"  // RAW 4kHz 파형 (binary notify)
 #define BLE_DEVICE_NAME  "EMG-FES-01"
 
 // ===== 핀 설정 =====
@@ -47,15 +47,15 @@ const int PIN_MASSAGER_UP     = 25;
 const int PIN_MASSAGER_DOWN   = 26;
 
 // ===== 신호처리 파라미터 =====
-const int SAMPLE_RATE = 1000;              // 1kHz 샘플링
-const int FFT_SIZE = 512;                  // FFT 윈도우 (512표본=512ms 분량 @1kHz)
+const int SAMPLE_RATE = 4000;              // 4kHz 샘플링 (0.25ms/표본)
+const int FFT_SIZE = 2048;                 // FFT 윈도우 (2048표본=512ms 분량 @4kHz)
 // RMS 윈도우 = 자극 버스트 주기의 정수배여야 한다.
 // 실측 버스트 주기 1621.9ms (버스트 593ms + 쉼 1029ms, duty 37%).
 // 1000ms 였을 때: 주기의 0.62배라 창이 버스트를 0.59~1.0 비율로 물어 duty-cycle 에 따라
 // RMS 가 출렁였다. 주기와 같은 1622ms 면 창 위상과 무관하게 항상 정확히 버스트 1개를
 // 포함한다 → RMS 가 위상 불변이 된다.
 // (기기는 잠금 수준으로 안정적: 033307 주기 σ=0.58ms, 세션 전체 드리프트 0.3ms → 재정렬 불필요)
-const int RMS_WINDOW = 1622;               // = 버스트 주기 1621.9ms (실측)
+const int RMS_WINDOW = 6488;               // = 버스트 주기 1621.9ms (실측, @4kHz)
 const int HISTORY_SIZE = 60;               // 60초 분량 RMS/MDF 히스토리
 
 // 임계값 (방식 3: 이중 조건)
@@ -99,12 +99,15 @@ const int MW_WINDOW_START_MS = 2;             // 자극 후 ms (0~1ms 스파이�
 // 스파이크'가 되어 M-wave 를 오염시킨다. 28 이면 항상 다음 자극 앞에서 닫힌다.
 // (M-wave 는 5~15ms 라 28 로 줄여도 손실 없음)
 const int MW_WINDOW_END_MS = 28;              // 자극 후 ms
-const int MW_WINDOW_LEN = (MW_WINDOW_END_MS - MW_WINDOW_START_MS) + 1;  // 24 샘플 (1kHz)
+const int MW_WINDOW_START_SAMPLES = MW_WINDOW_START_MS * SAMPLE_RATE / 1000;
+const int MW_WINDOW_END_SAMPLES = MW_WINDOW_END_MS * SAMPLE_RATE / 1000;
+const int MW_WINDOW_LEN = MW_WINDOW_END_SAMPLES - MW_WINDOW_START_SAMPLES + 1;
 // 불응기는 자극 주기(실측 31.185ms)보다 반드시 작아야 한다.
 // 40ms 였을 때: 40 > 31 이라 자극 하나 걸러 하나만 검출 → 실측 검출률 50.0%(042118),
 // blanking 도 그 절반에만 걸려 놓친 스파이크가 RMS 전력의 76% 를 차지했다.
 // 27ms 면 artifact 폭(~18ms)보다 길고 ISI 최소값 30ms 보다 짧아 모든 자극을 잡는다.
 const unsigned long MW_REFRACTORY_MS = 27;    // < 자극주기 31.185ms (실측)
+const uint32_t MW_REFRACTORY_SAMPLES = MW_REFRACTORY_MS * SAMPLE_RATE / 1000;
 
 // M-wave 검출 유효성(신뢰도) 판정 파라미터.
 // latency는 진단값으로만 남기고 유효성·피로 판정에는 사용하지 않는다.
@@ -135,17 +138,17 @@ const float MW_ADAPT_EMA0 = (float)MW_ARTIFACT_THRESHOLD / MW_ADAPT_FRAC;
 // 실측 자극률 12.35/s 이므로 blanking 표본 비율은 16ms×12.35 ≈ 19.8% — 80% 는 보존된다.
 // (기존 주석의 "25Hz 자극 = 펄스 간격 40ms" 는 틀렸다. 실측은 32.078Hz = 31.185ms 간격)
 const int STIM_BLANK_MS = 16;
+const uint32_t STIM_BLANK_SAMPLES = STIM_BLANK_MS * SAMPLE_RATE / 1000;
 
 // ===== BLE 핸들 =====
 NimBLECharacteristic* dataChar = nullptr;
 NimBLECharacteristic* cmdChar  = nullptr;
-NimBLECharacteristic* rawChar  = nullptr;   // RAW 1kHz 파형 스트리밍 (binary)
+NimBLECharacteristic* rawChar  = nullptr;   // RAW 4kHz 파형 스트리밍 (binary)
 volatile bool deviceConnected = false;
 
 // ===== ADC 버퍼 / 10Hz 메트릭 생성 =====
-// 1kHz로 샘플링하되, CSV/BLE 행은 ENV와 같은 100ms 간격(10Hz)으로 만든다.
-// RMS는 최근 1초(1000표본) 슬라이딩 윈도우를 100ms마다 다시 계산한다.
-// MDF는 최근 FFT_SIZE(512표본=512ms) 윈도우를 100ms마다 다시 계산한다.
+// 4kHz로 샘플링하되, CSV/BLE 메트릭은 ENV와 같은 100ms 간격(10Hz)으로 만든다.
+// RMS는 최근 1622ms, MDF는 최근 FFT_SIZE(2048표본=512ms) 윈도우를 유지한다.
 volatile int rawBuffer[RMS_WINDOW];
 volatile int writeIdx = 0;                 // 다음 기록 위치 (RMS_WINDOW로 wrap)
 volatile int windowCount = 0;              // 현재 RMS 윈도우에 들어있는 표본 수, 최대 1000
@@ -153,7 +156,7 @@ volatile int64_t windowSum = 0;            // 최근 1초 centered 값 합
 volatile int64_t windowSumSq = 0;          // 최근 1초 centered 값 제곱합
 volatile bool bufferFilled = false;        // 1초치(1000표본)가 한 번이라도 채워졌는지
 
-const int COMPUTE_INTERVAL = 100;          // 100표본 @1kHz = 100ms → 10Hz
+const int COMPUTE_INTERVAL = SAMPLE_RATE / 10;  // 400표본 @4kHz = 100ms → 10Hz
 volatile int samplesSinceCompute = 0;      // 마지막 10Hz 계산 이후 누적 표본 수
 volatile bool metricReady = false;         // 100표본마다 true → loop에서 10Hz 계산
 int metricCycle = 0;                        // 10Hz 사이클 카운터 (10회=1초 → 느린 로직)
@@ -173,26 +176,29 @@ volatile int latestPeakAbs10Hz = 0;         // 100ms peak |centered|
 volatile int latestMinCentered10Hz = 0;
 volatile int latestMaxCentered10Hz = 0;
 
-// 실시간 envelope (|raw - DC| 의 1차 IIR LPF, 1kHz로 갱신)
-// alpha=0.03 → 1kHz에서 약 5Hz LPF, 힘 줄 때 100~200ms 안에 따라옴
+// 실시간 envelope (|raw - DC| 의 1차 IIR LPF, 4kHz로 갱신)
+// alpha=0.0075 → 기존 1kHz alpha=0.03과 같은 약 5Hz 응답
 volatile float envLPF = 0;
-const float ENV_LPF_ALPHA = 0.03f;
+const float ENV_LPF_ALPHA = 0.0075f;
 
 // FES blanking 용: 마지막으로 blanking 되지 않은(깨끗한) centered 값. hold 대체에 사용.
 int lastCleanCentered = 0;
 
-// ===== RAW 1kHz 파형 스트리밍 (바이너리, 전용 캐릭터리스틱) =====
-// 매 샘플의 raw ADC를 100개(=100ms)씩 묶어 바이너리 패킷으로 보낸다.
+// ===== RAW 4kHz 파형 스트리밍 (바이너리, 전용 캐릭터리스틱) =====
+// 매 샘플의 raw ADC를 100개(=25ms)씩 묶어 MTU-safe 바이너리 패킷으로 보낸다.
 // 패킷 포맷 (little-endian):
-//   [uint32 firstSampleMs][uint16 count][int16 raw × count]
-// firstSampleMs = 세션 시작 후 첫 샘플의 ms 인덱스 (1kHz라 1샘플=1ms).
-//   → 폰에서 1ms 해상도 타임라인 복원 + 인덱스 불연속으로 패킷 누락 감지.
-volatile int16_t rawBatchFill[COMPUTE_INTERVAL];   // ISR 태스크가 채우는 중인 블록
-volatile int16_t rawBatchOut[COMPUTE_INTERVAL];    // 완성되어 송신 대기 중인 블록
+//   [uint32 firstSampleIndex][uint16 count][int16 raw × count]
+// firstSampleIndex = 세션 시작 후 첫 표본 인덱스. 폰에서 4kHz 시간축을 복원한다.
+const int RAW_BATCH_SAMPLES = 100;                 // 25ms @4kHz, 206B로 MTU 247 이내
+volatile int16_t rawBatchFill[RAW_BATCH_SAMPLES];  // 샘플링 태스크가 채우는 중인 블록
+volatile int rawBatchFillCount = 0;
 volatile uint32_t rawSampleCounter = 0;            // 세션 시작 후 누적 샘플 수
-volatile uint32_t rawBatchFirstIdx = 0;            // rawBatchOut 첫 샘플의 인덱스(ms)
-volatile int  rawBatchCount = 0;                    // rawBatchOut 유효 샘플 수
-volatile bool rawBatchReady = false;               // loop()에서 송신할 블록 대기 플래그
+const int RAW_QUEUE_DEPTH = 8;                     // FFT 중 최대 200ms 송신 지연 흡수
+volatile int16_t rawQueue[RAW_QUEUE_DEPTH][RAW_BATCH_SAMPLES];
+volatile uint32_t rawQueueFirstIdx[RAW_QUEUE_DEPTH];
+volatile int rawQueueHead = 0;
+volatile int rawQueueTail = 0;
+volatile int rawQueueCount = 0;
 
 // ===== FFT 버퍼 =====
 double vReal[FFT_SIZE];
@@ -243,7 +249,8 @@ uint16_t transientCount = 0;
 uint16_t sustainedCount = 0;
 
 // ===== M-wave 상태 (자극 artifact triggered) =====
-volatile unsigned long mwArtifactAtMs = 0;
+volatile uint32_t mwArtifactAtSample = 0;
+volatile bool mwArtifactSeen = false;
 volatile bool mwCapturing = false;
 volatile int mwSampleCount = 0;
 volatile float mwArtifactEMA = MW_ADAPT_EMA0;   // 최근 자극 스파이크 peak 의 EMA(적응형 문턱용)
@@ -330,7 +337,7 @@ TaskHandle_t samplingTaskHandle = nullptr;
 
 // 함수 선언
 void triggerStimulation(bool on);
-void handleCommand(JsonDocument& doc);
+void handleCommand(ArduinoJson::JsonDocument& doc);
 void updateContractionState();
 void samplingTask(void* param);
 float calculateRMS(int64_t sum, int64_t sumSq, int n);
@@ -338,7 +345,7 @@ float calculateMDF(int localWriteIdx);
 void sendRawBatch();
 
 // ============================================================
-// 1ms 타이머 ISR — analogRead는 IRAM-safe가 아니므로
+// 0.25ms 타이머 ISR — analogRead는 IRAM-safe가 아니므로
 // ISR에서는 샘플링 태스크만 깨우고 실제 ADC는 태스크에서 수행.
 // ============================================================
 void IRAM_ATTR onSampleTimer() {
@@ -357,7 +364,9 @@ void IRAM_ATTR onSampleTimer() {
 // ============================================================
 void samplingTask(void* /*param*/) {
   for (;;) {
-    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    // pdFALSE는 대기 중인 tick을 하나씩 소비한다. 4kHz에서 잠깐 스케줄링이 밀려도
+    // 누적 notify를 한 번에 지워 RAW 표본을 조용히 잃지 않게 한다.
+    ulTaskNotifyTake(pdFALSE, portMAX_DELAY);
 
     int raw = analogRead(PIN_EMG_RAW);
     if (dcCalibrating) {
@@ -371,7 +380,7 @@ void samplingTask(void* /*param*/) {
     }
     int centered = raw - dcOffset;
     int absVal = centered < 0 ? -centered : centered;
-    unsigned long nowMs = millis();
+    const uint32_t sampleIndex = rawSampleCounter;
 
     // ===== M-wave: 자극 artifact 감지 + 윈도우 캡처 (원신호 기준) =====
     // FES는 외부에서 수동 제어 → ESP는 자극 켜짐을 모르므로, 세션 동작 중
@@ -386,21 +395,23 @@ void samplingTask(void* /*param*/) {
 
       if (systemRunning && !mwCapturing &&
           (float)absVal > mwThresh &&
-          (nowMs - mwArtifactAtMs) > MW_REFRACTORY_MS) {
-        mwArtifactAtMs = nowMs;
+          (!mwArtifactSeen ||
+           sampleIndex - mwArtifactAtSample > MW_REFRACTORY_SAMPLES)) {
+        mwArtifactAtSample = sampleIndex;
+        mwArtifactSeen = true;
         mwCapturing = true;
         mwSampleCount = 0;
         mwArtifactPeak = absVal;              // 스파이크 peak 추적 시작
       }
       if (mwCapturing) {
-        unsigned long since = nowMs - mwArtifactAtMs;
+        uint32_t since = sampleIndex - mwArtifactAtSample;
         if (absVal > mwArtifactPeak) mwArtifactPeak = absVal;   // dead-zone 포함 스파이크 peak
-        if (since >= (unsigned long)MW_WINDOW_START_MS &&
-            since <= (unsigned long)MW_WINDOW_END_MS) {
+        if (since >= (uint32_t)MW_WINDOW_START_SAMPLES &&
+            since <= (uint32_t)MW_WINDOW_END_SAMPLES) {
           if (mwSampleCount < MW_WINDOW_LEN) {
             mwSamples[mwSampleCount++] = centered;
           }
-        } else if (since > (unsigned long)MW_WINDOW_END_MS) {
+        } else if (since > (uint32_t)MW_WINDOW_END_SAMPLES) {
           // 완료된 캡처를 ready 버퍼로 옮긴다. 다음 자극이 31ms 만에 와서 mwSamples 를
           // 덮어써도 loop() 가 읽을 값은 보존된다.
           for (int i = 0; i < mwSampleCount && i < MW_WINDOW_LEN + 4; i++) {
@@ -420,9 +431,9 @@ void samplingTask(void* /*param*/) {
     // 자극 검출 직후 STIM_BLANK_MS 동안의 표본은 거대한 자극 스파이크라
     // RMS/MDF/SMR/ENV 를 오염시킨다. 그 구간은 '직전 깨끗한 값'으로 대체(hold)해
     // 계산 버퍼에 넣는다. → RMS/MDF 가 자극에 오염되지 않는다.
-    // (raw 1kHz 로그와 M-wave 검출은 위에서 진짜 원신호로 이미 처리함)
-    bool stimBlank = systemRunning && mwArtifactAtMs != 0 &&
-                     (nowMs - mwArtifactAtMs) < (unsigned long)STIM_BLANK_MS;
+    // (raw 4kHz 로그와 M-wave 검출은 위에서 진짜 원신호로 이미 처리함)
+    bool stimBlank = systemRunning && mwArtifactSeen &&
+             (sampleIndex - mwArtifactAtSample) < STIM_BLANK_SAMPLES;
     int procCentered;
     if (stimBlank) {
       procCentered = lastCleanCentered;       // hold (자극 구간 대체)
@@ -454,7 +465,7 @@ void samplingTask(void* /*param*/) {
     if (writeIdx >= RMS_WINDOW) writeIdx = 0;
     bufferFilled = (windowCount >= RMS_WINDOW);
 
-    // 100ms 블록 대표값. raw 평균/RAW 1kHz 로그는 '진짜' 원신호,
+    // 100ms 블록 대표값. raw 평균/RAW 4kHz 로그는 '진짜' 원신호,
     // EMG/peak/centered 통계는 blanking 적용값으로 누적.
     blockRawSum += raw;                        // 진짜 raw 평균 (진단용)
     blockCenteredSum += procCentered;
@@ -462,9 +473,22 @@ void samplingTask(void* /*param*/) {
     if (procAbs > blockPeakAbs) blockPeakAbs = procAbs;
     if (procCentered < blockMinCentered) blockMinCentered = procCentered;
     if (procCentered > blockMaxCentered) blockMaxCentered = procCentered;
-    if (blockCount < COMPUTE_INTERVAL) rawBatchFill[blockCount] = (int16_t)raw;  // RAW 1kHz: 진짜 원신호(오프라인용)
+    rawBatchFill[rawBatchFillCount++] = (int16_t)raw;
     blockCount++;
-    rawSampleCounter++;          // 세션 시작 후 누적 샘플 인덱스 (1kHz=1ms)
+    rawSampleCounter++;
+
+    // 100표본(25ms) RAW 블록 완성 → MTU-safe 송신 버퍼로 스냅샷.
+    if (rawBatchFillCount >= RAW_BATCH_SAMPLES) {
+      if (systemRunning && rawQueueCount < RAW_QUEUE_DEPTH) {
+        for (int i = 0; i < RAW_BATCH_SAMPLES; i++) {
+          rawQueue[rawQueueTail][i] = rawBatchFill[i];
+        }
+        rawQueueFirstIdx[rawQueueTail] = rawSampleCounter - RAW_BATCH_SAMPLES;
+        rawQueueTail = (rawQueueTail + 1) % RAW_QUEUE_DEPTH;
+        rawQueueCount++;
+      }
+      rawBatchFillCount = 0;
+    }
 
     samplesSinceCompute++;
     if (samplesSinceCompute >= COMPUTE_INTERVAL) {
@@ -484,14 +508,6 @@ void samplingTask(void* /*param*/) {
       blockMinCentered = 32767;
       blockMaxCentered = -32768;
       blockCount = 0;
-
-      // RAW 1kHz 블록(100표본) 완성 → 송신 대기 버퍼로 스냅샷 (세션 동작 중에만)
-      if (systemRunning) {
-        for (int i = 0; i < COMPUTE_INTERVAL; i++) rawBatchOut[i] = rawBatchFill[i];
-        rawBatchCount = COMPUTE_INTERVAL;
-        rawBatchFirstIdx = rawSampleCounter - COMPUTE_INTERVAL;
-        rawBatchReady = true;
-      }
 
       samplesSinceCompute = 0;
       metricReady = true;          // 100ms마다 RMS/MDF 재계산 신호
@@ -526,8 +542,8 @@ class CmdCallbacks : public NimBLECharacteristicCallbacks {
     std::string value = pCharacteristic->getValue();
     if (value.empty()) return;
 
-    StaticJsonDocument<256> doc;
-    DeserializationError err = deserializeJson(doc, value.c_str());
+    ArduinoJson::JsonDocument doc;
+    ArduinoJson::DeserializationError err = ArduinoJson::deserializeJson(doc, value.c_str());
     if (err) {
       Serial.printf("⚠️ JSON parse 실패: %s\n", err.c_str());
       return;
@@ -578,10 +594,17 @@ void setup() {
     1
   );
 
-  // 1kHz ADC 타이머 (ESP32 core 3.x API)
+  // 4kHz ADC 타이머 (ESP32 Arduino core 2.x/3.x 호환)
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
   sampleTimer = timerBegin(1000000);                      // 1MHz tick (1us 해상도)
   timerAttachInterrupt(sampleTimer, &onSampleTimer);
-  timerAlarm(sampleTimer, 1000, true, 0);                 // 1000us=1kHz, autoreload
+  timerAlarm(sampleTimer, 250, true, 0);                  // 250us=4kHz, autoreload
+#else
+  sampleTimer = timerBegin(0, 80, true);                  // 80MHz / 80 = 1MHz
+  timerAttachInterrupt(sampleTimer, &onSampleTimer, true);
+  timerAlarmWrite(sampleTimer, 250, true);                // 250us=4kHz, autoreload
+  timerAlarmEnable(sampleTimer);
+#endif
 
   digitalWrite(PIN_STATUS_LED, HIGH);
   Serial.println("=== 준비 완료 (BLE 광고 중) ===\n");
@@ -606,7 +629,7 @@ void setupBLE() {
     NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
   );
 
-  // RAW characteristic (ESP32 → Phone, notify) — 1kHz 파형 바이너리 스트림
+  // RAW characteristic (ESP32 → Phone, notify) — 4kHz 파형 바이너리 스트림
   rawChar = pService->createCharacteristic(
     CHAR_RAW_UUID,
     NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
@@ -807,8 +830,10 @@ void loop() {
         absSum += (v < 0 ? -v : v);
       }
       currentMwAmp = (float)(mx - mn);
-      currentMwArea = (float)absSum;
-      currentMwLatency = (float)(MW_WINDOW_START_MS + peakIdx);
+      // 면적은 ADC·ms 단위를 유지하고 latency는 0.25ms 해상도로 환산한다.
+      currentMwArea = (float)absSum * 1000.0f / SAMPLE_RATE;
+      currentMwLatency = (float)(MW_WINDOW_START_SAMPLES + peakIdx) *
+             1000.0f / SAMPLE_RATE;
       // latency는 진단/CSV에만 남기고 유효성은 진폭 노이즈 게이트로만 판정한다.
       currentMwValid = currentMwAmp >= MW_AMP_MIN;
       mwDirty = true;
@@ -826,7 +851,7 @@ void loop() {
   // BLE 송신은 100ms마다. raw/emg/env/rms/mdf 모두 같은 10Hz 행으로 송신.
   sendDataUpdate();
 
-  // RAW 1kHz 파형 바이너리 패킷 송신 (100ms마다 100표본씩, 전용 캐릭터리스틱).
+  // RAW 4kHz 파형 바이너리 패킷 송신 (25ms마다 100표본씩, 전용 캐릭터리스틱).
   sendRawBatch();
 
   // FES 타임아웃 안전장치
@@ -841,7 +866,7 @@ void loop() {
 // ============================================================
 // 명령 처리 (BLE write로 수신)
 // ============================================================
-void handleCommand(JsonDocument& doc) {
+void handleCommand(ArduinoJson::JsonDocument& doc) {
   String cmd = doc["cmd"].as<String>();
   Serial.printf("📥 cmd: %s\n", cmd.c_str());
 
@@ -888,11 +913,12 @@ void handleCommand(JsonDocument& doc) {
     blockMinCentered = 32767;
     blockMaxCentered = -32768;
     for (int i = 0; i < RMS_WINDOW; i++) rawBuffer[i] = 0;
-    // RAW 1kHz 스트리밍 상태 리셋 — 인덱스를 세션 시작에 0으로 정렬
+    // RAW 4kHz 스트리밍 상태 리셋 — 인덱스를 세션 시작에 0으로 정렬
     rawSampleCounter = 0;
-    rawBatchFirstIdx = 0;
-    rawBatchCount = 0;
-    rawBatchReady = false;
+    rawBatchFillCount = 0;
+    rawQueueHead = 0;
+    rawQueueTail = 0;
+    rawQueueCount = 0;
     portEXIT_CRITICAL(&timerMux);
     // M-wave 카운터/상태 리셋
     mwCount = 0;
@@ -901,7 +927,8 @@ void handleCommand(JsonDocument& doc) {
     mwSampleCountRdy = 0;
     mwReady = false;
     mwDirty = false;
-    mwArtifactAtMs = 0;
+    mwArtifactAtSample = 0;
+    mwArtifactSeen = false;
     mwArtifactEMA = MW_ADAPT_EMA0;   // 적응형 문턱 초기화 (초기 문턱=기존 고정값)
     mwArtifactPeak = 0;
     currentMwAmp = 0;
@@ -1172,7 +1199,7 @@ void sendDataUpdate() {
   sendRmsMdfNext = false;
   bool hasMarker = sessionMarker.length() > 0;
 
-  StaticJsonDocument<512> doc;
+  ArduinoJson::JsonDocument doc;
 
   // ===== 항상 보내는 필드 (10Hz) =====
   doc["ts"]   = now;
@@ -1238,49 +1265,48 @@ void sendDataUpdate() {
   }
 
   String json;
-  serializeJson(doc, json);
+  ArduinoJson::serializeJson(doc, json);
 
   dataChar->setValue((uint8_t*)json.c_str(), json.length());
   dataChar->notify();
 }
 
 // ============================================================
-// RAW 1kHz 파형 바이너리 송신
+// RAW 4kHz 파형 바이너리 송신
 // ----------------------------------------------------------
-// 완성된 100표본 블록을 [uint32 firstSampleMs][uint16 count][int16 raw×count]
+// 완성된 100표본 블록을 [uint32 firstSampleIndex][uint16 count][int16 raw×count]
 // 형식(little-endian)으로 rawChar에 notify. 한 패킷 = 6 + 200 = 206바이트.
 // (MTU 247 협상 기준. 폰에서 count/길이를 검증하므로 잘린 패킷은 폐기됨)
 // ============================================================
 void sendRawBatch() {
   if (!deviceConnected || rawChar == nullptr) return;
-  if (!rawBatchReady) return;
+  if (rawQueueCount <= 0) return;
 
   uint32_t firstIdx;
-  int cnt;
-  int16_t local[COMPUTE_INTERVAL];
+  int16_t local[RAW_BATCH_SAMPLES];
 
   portENTER_CRITICAL(&timerMux);
-  if (!rawBatchReady) { portEXIT_CRITICAL(&timerMux); return; }
-  rawBatchReady = false;
-  firstIdx = rawBatchFirstIdx;
-  cnt = rawBatchCount;
-  for (int i = 0; i < cnt && i < COMPUTE_INTERVAL; i++) local[i] = rawBatchOut[i];
+  if (rawQueueCount <= 0) { portEXIT_CRITICAL(&timerMux); return; }
+  firstIdx = rawQueueFirstIdx[rawQueueHead];
+  for (int i = 0; i < RAW_BATCH_SAMPLES; i++) local[i] = rawQueue[rawQueueHead][i];
+  rawQueueHead = (rawQueueHead + 1) % RAW_QUEUE_DEPTH;
+  rawQueueCount--;
   portEXIT_CRITICAL(&timerMux);
 
-  uint8_t buf[6 + 2 * COMPUTE_INTERVAL];
+  uint8_t buf[6 + 2 * RAW_BATCH_SAMPLES];
   buf[0] = firstIdx & 0xFF;
   buf[1] = (firstIdx >> 8) & 0xFF;
   buf[2] = (firstIdx >> 16) & 0xFF;
   buf[3] = (firstIdx >> 24) & 0xFF;
-  buf[4] = cnt & 0xFF;
-  buf[5] = (cnt >> 8) & 0xFF;
-  for (int i = 0; i < cnt; i++) {
+  buf[4] = RAW_BATCH_SAMPLES & 0xFF;
+  buf[5] = (RAW_BATCH_SAMPLES >> 8) & 0xFF;
+  for (int i = 0; i < RAW_BATCH_SAMPLES; i++) {
     int16_t v = local[i];
     buf[6 + 2 * i]     = v & 0xFF;
     buf[6 + 2 * i + 1] = (v >> 8) & 0xFF;
   }
 
-  rawChar->setValue(buf, 6 + 2 * cnt);
+  rawChar->setValue(buf, 6 + 2 * RAW_BATCH_SAMPLES);
   rawChar->notify();
 }
 
