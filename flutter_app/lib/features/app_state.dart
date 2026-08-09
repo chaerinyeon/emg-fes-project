@@ -99,7 +99,7 @@ class RefitAppState extends ChangeNotifier {
   ///
   /// 앱에 환자 개념이 생기기 전 세션은 `patient_id = 'local'` 로 저장됐다.
   /// 그 기록들은 지금의 환자 id 와 맞지 않아 [patientSessions] 에서 통째로
-  /// 빠진다 — 훈련은 했는데 기록 탭이 비어 보이는 원인이다.
+  /// 빠진다 — 훈련은 했는데 홈의 기록이 비어 보이는 원인이다.
   List<SessionSummary> get unassignedSessions {
     final known = patients.map((p) => p.id).toSet();
     return sessions.where((s) => !known.contains(s.patientId)).toList();

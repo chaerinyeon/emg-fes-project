@@ -7,6 +7,7 @@ import 'package:hive/hive.dart';
 import 'package:flutter_app/core/subject_category.dart';
 import 'package:flutter_app/data/local/session_store.dart';
 import 'package:flutter_app/features/app_state.dart';
+import 'package:flutter_app/features/history/history_section.dart';
 import 'package:flutter_app/features/history/session_detail_screen.dart';
 import 'package:flutter_app/features/refit_theme.dart';
 import 'package:flutter_app/features/report/report_screen.dart';
@@ -16,7 +17,7 @@ import 'package:flutter_app/session/end_conditions.dart';
 
 /// `docs/MENU_STRUCTURE.md` 가 화면으로 실제로 서는지 본다.
 ///
-/// 여기서 지키는 것은 구조와 **하드 제약**이다 — 4탭이 있는가, TEST 가 모든
+/// 여기서 지키는 것은 구조와 **하드 제약**이다 — 3탭이 있는가, TEST 가 모든
 /// 탭에서 닿는가, 마비 유형 없이 훈련에 들어갈 수 없는가, 환자 화면에
 /// 퍼센트가 새지 않는가.
 ///
@@ -106,25 +107,27 @@ void main() {
       expect(find.text('홈'), findsNothing, reason: '탭 바깥의 화면이어야 한다');
     });
 
-    testWidgets('유형을 채우면 4탭이 선다', (tester) async {
+    testWidgets('유형을 채우면 3탭이 선다', (tester) async {
       await tester.runAsync(() => giveParalysisType(SubjectCategory.complete));
       expect(gApp.patientReady, isTrue);
 
       await pumpShell(tester);
 
-      for (final tab in ['홈', '운동', '기록', '설정']) {
+      for (final tab in ['홈', '운동', '설정']) {
         expect(find.text(tab), findsOneWidget, reason: '$tab 탭이 있어야 한다');
       }
+      // 기록은 탭이 아니라 홈 안의 묶음이다.
+      expect(find.byType(HistorySection), findsOneWidget);
     });
   });
 
   group('TEST 는 모든 탭에서 닿는다', () {
-    testWidgets('네 탭 전부에서 AppBar 우측에 TEST 가 있다', (tester) async {
+    testWidgets('세 탭 전부에서 AppBar 우측에 TEST 가 있다', (tester) async {
       await tester
           .runAsync(() => giveParalysisType(SubjectCategory.incomplete));
       await pumpShell(tester);
 
-      for (final tab in ['홈', '운동', '기록', '설정']) {
+      for (final tab in ['홈', '운동', '설정']) {
         await tester.tap(find.text(tab));
         await tester.pump();
         expect(find.text('TEST'), findsOneWidget, reason: '$tab 탭에서도 닿아야 한다');
@@ -209,8 +212,13 @@ void main() {
     });
   });
 
-  group('기록 탭 — 치료사·보호자의 화면', () {
+  group('기록 — 홈 안에서 세부 기록까지 이어진다', () {
     testWidgets('세션 카드에서 세부 기록으로 들어간다', (tester) async {
+      // 홈이 환자 카드·오늘·기록을 한 화면에 담으므로 세로가 필요하다.
+      tester.view.physicalSize = const Size(1000, 2400);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
       await tester.runAsync(() async {
         await giveParalysisType(SubjectCategory.complete);
         await gApp.store.saveSession(_session(patientId: patient.id));
@@ -231,9 +239,8 @@ void main() {
       });
 
       await pumpShell(tester);
-      await tester.tap(find.text('기록'));
-      await tester.pump();
 
+      // 기록은 홈 안에 있다 — 탭을 옮기지 않는다.
       expect(find.textContaining('340번'), findsOneWidget);
 
       await tester.tap(find.textContaining('340번'));
@@ -251,7 +258,7 @@ void main() {
 
   group('환자 개념 이전 기록이 사라지지 않는다', () {
     // 앱에 환자가 없던 시절 세션은 patient_id = 'local' 로 저장됐다.
-    // 기록 탭이 선택된 환자로 목록을 좁히면서 그 기록이 통째로 사라졌다.
+    // 기록 목록이 선택된 환자로 좁혀지면서 그 기록이 통째로 사라졌다.
     //
     // 맞추는 방향이 중요하다 — 고치는 것은 **프로파일 id** 이지 기록이
     // 아니다. `sessions.patient_id` 는 서버와 공유하는 값이라 앱이 다시
@@ -314,7 +321,11 @@ void main() {
       expect(gApp.unassignedSessions, hasLength(1));
     });
 
-    testWidgets('기록 탭이 비었을 때 미지정 기록을 알리고 이어받을 수 있다', (tester) async {
+    testWidgets('기록이 비었을 때 미지정 기록을 알리고 이어받을 수 있다', (tester) async {
+      tester.view.physicalSize = const Size(1000, 2400);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
       await tester.runAsync(() async {
         await giveParalysisType(SubjectCategory.complete);
         await gApp.savePatient(UserProfile(
@@ -328,8 +339,6 @@ void main() {
       });
 
       await pumpShell(tester);
-      await tester.tap(find.text('기록'));
-      await tester.pump();
 
       expect(find.text('환자가 지정되지 않은 기록 1건'), findsOneWidget);
 

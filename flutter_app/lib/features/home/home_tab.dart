@@ -1,15 +1,20 @@
 import 'package:flutter/material.dart';
 
-import '../../data/local/session_store.dart';
 import '../app_state.dart';
+import '../history/history_section.dart';
 import '../patients/patient_select_screen.dart';
 import '../refit_theme.dart';
-import '../session_language.dart';
 
-/// 홈 — **오늘 무엇을 할지 3초 안에 알려 준다.**
+/// 홈 — **오늘 무엇을 할지 3초 안에 알려 주고, 그 아래에 지나온 날들이 있다.**
 ///
-/// 정보를 늘어놓는 화면이 아니다. 그래서 여기 있는 것은 넷뿐이다:
-/// 누가 훈련하는가 · 오늘 몸 상태가 어떤가 · 어제까지 뭘 했는가 · 시작.
+/// 기록을 별도 탭으로 두지 않는 이유: 환자가 보는 "오늘"과 치료사가 보는
+/// "어제까지"가 결국 같은 하나의 흐름이기 때문이다. 탭을 옮겨 다녀야 하면
+/// 그 둘이 서로 다른 이야기처럼 보이고, 무엇보다 "오늘 뭘 했더라"를 확인하는
+/// 데 한 단계가 더 든다.
+///
+/// 순서에는 뜻이 있다. 위에서부터 **누가 · 오늘 몸 상태 · 지나온 날들**이고,
+/// 시작 버튼은 스크롤과 무관하게 화면 하단에 붙어 있다 — 목록을 아무리
+/// 내려도 한 손으로 닿는다.
 ///
 /// **피로도는 퍼센트를 쓰지 않는다.** 좋음/주의/피로 3단계 상태로만 말하고,
 /// 색도 빨강을 쓰지 않는다 — 빨강은 기기 문제 전용이다.
@@ -23,10 +28,6 @@ class HomeTab extends StatelessWidget {
   Widget build(BuildContext context) {
     final patient = gApp.patient;
     final today = gApp.sessionsOn(DateTime.now());
-    final recent = gApp.patientSessions.isEmpty
-        ? null
-        : gApp.patientSessions.first;
-    final status = gApp.todayStatus;
 
     return Column(
       children: [
@@ -95,18 +96,23 @@ class HomeTab extends StatelessWidget {
                 ),
               ),
 
+              // ── 오늘의 상태 ──
               const RefitSectionTitle('오늘'),
-              _TodayCard(status: status, sessionsToday: today.length),
+              _TodayCard(
+                status: gApp.todayStatus,
+                sessionsToday: today.length,
+              ),
 
-              if (recent != null) ...[
-                const RefitSectionTitle('최근 운동'),
-                _RecentCard(session: recent),
-              ],
+              // ── 지나온 날들 ──
+              //
+              // 최근 운동 결과를 따로 요약하지 않는다. 목록 첫 카드가 바로
+              // 그것이라, 요약을 덧붙이면 같은 세션이 화면에 두 번 나온다.
+              const HistorySection(),
             ],
           ),
         ),
 
-        // 큰 버튼은 늘 화면 하단 ⅓ 안에 있다. 한 손으로 닿아야 한다.
+        // 큰 버튼은 스크롤 밖 화면 하단에 붙는다. 한 손으로 닿아야 한다.
         Padding(
           padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
           child: RefitButton(label: '운동 시작', onPressed: onStart),
@@ -168,62 +174,6 @@ class _TodayCard extends StatelessWidget {
           ),
         ],
       ),
-    );
-  }
-}
-
-class _RecentCard extends StatelessWidget {
-  const _RecentCard({required this.session});
-
-  final SessionSummary session;
-
-  @override
-  Widget build(BuildContext context) {
-    final s = session;
-    return RefitCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('${s.startedAt.month}월 ${s.startedAt.day}일',
-              style: RefitTheme.label),
-          const SizedBox(height: 14),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Expanded(
-                child: _Stat(value: '${s.repCount}', unit: '번 쥐었어요'),
-              ),
-              Expanded(
-                child: _Stat(
-                  value: formatDurationKo(s.durationS),
-                  unit: '함께했어요',
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-          Text(closingLineFor(s.endReason), style: RefitTheme.bodySmall),
-        ],
-      ),
-    );
-  }
-}
-
-class _Stat extends StatelessWidget {
-  const _Stat({required this.value, required this.unit});
-
-  final String value;
-  final String unit;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(value, style: RefitTheme.figure),
-        const SizedBox(height: 4),
-        Text(unit, style: RefitTheme.bodySmall.copyWith(fontSize: 14)),
-      ],
     );
   }
 }

@@ -6,7 +6,11 @@ import '../refit_theme.dart';
 import '../session_language.dart';
 import 'session_detail_screen.dart';
 
-/// 기록 탭 — **치료사·보호자가 보는 화면이다.**
+/// 기록 묶음 — **치료사·보호자가 보는 부분이다.**
+///
+/// 홈 안에 얹힌다. 화면을 따로 두지 않는 이유는 환자가 볼 것과 치료사가
+/// 볼 것이 결국 **같은 하루**이기 때문이다. "오늘 어땠나"를 보려고 탭을
+/// 옮겨 다녀야 하면 그 둘이 서로 다른 이야기처럼 보인다.
 ///
 /// 여기서는 지표를 감추지 않는다. 다만 두 가지는 지킨다:
 ///
@@ -14,14 +18,18 @@ import 'session_detail_screen.dart';
 ///   비교는 언제나 같은 환자의 과거 자신하고만 한다. 그래서 목록은 항상
 ///   선택된 환자로 좁혀져 있다.
 /// - **원시 파형(1kHz)은 앱에 저장하지 않는다.** 버스트 단위 요약만 남는다.
-class HistoryTab extends StatefulWidget {
-  const HistoryTab({super.key});
+///
+/// 스크롤은 부모(홈)의 것 하나뿐이다. 여기서 또 스크롤을 만들면 목록 안에
+/// 목록이 생겨 손가락이 어느 쪽을 미는지 알 수 없게 된다. 세션이 수백 개로
+/// 늘면 그때 부모를 `CustomScrollView` 로 바꾸고 이 묶음을 sliver 로 낸다.
+class HistorySection extends StatefulWidget {
+  const HistorySection({super.key});
 
   @override
-  State<HistoryTab> createState() => _HistoryTabState();
+  State<HistorySection> createState() => _HistorySectionState();
 }
 
-class _HistoryTabState extends State<HistoryTab> {
+class _HistorySectionState extends State<HistorySection> {
   bool _calendar = false;
   DateTime _month = DateTime.now();
 
@@ -30,10 +38,11 @@ class _HistoryTabState extends State<HistoryTab> {
     final sessions = gApp.patientSessions;
 
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(20, 0, 20, 6),
-          child: Row(
+        RefitSectionTitle(
+          '기록',
+          trailing: Row(
             children: [
               _ViewToggle(
                 label: '리스트',
@@ -49,22 +58,20 @@ class _HistoryTabState extends State<HistoryTab> {
             ],
           ),
         ),
-        Expanded(
-          child: sessions.isEmpty
-              ? _EmptyState(onChanged: () => setState(() {}))
-              : _calendar
-                  ? _CalendarView(
-                      sessions: sessions,
-                      month: _month,
-                      onMonth: (m) => setState(() => _month = m),
-                    )
-                  : ListView.separated(
-                      padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
-                      itemCount: sessions.length,
-                      separatorBuilder: (_, _) => const SizedBox(height: 12),
-                      itemBuilder: (_, i) => SessionCard(session: sessions[i]),
-                    ),
-        ),
+        if (sessions.isEmpty)
+          _EmptyState(onChanged: () => setState(() {}))
+        else if (_calendar)
+          _CalendarView(
+            sessions: sessions,
+            month: _month,
+            onMonth: (m) => setState(() => _month = m),
+          )
+        else
+          for (final s in sessions)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: SessionCard(session: s),
+            ),
       ],
     );
   }
@@ -83,13 +90,16 @@ class _EmptyState extends StatelessWidget {
   Widget build(BuildContext context) {
     final orphans = gApp.unassignedSessions;
 
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 40, 20, 20),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text(
-          '${gApp.patient?.name ?? '이 환자'} 님의 훈련 기록이 없어요.',
-          style: RefitTheme.body,
-          textAlign: TextAlign.center,
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          child: Text(
+            '${gApp.patient?.name ?? '이 환자'} 님의 훈련 기록이 없어요.',
+            style: RefitTheme.body,
+            textAlign: TextAlign.center,
+          ),
         ),
         if (!gApp.storePersistent) ...[
           const SizedBox(height: 20),
@@ -180,7 +190,7 @@ class _ViewToggle extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(20),
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
           decoration: BoxDecoration(
             color: selected
                 ? RefitTheme.glow.withValues(alpha: 0.16)
@@ -309,8 +319,8 @@ class _CalendarView extends StatelessWidget {
     final selectedMonth = byDay.values.expand((v) => v).toList()
       ..sort((a, b) => b.startedAt.compareTo(a.startedAt));
 
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         RefitCard(
           child: Column(

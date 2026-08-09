@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
-import '../history/history_tab.dart';
 import '../home/home_tab.dart';
 import '../patients/patient_select_screen.dart';
 import '../refit_theme.dart';
@@ -9,12 +8,12 @@ import '../settings/settings_tab.dart';
 import '../setup/setup_screen.dart';
 import '../test/test_sheet.dart';
 
-/// 앱 셸 — 하단 네비게이션 4탭과 상시 노출되는 `TEST` 버튼.
+/// 앱 셸 — 하단 네비게이션 3탭과 상시 노출되는 `TEST` 버튼.
 ///
 /// ```
 /// ├─ [최초 진입] 환자 선택        ← 탭 바깥. 마비 유형이 정해지기 전까지.
-/// └─ 하단 네비게이션 (4탭)
-///     ├─ ① 홈    ② 운동    ③ 기록    ④ 설정
+/// └─ 하단 네비게이션 (3탭)
+///     ├─ ① 홈 (오늘 + 기록)    ② 운동    ③ 설정
 /// ```
 ///
 /// ## 탭이 사라지는 구간
@@ -59,10 +58,11 @@ class _RefitShellState extends State<RefitShell> {
       return const PatientSelectScreen(dismissible: false);
     }
 
+    // 홈이 기록을 품는다 — "오늘"과 "지나온 날들"은 같은 흐름이라
+    // 탭을 갈라 두면 확인하는 데 한 단계가 더 든다.
     final tabs = [
       HomeTab(onStart: () => _goTo(1)),
       SetupScreen(onSessionFinished: () => _goTo(0)),
-      const HistoryTab(),
       SettingsTab(onGoToSetup: () => _goTo(1)),
     ];
 
@@ -124,7 +124,6 @@ class _NavBar extends StatelessWidget {
   static const _items = <(IconData, IconData, String)>[
     (Icons.home_outlined, Icons.home_rounded, '홈'),
     (Icons.sports_baseball_outlined, Icons.sports_baseball_rounded, '운동'),
-    (Icons.bar_chart_outlined, Icons.bar_chart_rounded, '기록'),
     (Icons.settings_outlined, Icons.settings_rounded, '설정'),
   ];
 
