@@ -16,6 +16,26 @@ import 'constants.dart';
 /// 검출 임계가 아티팩트보다 높아지고 버스트를 통째로 놓친다.
 /// 조용한 창에서는 중앙값 ≈ 평균이므로 공통 컨텍스트의 의도와 어긋나지 않는다.
 class DcCalibrator {
+  /// [clock] 은 [kDcCalibWindowMs] 를 표본 수로 바꾸는 데만 쓴다.
+  ///
+  /// 예전에는 창 길이를 `_window.length >= kDcCalibWindowMs` 로 **표본 개수**와
+  /// 비교했다. fs 가 1000 이던 시절에는 그게 곧 1500ms 였지만, 4kHz 에서는
+  /// 375ms 다. 표본 수는 1500 그대로라 중앙값·MAD 는 멀쩡해 보이는데,
+  /// **관측한 시간**만 4분의 1로 줄어든다.
+  ///
+  /// 그게 왜 문제인가: 자극은 주기 1618ms(ON 591 / OFF 1027)로 돈다. 375ms
+  /// 창은 쉼 구간 안에 통째로 들어갈 수 있어서, 자극이 돌고 있는데도
+  /// [looksQuiet] 이 true 를 답한다. 부착 확인이 "이 구간에 자극이 섞였는가"를
+  /// 묻는 근거가 조용히 사라지는 것이다.
+  DcCalibrator({SampleClock clock = const SampleClock(kSampleRateHz)})
+      : _need = math.max(clock.samples(kDcCalibWindowMs), kDcCalibMinSamples);
+
+  /// 캘리브를 확정하기까지 모아야 할 표본 수.
+  ///
+  /// 시간으로는 [kDcCalibWindowMs] 지만, fs 가 아주 낮아도 중앙값·MAD 를 낼
+  /// 만큼은 모으도록 [kDcCalibMinSamples] 를 하한으로 둔다.
+  final int _need;
+
   final List<double> _window = <double>[];
 
   double? _offset;
@@ -46,7 +66,7 @@ class DcCalibrator {
   void add(int adc) {
     if (isCalibrated) return;
     _window.add(adc.toDouble());
-    if (_window.length >= kDcCalibWindowMs) _finalize();
+    if (_window.length >= _need) _finalize();
   }
 
   void reset() {

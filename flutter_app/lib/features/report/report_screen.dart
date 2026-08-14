@@ -241,12 +241,12 @@ class _TherapistSection extends StatelessWidget {
             const SizedBox(height: 6),
             Text(
               '피로 판정의 근거는 이 곡선 하나뿐입니다.',
-              style: RefitTheme.bodySmall.copyWith(fontSize: 13),
+              style: RefitTheme.caption,
             ),
             const Divider(height: 26, color: RefitTheme.hairline),
-            _row('평균 RMS', d.avgRms?.toStringAsFixed(1) ?? '—'),
-            _row('평균 MDF',
-                d.avgMdf == null ? '—' : '${d.avgMdf!.toStringAsFixed(0)} Hz'),
+            // 평균 RMS·MDF 는 화면에서 뺐다 — 판정에 안 쓰는 값을 결과지에
+            // 같이 적으면 나중에 그 세션을 읽는 사람이 근거로 착각한다.
+            // CSV·세션 기록에는 그대로 남는다.
             _row('검출률', d.detectRate.toStringAsFixed(2)),
             _row('events/burst', d.eventsPerBurst.toStringAsFixed(1)),
             _row('신뢰도 등급', d.grade),

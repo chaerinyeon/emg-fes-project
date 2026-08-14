@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:hive/hive.dart';
 
 import '../core/subject_category.dart';
+import '../monitor/monitor_address.dart' show makeToken;
 import '../data/local/hive_session_store.dart';
 import '../data/local/session_store.dart';
 import '../services/profile_service.dart';
@@ -377,6 +380,24 @@ class RefitSettings {
   bool get monitorEnabled => (_box.get('monitor_enabled') as bool?) ?? false;
   Future<void> setMonitorEnabled(bool v) => _box.put('monitor_enabled', v);
 
+  /// 관찰 화면 접속 코드. **한 번 만들고 계속 쓴다.**
+  ///
+  /// 예전에는 [MonitorService] 가 필드 초기화에서 `makeToken()` 을 불렀다.
+  /// 주석에는 "재시작해도 안 바뀐다"고 적혀 있었지만 실제로는 앱을 켤 때마다
+  /// 새 값이 나왔다 — 치료사가 노트북에 적어 둔 주소가 다음 날 통하지 않고,
+  /// 왜 안 되는지도 화면에 안 나왔다.
+  ///
+  /// USB 로 붙이면 주소가 `localhost:8080` 으로 고정되므로, 코드까지 고정해야
+  /// **주소 전체가 영구히 같아진다.**
+  String get monitorToken {
+    final saved = _box.get('monitor_token') as String?;
+    if (saved != null && saved.length == 4) return saved;
+    final t = makeToken();
+    // 저장은 뒤에서 끝나도 된다 — 이번 실행은 이미 t 를 쓴다.
+    unawaited(_box.put('monitor_token', t));
+    return t;
+  }
+
   /// 주간 목표 일수(1~7).
   ///
   /// 재활에서 중요한 건 한 번의 강도가 아니라 **지속**이라, 목표는 시간이
@@ -389,6 +410,18 @@ class RefitSettings {
   /// 기기 없이 전 구간을 돌려 보는 개발 스위치.
   bool get syntheticMode => (_box.get('synthetic_mode') as bool?) ?? false;
   Future<void> setSyntheticMode(bool v) => _box.put('synthetic_mode', v);
+
+  /// 자극기를 **사람이 손으로** 켜고 세기를 맞추는가.
+  ///
+  /// 마사지기(HV-F022-V)가 아직 펌웨어에 배선되지 않았다. 그 상태에서
+  /// `trigger_stim` 은 아무 데도 닿지 않는 명령인데, 앱은 "켰다"고 믿고
+  /// 화면도 그렇게 말한다 — 그러면 사용자는 **자기가 켜야 한다는 걸 모른 채**
+  /// 신호가 안 잡히는 이유를 찾게 된다.
+  ///
+  /// 켜 두면 앱은 자극 명령을 보내지 않고, 화면이 사람에게 시킨다.
+  /// 배선이 끝나면 끄면 된다.
+  bool get manualStim => (_box.get('manual_stim') as bool?) ?? true;
+  Future<void> setManualStim(bool v) => _box.put('manual_stim', v);
 
   /// 마지막으로 붙은 기기 이름. 설정 화면에만 쓴다.
   String? get lastDeviceName => _box.get('last_device') as String?;

@@ -1,20 +1,30 @@
 import 'package:flutter/material.dart';
 
-/// RE-FIT Play 시각 언어 — "고요한 물가".
+/// RE-FIT Play 시각 언어 — "어두운 계측기".
 ///
 /// 왜 어두운 화면인가: 환자는 이 화면을 매일, 한 세션에 10분 가까이 본다.
-/// 흰 배경은 눈부시고 임상적이다. 깊은 청록–잉크 위에 따뜻한 모래빛 손을
-/// 띄우면 손이 저절로 주인공이 되고, 오래 봐도 편하다.
+/// 흰 배경은 눈부시고 임상적이다.
+///
+/// ## 왜 청록 바탕을 버렸는가
+///
+/// 처음에는 깊은 청록–잉크였다("고요한 물가"). 의도는 **손이 주인공**이 되게
+/// 하는 것이었는데, 청록 바탕은 민트 강조([glow])와 색상환에서 이웃이라
+/// 서로를 잡아먹었다 — 바탕이 이미 초록기를 띠니 신호색이 신호로 안 읽히고,
+/// 따뜻한 모래빛 손도 바탕과 보색으로 부딪쳤다.
+///
+/// 중성 검정으로 내리면 셋이 각자 자기 일을 한다: 바탕은 물러나고, 민트는
+/// 유일한 신호색이 되고, 손은 화면에서 가장 따뜻한 것이 된다. 어두워서 눈이
+/// 편하다는 원래 이유는 그대로다.
 ///
 /// 색으로 실패를 말하지 않는다. 빨강은 **기기 문제**에만 쓰고, 수축 실패에는
 /// 쓰지 않는다(실패 표현 금지). 수축이 안 되면 손이 그냥 풀릴 뿐이다.
 class RefitTheme {
   const RefitTheme._();
 
-  // 배경 — 깊은 물
-  static const Color abyss = Color(0xFF071A20);
-  static const Color deep = Color(0xFF0E2E38);
-  static const Color shallow = Color(0xFF15414E);
+  // 배경 — 계측기의 검정. 위에서 아래로 아주 얕게만 밝아진다.
+  static const Color abyss = Color(0xFF0A0C0D);
+  static const Color deep = Color(0xFF121517);
+  static const Color shallow = Color(0xFF181C1F);
 
   // 강조 — 잔잔한 빛
   static const Color glow = Color(0xFF7FE3C4);
@@ -36,15 +46,20 @@ class RefitTheme {
   static const Color caution = Color(0xFFE9CE7A);
   static const Color tired = Color(0xFFE0A567);
 
-  /// 카드·타일의 공통 바탕. 배경 그라디언트 위에 얹히는 반투명 판.
-  static const Color panel = Color(0x14F2F6F5);
+  /// 카드·타일의 공통 바탕. 배경 위에 얹히는 반투명 판.
+  ///
+  /// 검정 바탕에서는 카드가 스스로 떠 보여야 한다. 청록 시절보다 한 단계
+  /// 올려, 그림자 없이 밝기 차이만으로 층이 서게 했다.
+  static const Color panel = Color(0x17F2F6F5);
   static const Color hairline = Color(0x1FF2F6F5);
 
+  /// 거의 평평하다. 그라디언트는 위아래를 구분해 주는 정도로만 남긴다 —
+  /// 검정에서 색이 흐르면 그게 먼저 보이고, 데이터가 뒤로 밀린다.
   static const LinearGradient backdrop = LinearGradient(
     begin: Alignment.topCenter,
     end: Alignment.bottomCenter,
     colors: [abyss, deep, shallow],
-    stops: [0.0, 0.55, 1.0],
+    stops: [0.0, 0.62, 1.0],
   );
 
   /// 주요 버튼 최소 높이. 스펙은 44pt 이지만 한 손·누운 자세를 고려해 키웠다.
@@ -70,6 +85,14 @@ class RefitTheme {
   /// 목록·표처럼 밀도가 필요한 화면용. 환자 화면에는 쓰지 않는다.
   static const bodySmall = TextStyle(
       fontSize: 16, height: 1.45, fontWeight: FontWeight.w400, color: inkSoft);
+
+  /// 보조 설명 — 버튼 아래 한 줄, 카드 각주.
+  ///
+  /// 화면 곳곳에서 `caption` 이 열세 번 반복되고
+  /// 있었다. 그건 토큰이 하나 빠졌다는 뜻이지 각자 정할 값이 아니다 —
+  /// 크기를 조정할 일이 생기면 열세 곳을 찾아다녀야 했다.
+  static const caption = TextStyle(
+      fontSize: 13, height: 1.45, fontWeight: FontWeight.w400, color: inkSoft);
 
   /// 카드 안의 중간 크기 수치 (쥔 횟수·운동 시간 등).
   static const figure = TextStyle(
@@ -216,7 +239,9 @@ class RefitCard extends StatelessWidget {
       padding: padding,
       decoration: BoxDecoration(
         color: RefitTheme.panel,
-        borderRadius: BorderRadius.circular(22),
+        // 22 → 18. 검정 위에서는 모서리가 둥글수록 카드가 물러 보인다.
+        // 계측기 화면에 가깝게, 각을 조금 세운다.
+        borderRadius: BorderRadius.circular(18),
         border: Border.all(
           color: tint == null ? border : border.withValues(alpha: 0.42),
         ),

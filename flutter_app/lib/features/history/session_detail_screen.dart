@@ -298,8 +298,7 @@ class _Summary extends StatelessWidget {
               )),
           const SizedBox(height: 4),
           Text(k,
-              style: RefitTheme.bodySmall
-                  .copyWith(fontSize: 13, color: RefitTheme.inkFaint)),
+              style: RefitTheme.caption.copyWith(color: RefitTheme.inkFaint)),
         ],
       );
 }

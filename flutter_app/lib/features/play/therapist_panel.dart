@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../signal/fatigue_engine.dart' show FatigueAdvice;
+import '../../signal/signal_pipeline.dart' show SignalPipeline;
 import '../refit_theme.dart';
 import '../session/session_orchestrator.dart';
 import '../session_language.dart';
@@ -61,6 +62,7 @@ class _TherapistPanelState extends State<TherapistPanel> {
     final o = widget.orchestrator;
     final b = o.lastBurst;
     final change = o.lastIntensityChange;
+    final p = o.pipeline;
 
     return Container(
       padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
@@ -93,36 +95,18 @@ class _TherapistPanelState extends State<TherapistPanel> {
             ),
             const SizedBox(height: 16),
 
-            Row(
-              children: [
-                Expanded(
-                  child: _Metric(
-                    label: 'M-wave 진폭',
-                    value: b == null ? '—' : b.p2p.toStringAsFixed(0),
-                    // 피로 판정의 실제 근거는 이것 하나뿐이다.
-                    starred: true,
-                  ),
-                ),
-                Expanded(
-                  child: _Metric(
-                    label: 'RMS',
-                    value: b == null ? '—' : b.rms.toStringAsFixed(1),
-                  ),
-                ),
-                Expanded(
-                  child: _Metric(
-                    label: 'MDF',
-                    value: b?.mdfHz == null
-                        ? '—'
-                        : '${b!.mdfHz!.toStringAsFixed(0)}Hz',
-                  ),
-                ),
-              ],
+            // RMS·MDF 는 화면에서 뺐다. 판정에 쓰지 않는 숫자를 나란히 놓으면
+            // 치료사가 셋을 견주게 되고, 그 순간 "RMS 는 아직 괜찮은데" 같은
+            // 판단이 생긴다. **기록에는 그대로 남는다**(`BurstRow`, CSV) —
+            // 없애는 것은 화면이지 데이터가 아니다.
+            _Metric(
+              label: 'M-wave 진폭',
+              value: b == null ? '—' : b.p2p.toStringAsFixed(0),
             ),
             const SizedBox(height: 6),
             Text(
-              'RMS · MDF 는 관찰용입니다. 피로 판정은 M-wave 진폭으로만 합니다.',
-              style: RefitTheme.bodySmall.copyWith(fontSize: 13),
+              '피로 판정의 근거는 이 값 하나뿐입니다.',
+              style: RefitTheme.caption,
             ),
 
             const Divider(height: 28, color: RefitTheme.hairline),
@@ -174,12 +158,103 @@ class _TherapistPanelState extends State<TherapistPanel> {
             ),
 
             const Divider(height: 28, color: RefitTheme.hairline),
+
+            // ── 자극 검출 ──
+            //
+            // 위의 검출률·events/burst 는 **채택된** 버스트만 센다. 그래서
+            // "펄스를 못 잡았다"와 "잡았는데 에폭이 안 잘려 버렸다"가 거기서는
+            // 똑같이 0 이다. 여기 네 값이 그 둘을 갈라 준다.
+            Text('자극 검출', style: RefitTheme.label),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: _Metric(
+                    label: '임계값',
+                    value: p.stimThreshold?.toStringAsFixed(0) ?? '—',
+                  ),
+                ),
+                Expanded(
+                  child: _Metric(
+                    label: '아티팩트 규모',
+                    value: p.artifactScale?.toStringAsFixed(0) ?? '—',
+                  ),
+                ),
+                Expanded(
+                  child: _Metric(
+                    label: '검출 펄스',
+                    value: '${p.detectedPulses}',
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: _Metric(
+                    label: '버스트 (검출·버림)',
+                    value: '${p.detectedBursts} · ${p.discardedBursts}',
+                  ),
+                ),
+                Expanded(
+                  child: _Metric(
+                    label: '임계 재조정',
+                    value: '${p.retuneCount}회',
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _detectionHint(p),
+              style: RefitTheme.caption,
+            ),
+            const SizedBox(height: 12),
+            RefitButton(
+              label: '자극 검출 다시 맞추기',
+              filled: false,
+              tone: RefitTheme.caution,
+              // 임계는 측정 시작 직후 한 창에서 정해진다. 그 창이
+              // 대표성이 없으면 세션 내내 못 찾는데, 그때 사람이 할 수
+              // 있는 일이 「기다리기」밖에 없으면 안 된다.
+              onPressed: () {
+                final ok = p.retuneStimDetection();
+                if (!context.mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(ok
+                        ? '지금 신호로 다시 맞췄어요'
+                        : '아직 볼 신호가 없어요'),
+                  ),
+                );
+              },
+            ),
+
+            const Divider(height: 28, color: RefitTheme.hairline),
             _MonitorAddress(url: widget.monitorUrl),
           ],
         ),
       ),
     );
   }
+}
+
+/// 검출이 어디서 끊겼는지 한 문장으로.
+///
+/// 숫자 넷을 나란히 놓아도 처음 보는 사람은 무엇이 이상한지 모른다. 판단은
+/// 화면이 하고, 숫자는 그 판단을 확인하는 용도로 남긴다.
+String _detectionHint(SignalPipeline p) {
+  if (p.stimThreshold == null) return '아직 임계를 잡는 중이에요.';
+  if (p.detectedPulses == 0) {
+    return '자극을 하나도 못 찾고 있어요. 기기가 켜져 있는지, 세기가 충분한지 '
+        '확인하고 아래 버튼으로 다시 맞춰 보세요.';
+  }
+  if (p.detectedBursts > 0 && p.discardedBursts >= p.detectedBursts) {
+    return '자극은 찾았는데 파형을 잘라내지 못하고 있어요. 표본이 끊기고 있는지 '
+        '확인해 주세요.';
+  }
+  return '자극을 찾고 있어요.';
 }
 
 /// 노트북에서 열 관찰 화면 주소.
@@ -205,10 +280,7 @@ class _MonitorAddress extends StatelessWidget {
             children: [
               Text(
                 '노트북에서 보기',
-                style: RefitTheme.bodySmall.copyWith(
-                  fontSize: 13,
-                  color: RefitTheme.inkFaint,
-                ),
+                style: RefitTheme.caption.copyWith(color: RefitTheme.inkFaint),
               ),
               const SizedBox(height: 3),
               Text(
@@ -266,46 +338,26 @@ class _FatigueDot extends StatelessWidget {
 }
 
 class _Metric extends StatelessWidget {
-  const _Metric({
-    required this.label,
-    required this.value,
-    this.starred = false,
-  });
+  const _Metric({required this.label, required this.value});
 
   final String label;
   final String value;
-  final bool starred;
 
   @override
   Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            Flexible(
-              child: Text(
-                label,
-                style: RefitTheme.bodySmall.copyWith(
-                  fontSize: 13,
-                  color: RefitTheme.inkFaint,
-                ),
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            if (starred)
-              const Padding(
-                padding: EdgeInsets.only(left: 4),
-                child: Icon(Icons.star_rounded,
-                    size: 12, color: RefitTheme.glow),
-              ),
-          ],
+        Text(
+          label,
+          style: RefitTheme.caption.copyWith(color: RefitTheme.inkFaint),
+          overflow: TextOverflow.ellipsis,
         ),
         const SizedBox(height: 4),
         Text(
           value,
           style: RefitTheme.bodySmall.copyWith(
-            color: starred ? RefitTheme.glow : RefitTheme.ink,
+            color: RefitTheme.ink,
             fontWeight: FontWeight.w600,
           ),
         ),

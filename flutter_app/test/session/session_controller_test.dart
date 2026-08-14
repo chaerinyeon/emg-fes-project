@@ -21,6 +21,7 @@ Future<SessionMachine> reachPlaying(FakeLink link) async {
   m.onLinkConnected();
   m.submitAttachmentCheck(_goodCheck);
   m.submitIntensity(level: 3, eventsPerBurst: 18);
+  m.startMeasurement();
   m.onSyncProgress(kSyncWindowS + 1.0);
   return m;
 }
@@ -29,6 +30,8 @@ void main() {
   late FakeLink link;
   setUp(() => link = FakeLink());
   tearDown(() async => link.dispose());
+
+  _syncEscapeTests();
 
   group('상태 전이', () {
     test('idle에서 시작한다', () {
@@ -51,7 +54,13 @@ void main() {
       m.submitAttachmentCheck(_goodCheck);
       expect(m.state, SessionState.intensityWizard);
 
+      // 강도를 확정해도 곧바로 동기화로 가지 않는다. 환자가 자세를 잡는
+      // 동안의 움직임이 기준값에 섞이면 그 위의 피로도 전부가 틀어진다 —
+      // "지금부터 잰다"를 사람이 선언해야 한다.
       m.submitIntensity(level: 3, eventsPerBurst: 18);
+      expect(m.state, SessionState.readyToMeasure);
+
+      m.startMeasurement();
       expect(m.state, SessionState.syncing);
 
       m.onSyncProgress(kSyncWindowS + 1.0);
@@ -62,6 +71,7 @@ void main() {
         SessionState.connecting,
         SessionState.attachmentCheck,
         SessionState.intensityWizard,
+        SessionState.readyToMeasure,
         SessionState.syncing,
         SessionState.playing,
       ]);
@@ -115,9 +125,94 @@ void main() {
       m.onLinkConnected();
       m.submitAttachmentCheck(_goodCheck);
       m.submitIntensity(level: 3, eventsPerBurst: 18);
+      m.startMeasurement();
 
       m.onSyncProgress(kSyncWindowS - 1.0);
       expect(m.state, SessionState.syncing);
+      await m.dispose();
+    });
+  });
+
+  group('수동 통과 — 사용자가 알고 여는 관문', () {
+    const badCheck = AttachmentCheck(
+      emgElectrodeOk: false,
+      stimPadOk: true,
+      deviceOk: true,
+    );
+
+    test('force면 부착 실패여도 강도 단계로 간다', () async {
+      final m = SessionMachine(StimController(link));
+      await m.begin();
+      m.onLinkConnected();
+
+      m.submitAttachmentCheck(badCheck, force: true);
+      expect(m.state, SessionState.intensityWizard);
+      expect(m.forcedGates, contains('attachment_check'));
+      await m.dispose();
+    });
+
+    test('수동으로 통과해도 실패한 판정은 지워지지 않는다', () async {
+      final m = SessionMachine(StimController(link));
+      await m.begin();
+      m.onLinkConnected();
+
+      m.submitAttachmentCheck(badCheck, force: true);
+      expect(m.lastAttachmentCheck!.passed, isFalse,
+          reason: '우회는 판정을 지우는 게 아니라 알고도 넘어가는 것이다');
+      expect(m.lastAttachmentCheck!.failures, contains('emg_electrode'));
+      await m.dispose();
+    });
+
+    test('force면 events/burst 미달이어도 측정 대기로 간다', () async {
+      final m = SessionMachine(StimController(link));
+      await m.begin();
+      m.onLinkConnected();
+      m.submitAttachmentCheck(_goodCheck);
+
+      m.submitIntensity(
+        level: 4,
+        eventsPerBurst: kMinEventsPerBurst - 1,
+        force: true,
+      );
+      expect(m.state, SessionState.readyToMeasure);
+      expect(m.intensityLevel, 4, reason: '고른 단계는 그대로 기록된다');
+      expect(m.forcedGates, contains('intensity'));
+      await m.dispose();
+    });
+
+    test('기준을 넘겼으면 force를 줘도 우회로 기록되지 않는다', () async {
+      final m = SessionMachine(StimController(link));
+      await m.begin();
+      m.onLinkConnected();
+      m.submitAttachmentCheck(_goodCheck, force: true);
+      m.submitIntensity(level: 3, eventsPerBurst: 18, force: true);
+
+      expect(m.state, SessionState.readyToMeasure);
+      expect(m.wasForced, isFalse,
+          reason: '실제로 막힌 적이 없으면 우회한 것이 아니다');
+      await m.dispose();
+    });
+
+    test('정상 경로로 온 세션은 우회 표식이 없다', () async {
+      final m = await reachPlaying(link);
+      expect(m.wasForced, isFalse);
+      expect(m.forcedGates, isEmpty);
+      await m.dispose();
+    });
+
+    test('force가 단계 순서까지 건너뛰지는 못한다', () async {
+      final m = SessionMachine(StimController(link));
+      await m.begin();
+      m.onLinkConnected();
+
+      // 부착 단계에 있는데 강도를 내면 force여도 무시된다.
+      m.submitIntensity(
+        level: 3,
+        eventsPerBurst: kMinEventsPerBurst - 1,
+        force: true,
+      );
+      expect(m.state, SessionState.attachmentCheck);
+      expect(m.forcedGates, isEmpty);
       await m.dispose();
     });
   });
@@ -164,6 +259,7 @@ void main() {
         }
         if (at == 'syncing' || at == 'playing') {
           m.submitIntensity(level: 3, eventsPerBurst: 18);
+          m.startMeasurement();
         }
         if (at == 'playing') m.onSyncProgress(kSyncWindowS + 1.0);
 
@@ -248,6 +344,56 @@ void main() {
       m.onLinkConnected();
       m.onSyncProgress(kSyncWindowS + 1.0);
       expect(m.state, isNot(SessionState.playing));
+      await m.dispose();
+    });
+  });
+}
+
+/// 동기화 비상구 — 「곧 함께 시작합니다」에 갇히지 않는다.
+void _syncEscapeTests() {
+  late FakeLink link;
+  setUp(() => link = FakeLink());
+  tearDown(() async => link.dispose());
+
+  Future<SessionMachine> reachSyncing(FakeLink l) async {
+    final m = SessionMachine(StimController(l));
+    await m.begin();
+    m.onLinkConnected();
+    m.submitAttachmentCheck(_goodCheck);
+    m.submitIntensity(level: 3, eventsPerBurst: 18);
+    m.startMeasurement();
+    return m;
+  }
+
+  group('동기화 비상구', () {
+    test('막히면 게임으로 보내되 우회로 남긴다', () async {
+      final m = await reachSyncing(link);
+      expect(m.state, SessionState.syncing);
+
+      m.skipSync();
+      expect(m.state, SessionState.playing);
+      expect(m.forcedGates, contains('sync'),
+          reason: 'A_ref 가 안 섰으므로 그 세션의 피로 판정은 믿을 수 없다');
+      await m.dispose();
+    });
+
+    test('동기화 중이 아니면 아무 일도 없다', () async {
+      final m = SessionMachine(StimController(link));
+      await m.begin();
+      m.onLinkConnected();
+
+      m.skipSync();
+      expect(m.state, SessionState.attachmentCheck);
+      expect(m.forcedGates, isEmpty);
+      await m.dispose();
+    });
+
+    test('정상으로 30초를 채우면 우회 표식이 없다', () async {
+      final m = await reachSyncing(link);
+      m.onSyncProgress(kSyncWindowS + 1.0);
+
+      expect(m.state, SessionState.playing);
+      expect(m.wasForced, isFalse);
       await m.dispose();
     });
   });

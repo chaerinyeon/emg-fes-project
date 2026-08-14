@@ -145,9 +145,9 @@ void main() {
 }
 
 /// RAW 패킷 바이트 조립 헬퍼(펌웨어 포맷, little-endian) — session_adopt_test.dart 와 동일.
-List<int> _rawBytes(int firstSampleMs, List<int> samples) {
+List<int> _rawBytes(int firstSampleIndex, List<int> samples) {
   final bd = ByteData(6 + 2 * samples.length);
-  bd.setUint32(0, firstSampleMs, Endian.little);
+  bd.setUint32(0, firstSampleIndex, Endian.little);
   bd.setUint16(4, samples.length, Endian.little);
   for (var i = 0; i < samples.length; i++) {
     bd.setInt16(6 + 2 * i, samples[i], Endian.little);

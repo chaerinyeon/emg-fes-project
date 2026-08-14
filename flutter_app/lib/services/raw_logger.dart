@@ -3,8 +3,8 @@
 // 1ms 해상도 CSV(Time(ms),Raw_ADC)로 저장한다.
 //
 // 패킷 포맷 (little-endian):
-//   [uint32 firstSampleMs][uint16 count][int16 raw × count]
-// firstSampleMs = 세션 시작 후 첫 샘플의 ms 인덱스 (1kHz라 1샘플=1ms).
+//   [uint32 firstSampleIndex][uint16 count][int16 raw × count]
+// firstSampleIndex = 세션 시작 후 첫 샘플의 ms 인덱스 (1kHz라 1샘플=1ms).
 //   → 1ms 타임라인 복원 + 인덱스 불연속으로 패킷 누락 감지.
 //
 // ENV CSV(10Hz, env_*.csv)는 그대로 두고, 이 로거가 raw_*.csv를 따로 만든다.
@@ -17,6 +17,17 @@ import '../core/raw_packet.dart';
 import 'csv_save_stub.dart' if (dart.library.html) 'csv_save_web.dart';
 
 class RawLogRecorder {
+  RawLogRecorder({this.sampleRateHz = 1000});
+
+  /// 이 기록의 샘플레이트. **파일 이름에 박아 둔다.**
+  ///
+  /// 첫 열은 밀리초가 아니라 **표본 인덱스**다. 1kHz 시절에는 두 값이 같아서
+  /// 헤더를 `Time(ms)` 라고 적어도 문제가 없었지만, 4kHz 에서는 4배 어긋난다.
+  /// 오프라인에서 이 파일을 읽는 쪽은 `SignalPipeline(fs:)` 를 맞춰 줘야
+  /// 하는데, 파일만 보고 알 방법이 없으면 조용히 4배 틀린 시간축으로
+  /// 분석하게 된다 — 아무 에러도 나지 않는다.
+  final int sampleRateHz;
+
   final List<int> _timesMs = [];
   final List<int> _raw = [];
   bool _recording = false;
@@ -47,7 +58,7 @@ class RawLogRecorder {
     if (pkt == null) return; // 잘린 패킷 폐기
 
     // 누락 감지: 직전 패킷 끝 다음 인덱스와 연속이어야 함
-    final firstMs = pkt.firstSampleMs;
+    final firstMs = pkt.firstSampleIndex;
     final count = pkt.samples.length;
     if (_lastIdx >= 0 && firstMs > _lastIdx + 1) {
       _dropped += firstMs - (_lastIdx + 1);
@@ -75,6 +86,8 @@ class RawLogRecorder {
     final stamp =
         '${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}'
         '_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}${now.second.toString().padLeft(2, '0')}';
-    return saveCsvFile('raw_$stamp.csv', toCsv(), subjectId: subjectId);
+    // 1kHz 는 기존 데이터셋과 이름이 같아야 해서 접미사를 붙이지 않는다.
+    final rate = sampleRateHz == 1000 ? '' : '_${sampleRateHz ~/ 1000}khz';
+    return saveCsvFile('raw_$stamp$rate.csv', toCsv(), subjectId: subjectId);
   }
 }

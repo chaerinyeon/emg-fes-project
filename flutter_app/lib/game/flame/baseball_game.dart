@@ -354,7 +354,21 @@ class BaseballGame extends FlameGame {
     }
 
     final flight = _flightSec;
-    if (feedNowSec < eta - flight) return; // 아직 던질 때가 아니다
+    final remaining = eta - feedNowSec;
+
+    if (remaining > flight) return; // 아직 던질 때가 아니다
+
+    // **늦은 것도 막는다.**
+    //
+    // [FatigueFeed.nextContractionEta] 는 "지금 이후 가장 가까운" 자극 시각이라
+    // 남은 시간이 0 에 가까울 수 있다. 예전에는 이르기만 막고 그대로 던져서,
+    // 공이 원경에서 글러브까지 0.1초 만에 날아왔다 — 날아온 게 아니라
+    // 순간이동으로 보인다. 첫 공과 위상 재동기 직후에 반드시 걸린다.
+    //
+    // 이 도착은 포기하고 다음 주기를 노린다. 한 번 건너뛰는 대신 **모든 공이
+    // 같은 속도로** 날아온다 — 속도가 매번 다르면 언제 잡히는지 눈이 배우지
+    // 못하고, 그러면 이 화면이 하려는 되먹임 자체가 성립하지 않는다.
+    if (remaining < flight - _pitchToleranceSec) return;
 
     _scheduledArrival = eta;
     add(Ball(spawnSec: feedNowSec, arrivalSec: eta));
@@ -363,10 +377,19 @@ class BaseballGame extends FlameGame {
 
   /// 공의 비행 시간(초).
   ///
-  /// 주기 1.618초 = 자극 0.629초 + 쉼 0.99초다. 이전 공을 놓아주는 시점
+  /// 주기 1.618초 = 자극 0.629초 + 쉼 0.99초다
+  ///
+  /// . 이전 공을 놓아주는 시점
   /// (도착 + 0.629)에 다음 공이 출발하도록 비행시간을 쉼 구간에 맞춘다.
   /// 그래야 한 번에 하나만 날고, 던지는 순간이 곧 손을 펴는 순간이 된다.
   double get _flightSec => 0.95;
+
+  /// 던질 시점을 놓쳐도 봐주는 폭(초).
+  ///
+  /// `update` 는 프레임마다 도므로 60fps 에서 한 프레임이 약 16ms 다. 50ms 면
+  /// 서너 프레임 여유라 프레임이 한두 개 밀려도 공을 거르지 않고, 그러면서도
+  /// 비행시간은 0.90~0.95초 안에 묶인다.
+  static const double _pitchToleranceSec = 0.05;
 
   /// 휴식 이닝 시작/종료. 치료사 판단으로 재개한다.
   void setResting(bool value) {

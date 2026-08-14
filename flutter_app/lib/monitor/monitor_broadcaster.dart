@@ -67,7 +67,20 @@ class MonitorEndpoint {
 
 /// `/` · `/ws` 밖의 경로가 돌려주는 것.
 class MonitorPayload {
-  const MonitorPayload(this.body, {this.contentType = 'application/json'});
+  /// [contentType] 기본값에 **charset 이 반드시 들어간다.**
+  ///
+  /// 예전 기본값은 `application/json` 이었다. charset 이 없으면 Dart 의
+  /// [HttpResponse] 가 인코딩을 `latin1` 로 잡고, 코드포인트 255 를 넘는 문자
+  /// — 즉 한글 한 글자 — 에서 `write()` 가
+  /// `Invalid argument (string): Contains invalid characters.` 를 던진다.
+  ///
+  /// 환자 이름이 한글인 순간 `/api/sessions` 가 통째로 죽었다. charset 을
+  /// 명시한 경로(`/records` 의 `text/html; charset=utf-8`, 403 응답의
+  /// [ContentType.text])만 살아남아 "HTML 은 되는데 API 만 안 된다"로 보였다.
+  const MonitorPayload(
+    this.body, {
+    this.contentType = 'application/json; charset=utf-8',
+  });
 
   final String body;
   final String contentType;
@@ -79,7 +92,16 @@ class MonitorBroadcaster {
     required this.helloBuilder,
     required this.token,
     this.extraHandler,
-  });
+    this.onError,
+    Future<String?> Function()? ipLookup,
+  }) : _ipLookup = ipLookup ?? localIpv4;
+
+  /// 요청 처리 중 예외가 났을 때 불린다. **응답과 별개의 경로**다.
+  ///
+  /// 500 본문만으로는 부족하다 — 브라우저가 옛 페이지를 캐시하고 있거나
+  /// 응답이 중간에 끊기면 그 한 줄이 아무 데도 도달하지 않는다. 그러면
+  /// "폰 안에서 무언가 터졌다"는 사실만 남고 무엇인지는 영영 모른다.
+  final void Function(Uri uri, Object error)? onError;
 
   /// HTML 본문 공급자. 앱에서는 에셋 번들, 테스트에서는 문자열 상수.
   final Future<String> Function() pageLoader;
@@ -102,6 +124,9 @@ class MonitorBroadcaster {
   /// 탭이 403 을 받고 치료사가 주소를 다시 입력해야 했다.
   final String token;
 
+  /// 표시할 IP 를 구하는 방법. 테스트에서 망 변경을 흉내내려고 갈아끼운다.
+  final Future<String?> Function() _ipLookup;
+
   HttpServer? _server;
   MonitorEndpoint? _endpoint;
   final List<_Client> _clients = [];
@@ -111,6 +136,9 @@ class MonitorBroadcaster {
   static const int _outboxCapacity = 20;
 
   MonitorEndpoint? get endpoint => _endpoint;
+
+  /// 브라우저에 입력할 주소. 서버가 없거나 IP 를 못 찾았으면 null.
+  String? get url => _endpoint?.url;
 
   int get clientCount => _clients.length;
 
@@ -124,9 +152,9 @@ class MonitorBroadcaster {
   void pushLink(String state) => _broadcast({'t': 'link', 'state': state});
 
   /// RAW 1kHz 파형 100표본 묶음. **구독한 클라이언트에게만** 간다.
-  void pushRaw(int firstSampleMs, List<int> samples) {
+  void pushRaw(int firstSampleIndex, List<int> samples) {
     if (!_clients.any((c) => c.wantsRaw)) return;
-    final msg = _encode({'t': 'raw', 'i': firstSampleMs, 'v': samples});
+    final msg = _encode({'t': 'raw', 'i': firstSampleIndex, 'v': samples});
     if (msg == null) return;
     for (final c in _clients) {
       if (c.wantsRaw) c.outbox.add(msg);
@@ -171,7 +199,7 @@ class MonitorBroadcaster {
 
     try {
       final endpoint = MonitorEndpoint(
-        ip: await localIpv4(),
+        ip: await _ipLookup(),
         port: server.port,
         token: token,
       );
@@ -189,6 +217,30 @@ class MonitorBroadcaster {
       _endpoint = null;
       return null;
     }
+  }
+
+  /// 표시할 주소를 **지금 망 기준으로** 다시 잡는다. 서버는 건드리지 않는다.
+  ///
+  /// ## 왜 재바인딩하지 않는가
+  ///
+  /// 서버는 [InternetAddress.anyIPv4] 에 붙어 있으므로 폰이 Wi-Fi 를 옮겨도
+  /// 새 망에서 그대로 듣고 있다. 거짓이 되는 것은 화면에 적힌 IP 문자열
+  /// 하나뿐이다. 소켓을 다시 열면 포트가 바뀔 수 있고 — 포트가 바뀌면 이미
+  /// 열어 둔 브라우저 탭이 죽는다. 그래서 [MonitorEndpoint] 의 ip 만 갈아끼운다.
+  ///
+  /// 서버가 안 떠 있으면 null.
+  Future<MonitorEndpoint?> refreshAddress() async {
+    final server = _server;
+    if (server == null) return null;
+    String? ip;
+    try {
+      ip = await _ipLookup();
+    } catch (_) {
+      return _endpoint; // 조회 실패는 옛 주소를 그대로 두는 것으로 삼킨다
+    }
+    if (ip == _endpoint?.ip) return _endpoint;
+    _endpoint = MonitorEndpoint(ip: ip, port: server.port, token: token);
+    return _endpoint;
   }
 
   Future<void> stop() async {
@@ -218,7 +270,8 @@ class MonitorBroadcaster {
         // 탈 일이 드물지만 — host:port 만 따로 옮겨 적었을 때를 위해 설명한다.
         req.response.statusCode = HttpStatus.forbidden;
         req.response.headers.contentType = ContentType.text;
-        req.response.write(
+        _writeUtf8(
+          req.response,
           'forbidden — 접속 코드가 없거나 틀렸습니다. '
           'URL 끝에 ?k=<4자리 접속코드> 를 붙여서 다시 접속하세요.\n'
           '예) http://<이 주소>:<포트>/?k=1234',
@@ -234,7 +287,7 @@ class MonitorBroadcaster {
         final body = await pageLoader();
         req.response.headers.contentType = ContentType.html;
         req.response.headers.set('Cache-Control', 'no-store');
-        req.response.write(body);
+        _writeUtf8(req.response, body);
         await req.response.close();
         return;
       }
@@ -242,18 +295,73 @@ class MonitorBroadcaster {
       if (extra != null) {
         req.response.headers.contentType = ContentType.parse(extra.contentType);
         req.response.headers.set('Cache-Control', 'no-store');
-        req.response.write(extra.body);
+        _writeUtf8(req.response, extra.body);
         await req.response.close();
         return;
       }
 
       req.response.statusCode = HttpStatus.notFound;
       await req.response.close();
-    } catch (_) {
+    } catch (e) {
+      // ## 왜 500 을 굳이 만들어 보내는가
+      //
+      // 예전에는 여기서 응답을 그냥 닫았다. [HttpResponse.statusCode] 의
+      // 기본값이 200 이라 **성공처럼 보이는 빈 응답**이 나갔고, 웹은
+      // `Unexpected end of JSON input` 만 띄웠다. 폰 안에서 무엇이 터졌는지
+      // 알 방법이 브라우저 쪽에는 아예 없었다 — 치료사도 개발자도 눈이 먼다.
+      //
+      // 이 서버는 접속 코드가 걸린 로컬 네트워크 전용이고, 여기 실리는 것은
+      // 스택 트레이스가 아니라 예외 한 줄이다. 진단 불가로 시간을 태우는
+      // 쪽이 훨씬 비싸다.
+      // 폰 자신의 로그에도 남긴다. 브라우저가 옛 페이지를 들고 있거나 응답이
+      // 중간에 끊기면 웹 경로 하나만으로는 원인을 영영 못 본다.
+      // 콜백이 던지면 이 catch 를 뚫고 나가 응답이 영영 닫히지 않는다 —
+      // 클라이언트는 오류 대신 무한 대기를 본다. 진단 경로가 장애를 키우면 안 된다.
+      try {
+        onError?.call(req.uri, e);
+      } catch (_) {}
+
+      // ## 이유 문자열을 만드는 것도 실패할 수 있다
+      //
+      // 예외의 `toString()` 이 다시 던지면 여기서 통째로 빠져나가 본문이
+      // 비고, 클라이언트에는 **500 만 남고 이유는 사라진다.** 실기기에서
+      // 정확히 그 일이 일어났다 — 브라우저는 자기 오류 페이지를 띄웠고
+      // 폰 안에서 무엇이 터졌는지 아무도 알 수 없었다.
+      //
+      // 에러 경로는 예외의 협조에 기대면 안 된다. 최소한 타입 이름은 남긴다.
+      String reason;
+      try {
+        reason = e.toString();
+      } catch (_) {
+        try {
+          reason = e.runtimeType.toString();
+        } catch (_) {
+          reason = '알 수 없는 오류';
+        }
+      }
+
+      try {
+        req.response.statusCode = HttpStatus.internalServerError;
+        req.response.headers.contentType = ContentType.text;
+        // 인코딩 협상(charset)에 기대지 않고 바이트로 직접 넣는다.
+        req.response.add(utf8.encode('서버 오류 — $reason'));
+      } catch (_) {
+        // 헤더가 이미 나갔거나(부분 전송) 소켓이 죽었다. 상태 코드를 바꿀 수
+        // 없으니 조용히 닫는 것 말고 할 수 있는 일이 없다.
+      }
       try {
         await req.response.close();
       } catch (_) {}
     }
+  }
+
+  /// 본문을 **UTF-8 바이트로 직접** 넣는다.
+  ///
+  /// [HttpResponse.write] 는 헤더의 charset 을 보고 인코딩을 고르고, charset 이
+  /// 없으면 latin1 로 떨어진다 — 한글 한 글자에 던진다. 호출부가 charset 을
+  /// 빠뜨렸는지에 결과가 좌우되면 안 되므로, 협상을 아예 건너뛴다.
+  static void _writeUtf8(HttpResponse res, String body) {
+    res.add(utf8.encode(body));
   }
 
   bool _tokenOk(HttpRequest req) {

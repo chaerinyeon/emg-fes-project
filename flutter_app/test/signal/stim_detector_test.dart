@@ -94,7 +94,7 @@ void main() {
       events.addAll(_quiet(d, 104, 60));
 
       expect(events.length, 1);
-      expect(events.single.tMs, 102);
+      expect(events.single.tSample, 102);
       expect(events.single.peakAbs, closeTo(900.0, 1e-9));
     });
 
@@ -110,7 +110,7 @@ void main() {
       events.addAll(_quiet(d, 51, 60));
 
       expect(events.length, 1);
-      expect(events.single.tMs, 50);
+      expect(events.single.tSample, 50);
     });
 
     test('한 펄스의 여러 샘플은 하나의 이벤트로 묶인다', () {
@@ -146,7 +146,7 @@ void main() {
 
       expect(events.length, 10, reason: '10발 전부 검출되어야 한다');
       for (var i = 0; i < 10; i++) {
-        expect(events[i].tMs, 100 + 31 * i);
+        expect(events[i].tSample, 100 + 31 * i);
       }
     });
 
@@ -159,7 +159,7 @@ void main() {
       expect(mid, isNull, reason: '아직 불응기가 지나지 않았다');
       final e = d.flush();
       expect(e, isNotNull);
-      expect(e!.tMs, 100);
+      expect(e!.tSample, 100);
     });
   });
 
@@ -176,7 +176,7 @@ void main() {
       final tail = d.flush();
       if (tail != null) events.add(tail);
 
-      expect(events.map((e) => e.tMs).toList(), pulses);
+      expect(events.map((e) => e.tSample).toList(), pulses);
       expect(events.map((e) => e.isBurstStart).toList(),
           [true, false, false, true, false]);
     });
@@ -224,7 +224,7 @@ void main() {
 
     test('첫 자극 시점에 위상이 고정된다', () {
       final d = runSynthetic(nBursts: 12);
-      expect(d.firstBurstOnsetMs, 0);
+      expect(d.firstBurstOnsetSample, 0);
     });
 
     test('다음 자극 시점을 예측한다', () {

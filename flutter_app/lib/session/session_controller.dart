@@ -12,6 +12,19 @@ enum SessionState {
   attachmentCheck,
   intensityWizard,
 
+  /// 측정 시작을 기다린다. 게임 화면 위에 "측정 시작" 카드가 덮여 있다.
+  ///
+  /// ## 왜 이 상태가 따로 있는가
+  ///
+  /// 예전에는 강도를 확정하는 순간 곧바로 [syncing] 으로 넘어가 자극이 나가고
+  /// 기준값 수집이 시작됐다. 그런데 그 시점은 환자가 아직 자세를 잡는 중이다 —
+  /// 팔을 옮기고 손을 놓는 동작이 그대로 DC offset·잡음·A_ref 에 들어갔다.
+  /// 기준값이 오염되면 그 위의 피로도 전부가 그만큼 틀어진다.
+  ///
+  /// 그래서 **"지금부터 잰다"를 사람이 선언**하게 한다. 여기서부터가 세션의
+  /// t=0 이고, DC 보정도 baseline 도 피로도도 전부 이 지점 기준이다.
+  readyToMeasure,
+
   /// 자극 주기 동기화 + A_ref 워밍업 30초.
   /// 사용자에게는 **튜토리얼 라운드**로 보인다 — 대기 화면을 만들면 이탈한다.
   syncing,
@@ -92,6 +105,7 @@ class SessionMachine {
   SessionState _state = SessionState.idle;
   AttachmentCheck? _lastCheck;
   int _intensity = kMinIntensityLevel;
+  final Set<String> _forcedGates = {};
   SessionEndReason? _endReason;
   int _repCount = 0;
   int _successCount = 0;
@@ -110,6 +124,16 @@ class SessionMachine {
 
   /// 세션 중 강도 상향은 언제나 막혀 있다. UI 표시용.
   bool get raiseIntensityBlocked => true;
+
+  /// 사용자가 손으로 열고 들어온 관문들 (`attachment_check`, `intensity`).
+  ///
+  /// 세션 기록에 그대로 남는다. 자동 판정을 통과한 세션과 우회한 세션을
+  /// 나중에 구분하지 못하면, 신호가 약한 줄 알면서 넣은 세션이 정상 세션과
+  /// 섞여 데이터셋 전체의 기준점이 흐려진다.
+  Set<String> get forcedGates => Set.unmodifiable(_forcedGates);
+
+  /// 자동 판정 하나라도 우회했는가.
+  bool get wasForced => _forcedGates.isNotEmpty;
 
   void _go(SessionState s) {
     if (_state == s) return;
@@ -130,10 +154,17 @@ class SessionMachine {
   }
 
   /// 부착 체크 결과. 통과해야만 다음 단계로 간다.
-  void submitAttachmentCheck(AttachmentCheck result) {
+  ///
+  /// [force] 는 자동 판정이 실패로 끝난 뒤 사용자가 그래도 진행하겠다고
+  /// 정했을 때만 온다. 판정 자체를 건너뛰지는 않는다 — 결과는 그대로
+  /// 기록하고, 우회했다는 사실만 [forcedGates] 에 얹는다.
+  void submitAttachmentCheck(AttachmentCheck result, {bool force = false}) {
     if (_state != SessionState.attachmentCheck) return;
     _lastCheck = result;
-    if (!result.passed) return; // 재부착 안내를 띄우고 머문다
+    if (!result.passed) {
+      if (!force) return; // 재부착 안내를 띄우고 머문다
+      _forcedGates.add('attachment_check');
+    }
     _go(SessionState.intensityWizard);
   }
 
@@ -142,10 +173,30 @@ class SessionMachine {
   /// 목표는 `events/burst >= [kMinEventsPerBurst]` 를 만족하는 **최소** 강도다.
   /// 못 넘으면 통과시키지 않는다 — 신호가 안 잡히는 채로 게임에 들어가면
   /// 화면의 손이 내내 안 쥐어진다.
-  void submitIntensity({required int level, required double eventsPerBurst}) {
+  ///
+  /// [force] 면 그걸 알고도 들어간다. 게임이 반응하지 않는 것은 우회의
+  /// 결과지 고장이 아니므로, [forcedGates] 에 남겨 결과 화면이 그렇게
+  /// 설명할 수 있게 한다.
+  void submitIntensity({
+    required int level,
+    required double eventsPerBurst,
+    bool force = false,
+  }) {
     if (_state != SessionState.intensityWizard) return;
-    if (eventsPerBurst < kMinEventsPerBurst) return;
+    if (eventsPerBurst < kMinEventsPerBurst) {
+      if (!force) return;
+      _forcedGates.add('intensity');
+    }
     _intensity = level.clamp(kMinIntensityLevel, kMaxIntensityLevel);
+    _go(SessionState.readyToMeasure);
+  }
+
+  /// "측정 시작" 을 눌렀다. readyToMeasure → syncing.
+  ///
+  /// 여기서부터 센서를 읽고 기준값을 잡는다. 자극은 영점 보정이 끝난 뒤에
+  /// 켜진다 — 그 판단은 [SessionOrchestrator] 가 한다.
+  void startMeasurement() {
+    if (_state != SessionState.readyToMeasure) return;
     _go(SessionState.syncing);
   }
 
@@ -154,6 +205,19 @@ class SessionMachine {
     if (_state != SessionState.syncing) return;
     _lastTSeconds = tSeconds;
     if (tSeconds >= kSyncWindowS) _go(SessionState.playing);
+  }
+
+  /// 동기화가 **막혔을 때만** 게임으로 보낸다.
+  ///
+  /// 정상 경로는 [onSyncProgress] 다 — 버스트가 [kSyncWindowS] 를 채워야
+  /// 한다. 여기는 버스트가 하나도 오지 않는 상황을 위한 비상구다.
+  ///
+  /// 그 세션은 A_ref 가 서지 않았으므로 **피로 판정을 믿을 수 없다.**
+  /// [forcedGates] 에 남겨, 나중에 그 세션을 정상 세션과 섞지 않게 한다.
+  void skipSync() {
+    if (_state != SessionState.syncing) return;
+    _forcedGates.add('sync');
+    _go(SessionState.playing);
   }
 
   /// 세션 중 강도 하향. 성공하면 true.

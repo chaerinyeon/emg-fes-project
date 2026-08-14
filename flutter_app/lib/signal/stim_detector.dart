@@ -5,14 +5,16 @@ import 'stats.dart';
 
 /// 검출된 자극 펄스 1발.
 class StimEvent {
-  /// 자극 시점(그룹의 argmax). 이 값이 M-wave 창의 onset = 0ms 다.
-  final int tMs;
+  /// 자극 시점(그룹의 argmax), **샘플 인덱스**. M-wave 창의 onset = 0 이다.
+  ///
+  /// 밀리초가 아니다 — fs 가 1000 이 아니면 두 값은 다르다.
+  final int tSample;
   final double peakAbs; // 정점의 |신호 − DC|
   final bool isBurstStart;
   final int burstIndex; // 0부터
 
   const StimEvent({
-    required this.tMs,
+    required this.tSample,
     required this.peakAbs,
     required this.isBurstStart,
     required this.burstIndex,
@@ -20,7 +22,7 @@ class StimEvent {
 
   @override
   String toString() =>
-      'StimEvent(t=$tMs, peak=${peakAbs.toStringAsFixed(1)}, '
+      'StimEvent(i=$tSample, peak=${peakAbs.toStringAsFixed(1)}, '
       'burst=$burstIndex${isBurstStart ? ' START' : ''})';
 }
 
@@ -63,15 +65,29 @@ class StimDetector {
     required this.dcOffset,
     required this.noiseSigma,
     this.artifactScale,
+    this.clock = const SampleClock(kSampleRateHz),
   })  : assert(artifactScale == null || artifactScale > 0),
-        threshold = artifactScale != null
-            ? math.max(
-                artifactScale * kArtifactScaleFrac, kStimThresholdFloorAdc)
-            : math.max(
-                noiseSigma * kStimThresholdNoiseMult, kStimThresholdFloorAdc);
+        threshold = thresholdFor(
+            artifactScale: artifactScale, noiseSigma: noiseSigma),
+        _refractory = SampleClock(clock.fs).samples(kPulseRefractoryMs),
+        _burstGap = SampleClock(clock.fs).samples(kBurstGapMs),
+        _periodMin = SampleClock(clock.fs).samples(kPeriodSearchMinMs),
+        _periodMax = SampleClock(clock.fs).samples(kPeriodSearchMaxMs),
+        _driftTolerance =
+            SampleClock(clock.fs).samples(kPhaseDriftToleranceMs);
 
   final double dcOffset;
   final double noiseSigma;
+
+  /// ms 상수 ↔ 샘플 수 환산. 이 검출기의 모든 내부 시각은 샘플 인덱스다.
+  final SampleClock clock;
+
+  // ms 상수를 fs 로 환산해 둔 것들. 매 샘플 나눗셈을 피한다.
+  final int _refractory;
+  final int _burstGap;
+  final int _periodMin;
+  final int _periodMax;
+  final int _driftTolerance;
 
   /// 세션 도입부에서 관측된 아티팩트 진폭 규모 (|신호−DC| 의 고백분위수).
   ///
@@ -82,7 +98,18 @@ class StimDetector {
   /// 적응형 자극 후보 임계 (|신호 − DC| 기준).
   final double threshold;
 
-  // --- 그룹 상태 ---
+  /// 임계 계산식. 재추정([SignalPipeline.retuneStimDetection])이 같은 식을
+  /// 써야 하므로 생성자에서 꺼내 둔다 — 두 곳에 적어 두면 한쪽만 바뀐다.
+  static double thresholdFor({
+    required double? artifactScale,
+    required double noiseSigma,
+  }) =>
+      artifactScale != null
+          ? math.max(artifactScale * kArtifactScaleFrac, kStimThresholdFloorAdc)
+          : math.max(
+              noiseSigma * kStimThresholdNoiseMult, kStimThresholdFloorAdc);
+
+  // --- 그룹 상태 (모두 샘플 인덱스) ---
   bool _inGroup = false;
   int _groupStartT = 0;
   int _groupPeakT = 0;
@@ -95,28 +122,33 @@ class StimDetector {
   final List<int> _burstOnsets = <int>[];
 
   // --- 위상 ---
-  double? _periodMs;
-  int? _phaseOriginMs;
+  double? _periodSamples;
+  int? _phaseOrigin;
   int _phaseOriginBurstIndex = 0;
   double? _lastDriftMs;
   int _driftExceededCount = 0;
   final List<PhaseDriftLog> _driftLog = <PhaseDriftLog>[];
 
-  /// 추정된 자극 주기. 확정 전에는 null.
-  double? get periodMs => _periodMs;
+  /// 추정된 자극 주기(ms). 확정 전에는 null.
+  ///
+  /// 내부는 샘플로 세지만 밖으로는 ms 로 말한다 — 저장 스키마
+  /// (`stim_period_ms`)와 게임 큐가 ms 계약 위에 있다.
+  double? get periodMs =>
+      _periodSamples == null ? null : clock.toMs(_periodSamples!);
 
-  /// 위상이 고정된 첫 버스트의 자극 시점.
-  int? get firstBurstOnsetMs =>
+  /// 위상이 고정된 첫 버스트의 자극 시점(샘플 인덱스).
+  int? get firstBurstOnsetSample =>
       _burstOnsets.isEmpty ? null : _burstOnsets.first;
 
-  /// 마지막으로 관측된 버스트 자극 시점.
-  int? get lastBurstOnsetMs => _burstOnsets.isEmpty ? null : _burstOnsets.last;
+  /// 마지막으로 관측된 버스트 자극 시점(샘플 인덱스).
+  int? get lastBurstOnsetSample =>
+      _burstOnsets.isEmpty ? null : _burstOnsets.last;
 
-  /// 다음 자극이 일어날 것으로 예측되는 시점. 게임 큐는 여기서 [kCueLeadMs]
-  /// 만큼 앞서 나가야 한다.
+  /// 다음 자극이 일어날 것으로 예측되는 시점(ms). 게임 큐는 여기서
+  /// [kCueLeadMs] 만큼 앞서 나가야 한다.
   int? get predictedNextBurstOnsetMs {
-    if (_periodMs == null || _burstOnsets.isEmpty) return null;
-    return _predictOnsetFor(_burstIndex + 1);
+    if (_periodSamples == null || _burstOnsets.isEmpty) return null;
+    return clock.toMs(_predictOnsetFor(_burstIndex + 1)).round();
   }
 
   double? get lastDriftMs => _lastDriftMs;
@@ -136,27 +168,27 @@ class StimDetector {
   /// 그룹은 **그룹 시작으로부터** [kPulseRefractoryMs] 가 지나야 닫힌다.
   /// "마지막 임계 초과 샘플" 기준으로 재면 M-wave(5~15ms)가 다음 펄스(31ms)
   /// 까지 사슬처럼 이어져 두 펄스가 하나로 병합된다.
-  StimEvent? add(int tMs, int adc) {
+  StimEvent? add(int sampleIdx, int adc) {
     final dev = (adc - dcOffset).abs();
 
     if (dev > threshold) {
       StimEvent? closed;
-      if (_inGroup && (tMs - _groupStartT) > kPulseRefractoryMs) {
+      if (_inGroup && (sampleIdx - _groupStartT) > _refractory) {
         closed = _closeGroup();
       }
       if (!_inGroup) {
         _inGroup = true;
-        _groupStartT = tMs;
-        _groupPeakT = tMs;
+        _groupStartT = sampleIdx;
+        _groupPeakT = sampleIdx;
         _groupPeakAbs = dev;
       } else if (dev > _groupPeakAbs) {
         _groupPeakAbs = dev;
-        _groupPeakT = tMs;
+        _groupPeakT = sampleIdx;
       }
       return closed;
     }
 
-    if (_inGroup && (tMs - _groupStartT) > kPulseRefractoryMs) {
+    if (_inGroup && (sampleIdx - _groupStartT) > _refractory) {
       return _closeGroup();
     }
     return null;
@@ -171,7 +203,7 @@ class StimDetector {
 
     final t = _groupPeakT;
     final isBurstStart =
-        _lastPulseT == null || (t - _lastPulseT!) > kBurstGapMs;
+        _lastPulseT == null || (t - _lastPulseT!) > _burstGap;
     _lastPulseT = t;
     _pulseCount++;
 
@@ -183,7 +215,7 @@ class StimDetector {
     }
 
     return StimEvent(
-      tMs: t,
+      tSample: t,
       peakAbs: _groupPeakAbs,
       isBurstStart: isBurstStart,
       burstIndex: _burstIndex,
@@ -200,37 +232,39 @@ class StimDetector {
     final valid = <double>[];
     for (var i = 1; i < _burstOnsets.length; i++) {
       final d = (_burstOnsets[i] - _burstOnsets[i - 1]).toDouble();
-      if (d >= kPeriodSearchMinMs && d <= kPeriodSearchMaxMs) valid.add(d);
+      if (d >= _periodMin && d <= _periodMax) valid.add(d);
     }
     if (valid.length < 3) return;
-    _periodMs = median(valid);
+    _periodSamples = median(valid);
   }
 
   int _predictOnsetFor(int burstIndex) {
-    final origin = _phaseOriginMs ?? _burstOnsets.first;
+    final origin = _phaseOrigin ?? _burstOnsets.first;
     final steps = burstIndex - _phaseOriginBurstIndex;
-    return (origin + steps * _periodMs!).round();
+    return (origin + steps * _periodSamples!).round();
   }
 
-  void _updatePhase(int actualOnsetMs) {
-    if (_periodMs == null) return;
+  void _updatePhase(int actualOnset) {
+    if (_periodSamples == null) return;
 
-    if (_phaseOriginMs == null) {
-      _phaseOriginMs = actualOnsetMs;
+    if (_phaseOrigin == null) {
+      _phaseOrigin = actualOnset;
       _phaseOriginBurstIndex = _burstIndex;
       return;
     }
 
     final predicted = _predictOnsetFor(_burstIndex);
-    final drift = (actualOnsetMs - predicted).toDouble();
-    final exceeded = drift.abs() > kPhaseDriftToleranceMs;
+    final driftSamples = (actualOnset - predicted).toDouble();
+    final exceeded = driftSamples.abs() > _driftTolerance;
 
+    // 진단 로그는 사람이 읽는 것이라 ms 로 남긴다.
+    final drift = clock.toMs(driftSamples);
     _lastDriftMs = drift;
     if (exceeded) _driftExceededCount++;
     _driftLog.add(PhaseDriftLog(
       burstIndex: _burstIndex,
-      actualOnsetMs: actualOnsetMs,
-      predictedOnsetMs: predicted,
+      actualOnsetMs: clock.toMs(actualOnset).round(),
+      predictedOnsetMs: clock.toMs(predicted).round(),
       driftMs: drift,
       exceeded: exceeded,
     ));
@@ -239,7 +273,7 @@ class StimDetector {
     final due = (_burstIndex - _phaseOriginBurstIndex) >=
         kPhaseResyncEveryBursts;
     if (exceeded || due) {
-      _phaseOriginMs = actualOnsetMs;
+      _phaseOrigin = actualOnset;
       _phaseOriginBurstIndex = _burstIndex;
     }
   }

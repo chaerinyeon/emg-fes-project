@@ -155,71 +155,104 @@ class _SettingsTabState extends State<SettingsTab> {
               Text(
                 '다음 세션이 시작할 단계입니다. '
                 '세션 중 내린 값은 여기 저장하지 않아요.',
-                style: RefitTheme.bodySmall.copyWith(fontSize: 13),
+                style: RefitTheme.caption,
               ),
             ],
           ),
         ),
 
         // ── 노트북에서 보기 ──
+        //
+        // 주소는 폰이 Wi-Fi 를 옮기면 바뀐다. [MonitorService] 가 주기적으로
+        // 다시 잡고 알림을 내므로, 여기서는 그 알림을 듣기만 하면 된다 —
+        // 치료사가 탭을 껐다 켜거나 앱을 재시작할 필요가 없다.
         const RefitSectionTitle('노트북에서 보기'),
-        RefitCard(
-          tint: gMonitor.isRunning ? RefitTheme.glow : null,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '관찰 화면 열기',
-                          style: RefitTheme.bodySmall.copyWith(
-                            color: RefitTheme.ink,
-                            fontWeight: FontWeight.w600,
+        ListenableBuilder(
+          listenable: gMonitor,
+          builder: (context, _) => RefitCard(
+            tint: gMonitor.isRunning ? RefitTheme.glow : null,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '관찰 화면 열기',
+                            style: RefitTheme.bodySmall.copyWith(
+                              color: RefitTheme.ink,
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: 3),
-                        Text(
-                          '같은 Wi-Fi 의 노트북에서 기록과 실시간 화면을 봅니다',
-                          style: RefitTheme.bodySmall.copyWith(fontSize: 13),
-                        ),
-                      ],
+                          const SizedBox(height: 3),
+                          Text(
+                            '같은 Wi-Fi 의 노트북에서 기록과 실시간 화면을 봅니다',
+                            style: RefitTheme.caption,
+                          ),
+                        ],
+                      ),
                     ),
+                    Switch(
+                      value: settings.monitorEnabled,
+                      activeThumbColor: RefitTheme.glow,
+                      onChanged: (v) async {
+                        await settings.setMonitorEnabled(v);
+                        v ? await gMonitor.enable() : await gMonitor.disable();
+                        if (mounted) setState(() {});
+                      },
+                    ),
+                  ],
+                ),
+                if (gMonitor.isRunning) ...[
+                  const Divider(height: 24, color: RefitTheme.hairline),
+                  _AddressRow(label: '기록 보기', url: gMonitor.recordsUrl),
+                  const SizedBox(height: 12),
+                  _AddressRow(label: '실시간 보기', url: gMonitor.url),
+
+                  // ── USB ──
+                  //
+                  // Wi-Fi 주소는 망을 옮길 때마다 바뀌고, 병원 망은 기기 간
+                  // 통신을 막는 경우가 많다. USB 는 **주소가 고정된다** —
+                  // IP 가 개입하지 않고(localhost), 접속 코드도 저장돼 있다.
+                  const Divider(height: 24, color: RefitTheme.hairline),
+                  _AddressRow(label: 'USB 로 보기 (고정)', url: gMonitor.usbUrl),
+                  const SizedBox(height: 8),
+                  Text(
+                    '노트북에서 이 명령을 한 번 띄운 뒤 위 주소를 여세요.\n'
+                    '${gMonitor.usbCommand ?? ''}',
+                    style: RefitTheme.caption,
                   ),
-                  Switch(
-                    value: settings.monitorEnabled,
-                    activeThumbColor: RefitTheme.glow,
-                    onChanged: (v) async {
-                      await settings.setMonitorEnabled(v);
-                      v ? await gMonitor.enable() : await gMonitor.disable();
-                      if (mounted) setState(() {});
-                    },
+
+                  const SizedBox(height: 12),
+                  Text(
+                    gMonitor.hasLiveSession
+                        ? '지금 훈련이 연결돼 있어요.'
+                        : '훈련을 시작하면 실시간 화면이 채워집니다.',
+                    style: RefitTheme.caption,
+                  ),
+                ] else if (gMonitor.lastError != null) ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    gMonitor.lastError!,
+                    style:
+                        RefitTheme.bodySmall.copyWith(color: RefitTheme.alert),
                   ),
                 ],
-              ),
-              if (gMonitor.isRunning) ...[
-                const Divider(height: 24, color: RefitTheme.hairline),
-                _AddressRow(label: '기록 보기', url: gMonitor.recordsUrl),
-                const SizedBox(height: 12),
-                _AddressRow(label: '실시간 보기', url: gMonitor.url),
-                const SizedBox(height: 12),
-                Text(
-                  gMonitor.hasLiveSession
-                      ? '지금 훈련이 연결돼 있어요.'
-                      : '훈련을 시작하면 실시간 화면이 채워집니다.',
-                  style: RefitTheme.bodySmall.copyWith(fontSize: 13),
-                ),
-              ] else if (gMonitor.lastError != null) ...[
-                const SizedBox(height: 12),
-                Text(
-                  gMonitor.lastError!,
-                  style: RefitTheme.bodySmall.copyWith(color: RefitTheme.alert),
-                ),
+                // 웹 요청이 폰 안에서 터졌을 때. 브라우저가 옛 페이지를 들고
+                // 있으면 500 본문이 화면에 안 뜨므로, 여기가 두 번째 경로다.
+                if (gMonitor.lastServeError != null) ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    '웹 요청 오류\n${gMonitor.lastServeError!}',
+                    style: RefitTheme.bodySmall
+                        .copyWith(color: RefitTheme.alert, fontSize: 12.5),
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
 
@@ -264,7 +297,7 @@ class _SettingsTabState extends State<SettingsTab> {
                 // 강도가 아니라 지속을 센다. 기본 5일은 처방이 아니라 출발값이다.
                 '재활은 한 번의 강도보다 지속이 중요합니다. '
                 '환자에 맞게 치료사가 정해 주세요.',
-                style: RefitTheme.bodySmall.copyWith(fontSize: 13),
+                style: RefitTheme.caption,
               ),
             ],
           ),
@@ -330,6 +363,23 @@ class _SettingsTabState extends State<SettingsTab> {
         RefitCard(
           padding: const EdgeInsets.symmetric(vertical: 6),
           child: RefitTile(
+            title: '자극기 수동 조작',
+            subtitle: '전원과 세기를 사람이 직접 맞춥니다',
+            leading: Icons.pan_tool_outlined,
+            trailing: Switch(
+              value: settings.manualStim,
+              activeThumbColor: RefitTheme.glow,
+              onChanged: (v) async {
+                await settings.setManualStim(v);
+                if (mounted) setState(() {});
+              },
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        RefitCard(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: RefitTile(
             title: '합성 신호 모드',
             subtitle: '기기 없이 전 구간을 돌려 봅니다',
             leading: Icons.science_outlined,
@@ -346,8 +396,7 @@ class _SettingsTabState extends State<SettingsTab> {
         const SizedBox(height: 12),
         Text(
           '자극 차단의 1차는 폰의 로컬 자동 종료입니다. 원격은 언제나 2차입니다.',
-          style: RefitTheme.bodySmall
-              .copyWith(fontSize: 13, color: RefitTheme.inkFaint),
+          style: RefitTheme.caption.copyWith(color: RefitTheme.inkFaint),
           textAlign: TextAlign.center,
         ),
       ],
@@ -376,8 +425,7 @@ class _AddressRow extends StatelessWidget {
             children: [
               Text(
                 label,
-                style: RefitTheme.bodySmall
-                    .copyWith(fontSize: 13, color: RefitTheme.inkFaint),
+                style: RefitTheme.caption.copyWith(color: RefitTheme.inkFaint),
               ),
               const SizedBox(height: 3),
               Text(

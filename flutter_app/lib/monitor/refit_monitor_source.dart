@@ -73,7 +73,7 @@ class RefitMonitorSource {
     // 웹은 패킷 단위(첫 표본 ms + 100표본)를 기대한다.
     _rawSub = orchestrator.link.rawPackets.listen((bytes) {
       final p = RawPacket.parse(bytes);
-      if (p != null) sink.raw(p.firstSampleMs, p.samples);
+      if (p != null) sink.raw(p.firstSampleIndex, p.samples);
     });
 
     _timer = Timer.periodic(

@@ -384,15 +384,14 @@ class SessionCard extends StatelessWidget {
               const SizedBox(width: 6),
               Text(
                 s.synced ? '동기화됨' : '대기',
-                style: RefitTheme.bodySmall.copyWith(
-                    fontSize: 13, color: RefitTheme.inkFaint),
+                style: RefitTheme.caption.copyWith(color: RefitTheme.inkFaint),
               ),
             ],
           ),
           const SizedBox(height: 8),
           Text(
             '${endReasonLabel(s.endReason)} · ${closingLineFor(s.endReason)}',
-            style: RefitTheme.bodySmall.copyWith(fontSize: 13),
+            style: RefitTheme.caption,
           ),
         ],
       ),
@@ -496,12 +495,9 @@ class _CalendarView extends StatelessWidget {
                     children: [
                       Text(
                         '$day',
-                        style: RefitTheme.bodySmall.copyWith(
-                          fontSize: 13,
-                          color: has ? RefitTheme.ink : RefitTheme.inkFaint,
+                        style: RefitTheme.caption.copyWith(color: has ? RefitTheme.ink : RefitTheme.inkFaint,
                           fontWeight:
-                              has ? FontWeight.w600 : FontWeight.w400,
-                        ),
+                              has ? FontWeight.w600 : FontWeight.w400),
                       ),
                       const SizedBox(height: 4),
                       Container(

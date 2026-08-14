@@ -8,8 +8,8 @@ import 'package:flutter_app/services/session_controller.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 class _RawCall {
-  _RawCall(this.firstSampleMs, this.samples);
-  final int firstSampleMs;
+  _RawCall(this.firstSampleIndex, this.samples);
+  final int firstSampleIndex;
   final List<int> samples;
 }
 
@@ -29,8 +29,8 @@ class _FakeSink implements MonitorSink {
   void link(String state) => links.add(state);
 
   @override
-  void raw(int firstSampleMs, List<int> samples) =>
-      raws.add(_RawCall(firstSampleMs, samples));
+  void raw(int firstSampleIndex, List<int> samples) =>
+      raws.add(_RawCall(firstSampleIndex, samples));
 }
 
 void main() {
@@ -136,7 +136,7 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 20));
 
     expect(sink.raws, hasLength(1));
-    expect(sink.raws.single.firstSampleMs, 1000);
+    expect(sink.raws.single.firstSampleIndex, 1000);
     expect(sink.raws.single.samples, [10, -20, 30]);
   });
 
@@ -527,9 +527,9 @@ void main() {
 }
 
 /// RAW 패킷 바이트 조립 헬퍼(펌웨어 포맷, little-endian) — session_adopt_test.dart 와 동일.
-List<int> _rawBytes(int firstSampleMs, List<int> samples) {
+List<int> _rawBytes(int firstSampleIndex, List<int> samples) {
   final bd = ByteData(6 + 2 * samples.length);
-  bd.setUint32(0, firstSampleMs, Endian.little);
+  bd.setUint32(0, firstSampleIndex, Endian.little);
   bd.setUint16(4, samples.length, Endian.little);
   for (var i = 0; i < samples.length; i++) {
     bd.setInt16(6 + 2 * i, samples[i], Endian.little);

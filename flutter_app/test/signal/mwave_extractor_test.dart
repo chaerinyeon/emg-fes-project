@@ -7,7 +7,7 @@ PulseEpoch _epoch(Map<int, double> shape, {int onsetMs = 0}) {
   final s = List<double>.generate(
       kEpochLenMs, (d) => shape[d] ?? 0.0,
       growable: false);
-  return PulseEpoch(onsetMs: onsetMs, samples: s, baseline: 0.0);
+  return PulseEpoch(onsetSample: onsetMs, samples: s, baseline: 0.0, clock: const SampleClock(kSampleRateHz));
 }
 
 BurstEpoch _burst(List<double> p2ps) {
@@ -16,7 +16,7 @@ BurstEpoch _burst(List<double> p2ps) {
   for (var i = 0; i < p2ps.length; i++) {
     pulses.add(_epoch({8: p2ps[i] / 2, 12: -p2ps[i] / 2}, onsetMs: i * 31));
   }
-  return BurstEpoch(index: 0, onsetMs: 0, pulses: pulses);
+  return BurstEpoch(index: 0, onsetSample: 0, pulses: pulses, clock: const SampleClock(kSampleRateHz));
 }
 
 void main() {
@@ -69,7 +69,7 @@ void main() {
     });
 
     test('펄스가 없으면 null이다', () {
-      final b = BurstEpoch(index: 0, onsetMs: 0, pulses: const []);
+      final b = BurstEpoch(index: 0, onsetSample: 0, pulses: const [], clock: const SampleClock(kSampleRateHz));
       expect(MwaveExtractor.burstP2p(b), isNull);
     });
 

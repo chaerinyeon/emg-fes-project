@@ -79,6 +79,17 @@ class _PlayScreenState extends State<PlayScreen> {
   Widget build(BuildContext context) {
     final o = widget.orchestrator;
     final syncing = o.state == SessionState.syncing;
+    final waiting = o.state == SessionState.readyToMeasure;
+
+    // 게임이 돌지 못하는 상태인가.
+    //
+    // 게임 루프는 버스트에서만 위상을 받는다([CoreLoop.syncTo]). 주기가 안
+    // 잡히면 [CoreLoop.advanceTo] 가 큐를 하나도 내주지 않고, 화면은 멀쩡히
+    // 떠 있는데 **아무것도 움직이지 않는다.**
+    //
+    // 동기화 비상구로 여기 온 경우가 특히 그렇다 — 갇히지 않게 내보냈더니
+    // 이번엔 이유 없이 멈춘 화면이 됐다. 그건 갇힌 것보다 나쁘다.
+    final stalled = o.state == SessionState.playing && o.loop.periodMs == null;
 
     return Scaffold(
       backgroundColor: RefitTheme.abyss,
@@ -94,6 +105,14 @@ class _PlayScreenState extends State<PlayScreen> {
           // 동기화 구간은 "대기 화면"이 아니라 튜토리얼 라운드다. 게임은
           // 그대로 돌아가고, 그 위에 한 마디만 얹는다.
           if (syncing) const _SyncingVeil(),
+
+          // 멈춰 있는 이유를 화면이 말한다. 가리지는 않는다 — 자극이 잡히기
+          // 시작하면 그 순간부터 게임이 돌아야 하고, 그때 이 띠는 사라진다.
+          if (stalled) const _StalledNotice(),
+
+          // 측정 시작 전. 게임을 먼저 보여 준 뒤 그 위에 카드를 덮는다 —
+          // 누르면 곧바로 이 화면이 살아나므로 어디를 봐야 할지 헤매지 않는다.
+          if (waiting) _MeasureGate(onStart: o.startMeasurement),
 
           SafeArea(
             child: Column(
@@ -162,14 +181,20 @@ class _PlayScreenState extends State<PlayScreen> {
                         Padding(
                           padding: const EdgeInsets.only(bottom: 12),
                           child: RefitButton(
-                            label: '자극 조금 줄이기',
+                            // 수동일 때 앱이 하는 일은 기록뿐이다. 버튼이
+                            // 세기를 줄여 주는 것처럼 말하면, 아프다고 누른
+                            // 사람이 줄어들기를 기다리며 계속 참는다.
+                            label: o.manualStim
+                                ? '기기 다이얼을 낮춰 주세요'
+                                : '자극 조금 줄이기',
                             filled: false,
                             onPressed: o.lowerIntensity,
                           ),
                         ),
-                      // 상시 노출. 누르면 즉시 자극 OFF.
+                      // 상시 노출. 누르면 즉시 자극 OFF —
+                      // 다만 수동일 때는 앱이 끄지 못한다. 아래 문구가 그걸 말한다.
                       RefitButton(
-                        label: '오늘은 여기까지',
+                        label: o.manualStim ? '기기를 끄고 마치기' : '오늘은 여기까지',
                         filled: false,
                         tone: RefitTheme.inkSoft,
                         onPressed: () => o.stopByUser(),
@@ -205,6 +230,110 @@ class _EdgeScrim extends StatelessWidget {
               RefitTheme.abyss.withValues(alpha: 0.88),
             ],
             stops: const [0.0, 0.20, 0.66, 1.0],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 측정 시작을 기다리는 카드.
+///
+/// ## 왜 게임 위에 덮는가
+///
+/// 이 순간에 환자가 하는 일은 **자세를 잡는 것**이다. 그 동안의 움직임이
+/// 기준값(DC offset·잡음·A_ref)에 들어가면 그 위의 피로도 전부가 그만큼
+/// 틀어진다. 그래서 "지금부터 잰다"를 사람이 선언하게 하고, 그 전까지는
+/// 신호 엔진에 표본을 넣지 않는다.
+///
+/// 게임을 먼저 그려 두고 카드만 덮는 이유는, 누른 직후 바로 이 화면이
+/// 살아나기 때문이다 — 화면이 한 번 더 바뀌면 어디를 봐야 할지 헤맨다.
+class _MeasureGate extends StatelessWidget {
+  const _MeasureGate({required this.onStart});
+
+  final VoidCallback onStart;
+
+  @override
+  Widget build(BuildContext context) {
+    return ColoredBox(
+      color: RefitTheme.abyss.withValues(alpha: 0.62),
+      child: Center(
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 28),
+          padding: const EdgeInsets.symmetric(horizontal: 26, vertical: 24),
+          decoration: BoxDecoration(
+            color: RefitTheme.abyss.withValues(alpha: 0.88),
+            borderRadius: BorderRadius.circular(26),
+            border: Border.all(
+              color: RefitTheme.glow.withValues(alpha: 0.28),
+            ),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '편하게 자세를 잡으세요',
+                style: RefitTheme.title,
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 10),
+              Text(
+                '준비되면 아래를 눌러 주세요.\n그때부터 근육 반응을 읽기 시작합니다.',
+                style: RefitTheme.body,
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity,
+                child: RefitButton(label: '측정 시작', onPressed: onStart),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 자극을 못 찾아 게임이 돌지 못하고 있다.
+///
+/// 「곧 함께 시작합니다」와 달리 **덮지 않는다.** 이건 기다리면 되는 상태가
+/// 아니라 사람이 뭔가 해야 하는 상태이고, 화면 가운데를 막아 두면 무엇을
+/// 해야 하는지가 아니라 "고장났다"로 읽힌다.
+class _StalledNotice extends StatelessWidget {
+  const _StalledNotice();
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Align(
+        alignment: Alignment.topCenter,
+        child: IgnorePointer(
+          child: Container(
+            margin: const EdgeInsets.fromLTRB(20, 64, 20, 0),
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+            decoration: BoxDecoration(
+              color: RefitTheme.abyss.withValues(alpha: 0.86),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: RefitTheme.caution.withValues(alpha: 0.5),
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.bolt_outlined,
+                    size: 20, color: RefitTheme.caution),
+                const SizedBox(width: 10),
+                Flexible(
+                  child: Text(
+                    '자극을 찾지 못해 아직 멈춰 있어요.\n'
+                    '기기 세기를 한두 단계 올려 주세요.',
+                    style: RefitTheme.caption.copyWith(color: RefitTheme.ink),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),

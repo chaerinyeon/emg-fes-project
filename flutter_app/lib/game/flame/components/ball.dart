@@ -76,7 +76,13 @@ class Ball extends PositionComponent with HasGameReference<BaseballGame> {
     final p = _progress(game.feedNowSec);
 
     // 원근: 진행도의 제곱에 가깝게 커져야 "빠르게 다가오는" 느낌이 난다.
-    final s = _minScale + (_maxScale - _minScale) * math.pow(p, 2.2).toDouble();
+    //
+    // p 는 1.3 까지 간다(수축이 안 와서 지나쳐 버린 공). 그 구간까지 지수를
+    // 그대로 먹이면 1.3^2.2 = 1.79 배가 되어 **글러브를 지나친 공이 오히려
+    // 커진다** — 멀어지는 물체가 커지니 눈이 거부한다. 도착 크기에서 멈추고
+    // 아래로 흘러가게만 둔다.
+    final grow = math.pow(p.clamp(0.0, 1.0), 2.2).toDouble();
+    final s = _minScale + (_maxScale - _minScale) * grow;
     final r = w * _arrivalRadiusRatio * s;
     size = Vector2.all(r * 2);
 
@@ -99,9 +105,12 @@ class Ball extends PositionComponent with HasGameReference<BaseballGame> {
       }
       _fade -= dt * 3.2;
       if (_fade <= 0) _dead = true;
-    } else if (p >= 1.3) {
-      // 수축이 안 와서 지나쳐 버린 공 — "놓침" 연출로만 쓰이고 벌점은 없다.
-      _dead = true;
+    } else if (p > 1.0) {
+      // 수축이 안 와서 지나쳐 버린 공. **벌점은 없다** — 실패를 연출하지
+      // 않는다는 규칙 그대로다. 다만 그냥 두면 화면 아래로 계속 흘러가
+      // "왜 안 잡히지"가 눈에 오래 남는다. 지나치는 즉시 옅어져 사라진다.
+      _fade -= dt * 2.4;
+      if (_fade <= 0) _dead = true;
     }
   }
 

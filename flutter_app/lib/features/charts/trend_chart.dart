@@ -32,7 +32,7 @@ class TrendChart extends StatelessWidget {
       return Center(
         child: Text(
           '표시할 데이터가 없어요',
-          style: RefitTheme.bodySmall.copyWith(fontSize: 13),
+          style: RefitTheme.caption,
         ),
       );
     }
@@ -80,6 +80,16 @@ class _TrendPainter extends CustomPainter {
       );
     }
 
+    // 기준선 셋. 눈금 숫자는 쓰지 않는다 — 절대 크기는 여전히 의미가 없고,
+    // 선만으로도 "지금 어디쯤인지"가 읽힌다.
+    final grid = Paint()
+      ..color = RefitTheme.hairline.withValues(alpha: 0.5)
+      ..strokeWidth = 1;
+    for (var i = 1; i <= 3; i++) {
+      final y = size.height * i / 4;
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), grid);
+    }
+
     Offset at(int i) => Offset(
           size.width * i / (values.length - 1),
           size.height - 4 - (values[i] - lo) / span * (size.height - 10),
@@ -118,6 +128,20 @@ class _TrendPainter extends CustomPainter {
         ..strokeCap = StrokeCap.round
         ..strokeJoin = StrokeJoin.round
         ..color = color,
+    );
+
+    // 끝점 하나만 찍는다. 점을 전부 찍으면 버스트가 수백 개인 세션에서
+    // 선이 점으로 뭉개진다. **지금 값**이 어디인지만 눈에 걸리면 된다.
+    final last = at(values.length - 1);
+    canvas.drawCircle(last, 7, Paint()..color = color.withValues(alpha: 0.18));
+    canvas.drawCircle(last, 3.2, Paint()..color = color);
+    canvas.drawCircle(
+      last,
+      3.2,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6
+        ..color = RefitTheme.abyss,
     );
   }
 

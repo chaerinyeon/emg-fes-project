@@ -83,8 +83,9 @@ void main() {
     test('에폭 샘플은 onset에서 시작한다', () {
       final rig = _Rig()..run(nBursts: 2);
       final p = rig.bursts.first.pulses.first;
-      expect(p.onsetMs, 0);
-      expect(p.samples.length, kEpochLenMs);
+      expect(p.onsetSample, 0);
+      // fs=1000 이므로 31ms = 31 샘플. 4kHz 라면 124 가 된다.
+      expect(p.samples.length, const SampleClock(kSampleRateHz).samples(kEpochLenMs));
     });
   });
 
@@ -150,7 +151,7 @@ void main() {
         seg.addSample(t, _dc);
       }
       final e = seg.addEvent(const StimEvent(
-          tMs: 5, peakAbs: 900, isBurstStart: true, burstIndex: 0));
+          tSample: 5, peakAbs: 900, isBurstStart: true, burstIndex: 0));
       expect(e, isNull);
       final closed = seg.flush();
       // onset+31 까지의 샘플이 없으므로 유효 펄스 0개

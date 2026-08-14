@@ -941,6 +941,22 @@ const numOrNull = v => typeof v === "number" ? v : null;
 let lastFullRedrawAt = 0;      // 타임라인·통계 표를 마지막으로 다시 그린 시각
 const FULL_REDRAW_MS = 1000;   // 그 둘은 O(n) 이라 1Hz 로만 다시 그린다(아래 livePush 참고)
 
+/* 링크 상태에 맞는 배너. **'idle' 은 센서 문제가 아니다** — 폰이 훈련 중이
+   아닐 뿐이다(관찰 서버는 앱 수명으로 떠 있다). 이걸 "센서 끊김"으로 쓰면
+   치료사가 멀쩡한 전극과 기기를 붙들고 원인을 찾게 된다. */
+function bannerForLink(state) {
+  if (state === "connected") return null;
+  if (state === "idle") {
+    return ["훈련 중이 아닙니다 — 폰에서 운동을 시작하면 채워집니다", "info"];
+  }
+  return ["센서 끊김 (" + state + ") — 전극·기기를 확인하세요", "bad"];
+}
+
+function applyLinkBanner(state) {
+  const b = bannerForLink(state);
+  if (b) setBanner(b[0], b[1]); else setBanner("", null);
+}
+
 function setBanner(text, tone) {
   let el = document.getElementById("liveBanner");
   if (!el) {
@@ -953,7 +969,8 @@ function setBanner(text, tone) {
   if (!text) { el.style.display = "none"; return; }
   el.style.display = "block";
   el.textContent = text;
-  el.style.background = tone === "bad" ? "#7f1d1d" : "#78350f";
+  el.style.background =
+    tone === "bad" ? "#7f1d1d" : tone === "info" ? "#15414E" : "#78350f";
   el.style.color = "#fff";
 }
 
@@ -1132,11 +1149,7 @@ function onMessage(msg) {
     if (typeof m.link === "string") {
       linkState = m.link;
       updateDiagLink();
-      if (m.link !== "connected") {
-        setBanner("센서 끊김 (" + m.link + ") — 전극·기기를 확인하세요", "bad");
-      } else {
-        setBanner("", null);
-      }
+      applyLinkBanner(m.link);
     }
     return;
   }
@@ -1208,11 +1221,7 @@ function onMessage(msg) {
   if (m.t === "link") {
     linkState = m.state;
     updateDiagLink();
-    if (m.state !== "connected") {
-      setBanner("센서 끊김 (" + m.state + ") — 전극·기기를 확인하세요", "bad");
-    } else {
-      setBanner("", null);
-    }
+    applyLinkBanner(m.state);
     return;
   }
 
@@ -1289,7 +1298,7 @@ staleTimer = setInterval(() => {
     // 계속 덮어써진다 — 화면은 맞게 회색이 되지만 치료사는 2초 뒤부터
     // 전극이 아니라 Wi-Fi/폰 쪽을 의심하게 된다.
     if (linkState !== "connected") {
-      setBanner("센서 끊김 (" + linkState + ") — 전극·기기를 확인하세요", "bad");
+      applyLinkBanner(linkState);
     } else {
       setBanner("데이터 끊김 — 화면이 갱신되지 않고 있습니다", "bad");
     }

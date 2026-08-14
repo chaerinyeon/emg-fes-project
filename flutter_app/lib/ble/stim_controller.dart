@@ -107,6 +107,7 @@ class StimController {
     this.link, {
     Duration? maxStimDuration,
     Duration? dataTimeout,
+    this.manual = false,
   })  : maxStimDuration =
             maxStimDuration ?? const Duration(seconds: kLocalMaxStimSeconds),
         dataTimeout =
@@ -117,6 +118,18 @@ class StimController {
   final DeviceLink link;
   final Duration maxStimDuration;
   final Duration dataTimeout;
+
+  /// 자극기를 사람이 손으로 켜고 끄는가.
+  ///
+  /// true 면 `trigger_stim` 을 **보내지 않는다.** 마사지기가 펌웨어에 아직
+  /// 배선되지 않아 그 명령이 아무 데도 닿지 않기 때문이다. 상태 추적과
+  /// 전이 로그는 그대로 남긴다 — 세션 기록에서 자극 구간이 사라지면
+  /// 그 세션은 나중에 해석할 수 없다.
+  ///
+  /// **여기서 잃는 것:** 앱이 자극을 끌 수 없다. 워치독도, 최대 시간도,
+  /// 비상 정지도 사람에게 "끄세요"라고 말할 수 있을 뿐이다. 화면은 이걸
+  /// 숨기지 않아야 한다.
+  final bool manual;
 
   final _transitions = StreamController<StimTransition>.broadcast();
 
@@ -140,11 +153,14 @@ class StimController {
     if (_emergencyLocked) return false;
     if (link.state != LinkState.connected) return false;
 
-    try {
-      await link.send({'cmd': 'trigger_stim', 'on': true});
-    } catch (_) {
-      _emit(on: false, reason: StimStopReason.deviceDisconnect, delivered: false);
-      return false;
+    if (!manual) {
+      try {
+        await link.send({'cmd': 'trigger_stim', 'on': true});
+      } catch (_) {
+        _emit(
+            on: false, reason: StimStopReason.deviceDisconnect, delivered: false);
+        return false;
+      }
     }
 
     _stimulating = true;
@@ -161,12 +177,17 @@ class StimController {
     _lastStopReason = reason;
     _cancelTimers();
 
-    var delivered = true;
-    try {
-      await link.send({'cmd': 'trigger_stim', 'on': false});
-    } catch (_) {
-      // 링크가 죽었으면 펌웨어가 onDisconnect 에서 끈다.
-      delivered = false;
+    // 수동 모드에서는 보낼 곳이 없다. delivered:false 로 남겨 기록이
+    // "앱이 껐다"고 말하지 않게 한다 — 실제로 끄는 것은 사람이다.
+    var delivered = false;
+    if (!manual) {
+      delivered = true;
+      try {
+        await link.send({'cmd': 'trigger_stim', 'on': false});
+      } catch (_) {
+        // 링크가 죽었으면 펌웨어가 onDisconnect 에서 끈다.
+        delivered = false;
+      }
     }
     _emit(on: false, reason: reason, delivered: delivered);
   }

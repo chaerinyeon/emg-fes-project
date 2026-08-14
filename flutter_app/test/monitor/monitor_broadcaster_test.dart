@@ -17,14 +17,30 @@ MonitorHello _hello() => const MonitorHello(
       ticks: [],
     );
 
-MonitorBroadcaster _make({String token = '8134'}) => MonitorBroadcaster(
+/// `toString()` 자체가 던지는 예외.
+///
+/// 극단적으로 보이지만, 에러 경로가 **예외의 협조에 기대면 안 된다**는 것을
+/// 고정하기 위한 것이다. 실기기에서 500 은 왔는데 본문이 비어 있었고, 그때
+/// 후보 중 하나가 "메시지를 만들다가 또 던졌다" 였다.
+class _HostileError implements Exception {
+  @override
+  String toString() => throw StateError('toString 도 실패');
+}
+
+MonitorBroadcaster _make({
+  String token = '8134',
+  Future<String?> Function()? ipLookup,
+}) =>
+    MonitorBroadcaster(
       pageLoader: () async => '<html><body>모니터</body></html>',
       helloBuilder: _hello,
       token: token,
+      ipLookup: ipLookup,
     );
 
 void main() {
   group('추가 라우트', _extraRouteTests);
+  group('망이 바뀌었을 때 주소 갱신', _refreshTests);
 
   test('start 하면 엔드포인트와 토큰이 생긴다', () async {
     final b = _make();
@@ -283,5 +299,178 @@ void _extraRouteTests() {
     await get(ep.port, '/boom?k=${ep.token}');
     final after = await get(ep.port, '/api/x?k=${ep.token}');
     expect(after.statusCode, 200);
+  });
+
+  // 예전에는 catch 가 statusCode 를 안 건드리고 응답만 닫았다. HttpResponse 의
+  // 기본값이 200 이라 **성공처럼 보이는 빈 응답**이 나갔고, 웹은
+  // "Unexpected end of JSON input" 만 보여 줬다 — 폰에서 무엇이 터졌는지
+  // 알 방법이 아예 없었다.
+  test('처리기가 던지면 200 이 아니라 500 이다', () async {
+    final b = make((uri) async => throw StateError('boom'));
+    final ep = (await b.start())!;
+    addTearDown(b.stop);
+
+    final res = await get(ep.port, '/api/sessions?k=${ep.token}');
+    expect(res.statusCode, 500);
+  });
+
+  test('500 본문에 터진 이유가 적혀 있다', () async {
+    final b = make((uri) async => throw StateError('가짜 저장소 오류'));
+    final ep = (await b.start())!;
+    addTearDown(b.stop);
+
+    final res = await get(ep.port, '/api/sessions?k=${ep.token}');
+    final body = await res.transform(utf8.decoder).join();
+    expect(body, contains('가짜 저장소 오류'));
+  });
+
+  // 실기기에서 500 은 왔는데 본문이 비어 있었다. 테스트의 StateError 는
+  // 본문이 실려 나갔으므로, 기기에서만 다른 것은 **예외의 종류**다.
+  // 그래서 에러 경로가 예외 종류에 기대지 않게 만든다.
+  test('toString 이 던지는 예외여도 본문이 비지 않는다', () async {
+    final b = make((uri) async => throw _HostileError());
+    final ep = (await b.start())!;
+    addTearDown(b.stop);
+
+    final res = await get(ep.port, '/api/sessions?k=${ep.token}');
+    final body = await res.transform(utf8.decoder).join();
+
+    expect(res.statusCode, 500);
+    expect(body.trim(), isNotEmpty,
+        reason: '이유를 못 만들더라도 최소한 타입 이름은 나와야 한다');
+    expect(body, contains('_HostileError'));
+  });
+
+  test('본문이 비ASCII 여도 그대로 전달된다', () async {
+    final b = make((uri) async => throw StateError('저장소 오류 — 상자가 없음'));
+    final ep = (await b.start())!;
+    addTearDown(b.stop);
+
+    final res = await get(ep.port, '/api/sessions?k=${ep.token}');
+    final body = await res.transform(utf8.decoder).join();
+    expect(body, contains('상자가 없음'));
+  });
+
+  // 실기기에서 터진 진짜 원인.
+  //
+  // MonitorPayload 의 기본 content-type 은 `application/json` 으로 **charset 이
+  // 없었다.** Dart 의 HttpResponse 는 charset 이 없으면 인코딩을 latin1 로
+  // 잡고, 한글(코드포인트 > 255)에서 write() 가
+  //   Invalid argument (string): Contains invalid characters.
+  // 를 던진다. 환자 이름이 한글인 순간 `/api/sessions` 가 통째로 죽었다.
+  //
+  // charset 을 명시한 경로(`/records` 의 text/html; charset=utf-8, 403 의
+  // ContentType.text)만 살아남아서, "HTML 은 되는데 API 만 안 된다"로 보였다.
+  test('한글 본문이 기본 content-type 으로도 그대로 전달된다', () async {
+    const body = '{"patient":"연","sessions":[]}';
+    final b = make((uri) async => const MonitorPayload(body));
+    final ep = (await b.start())!;
+    addTearDown(b.stop);
+
+    final res = await get(ep.port, '/api/sessions?k=${ep.token}');
+    expect(res.statusCode, 200);
+    expect(await res.transform(utf8.decoder).join(), body);
+  });
+
+  test('기본 content-type 이 charset 을 선언한다', () async {
+    final b = make((uri) async => const MonitorPayload('{"ok":true}'));
+    final ep = (await b.start())!;
+    addTearDown(b.stop);
+
+    final res = await get(ep.port, '/api/x?k=${ep.token}');
+    expect(res.headers.contentType?.charset, 'utf-8');
+  });
+
+  test('이모지처럼 BMP 밖 문자도 깨지지 않는다', () async {
+    const body = '{"note":"환자 🙂 기록"}';
+    final b = make((uri) async => const MonitorPayload(body));
+    final ep = (await b.start())!;
+    addTearDown(b.stop);
+
+    final res = await get(ep.port, '/api/x?k=${ep.token}');
+    expect(await res.transform(utf8.decoder).join(), body);
+  });
+
+  test('페이지 로더가 던져도 500 이다', () async {
+    final b = MonitorBroadcaster(
+      pageLoader: () async => throw StateError('에셋 없음'),
+      helloBuilder: _hello,
+      token: '8134',
+    );
+    final ep = (await b.start())!;
+    addTearDown(b.stop);
+
+    final res = await get(ep.port, '/?k=${ep.token}');
+    expect(res.statusCode, 500);
+  });
+}
+
+// 폰이 Wi-Fi 를 옮기면 화면에 적힌 IP 는 그 순간 거짓이 된다. 서버 자체는
+// anyIPv4 에 붙어 있어 새 망에서도 그대로 듣고 있으므로, 재바인딩 없이
+// 표시할 주소만 다시 잡으면 된다.
+void _refreshTests() {
+  test('IP 가 바뀌면 엔드포인트가 새 IP 를 쓴다', () async {
+    var ip = '192.168.1.180';
+    final b = _make(ipLookup: () async => ip);
+    final first = (await b.start())!;
+    addTearDown(b.stop);
+    expect(first.ip, '192.168.1.180');
+
+    ip = '172.30.1.44';
+    final second = (await b.refreshAddress())!;
+
+    expect(second.ip, '172.30.1.44');
+    expect(b.endpoint!.ip, '172.30.1.44');
+    expect(b.url, 'http://172.30.1.44:${first.port}/?k=8134');
+  });
+
+  // 포트와 토큰이 바뀌면 이미 열어 둔 브라우저 탭이 403 을 받는다.
+  test('갱신해도 포트와 토큰은 그대로다', () async {
+    var ip = '192.168.1.180';
+    final b = _make(token: '9855', ipLookup: () async => ip);
+    final first = (await b.start())!;
+    addTearDown(b.stop);
+
+    ip = '172.30.1.44';
+    final second = (await b.refreshAddress())!;
+
+    expect(second.port, first.port);
+    expect(second.token, '9855');
+  });
+
+  test('갱신 뒤에도 서버는 같은 포트에서 계속 응답한다', () async {
+    var ip = '192.168.1.180';
+    final b = _make(ipLookup: () async => ip);
+    final ep = (await b.start())!;
+    addTearDown(b.stop);
+
+    ip = '172.30.1.44';
+    await b.refreshAddress();
+
+    final client = HttpClient();
+    addTearDown(client.close);
+    final req = await client
+        .getUrl(Uri.parse('http://127.0.0.1:${ep.port}/?k=${ep.token}'));
+    final res = await req.close();
+    expect(res.statusCode, 200);
+    await res.drain<void>();
+  });
+
+  test('IP 조회가 실패하면 엔드포인트의 ip 는 null 이 된다', () async {
+    var ip = '192.168.1.180';
+    final b = _make(ipLookup: () async => ip.isEmpty ? null : ip);
+    await b.start();
+    addTearDown(b.stop);
+
+    ip = '';
+    final after = (await b.refreshAddress())!;
+
+    expect(after.ip, isNull);
+    expect(after.url, isNull);
+  });
+
+  test('서버가 안 떠 있으면 갱신은 null 을 준다', () async {
+    final b = _make(ipLookup: () async => '172.30.1.44');
+    expect(await b.refreshAddress(), isNull);
   });
 }

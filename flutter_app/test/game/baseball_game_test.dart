@@ -142,6 +142,42 @@ void main() {
     });
   });
 
+
+  group('★ 공은 언제나 같은 속도로 날아온다 (회귀)', () {
+    // [FatigueFeed.nextContractionEta] 는 "지금 이후 가장 가까운" 자극 시각이라
+    // 남은 시간이 0 에 가까울 수 있다. 예전에는 이르기만 막고 그대로 던져서,
+    // 공이 원경에서 글러브까지 0.1초 만에 날아왔다 — 날아온 게 아니라
+    // 순간이동으로 보인다. 첫 공과 위상 재동기 직후에 반드시 걸렸다.
+    gameTest('던질 시점을 놓치면 그 도착은 건너뛴다', (game) async {
+      final feed = game.feed as ScriptedFeed;
+
+      // eta = period. 남은 시간이 0.1초뿐인 시점으로 건너뛴다.
+      feed.advanceTo(feed.period - 0.1);
+      game.update(0.016);
+      game.update(0);
+
+      expect(ballCount(game), 0,
+          reason: '0.1초짜리 비행은 날아오는 게 아니라 순간이동이다');
+    });
+
+    gameTest('던져진 공의 비행시간은 늘 비슷하다', (game) async {
+      final feed = game.feed as ScriptedFeed;
+
+      // 던질 창(도착 0.95~0.90초 전)에 들어가면 나온다.
+      feed.advanceTo(feed.period - 0.93);
+      game.update(0.016);
+      game.update(0);
+      expect(ballCount(game), 1);
+
+      final ball = game.children.whereType<Ball>().first;
+      final flight = ball.arrivalSec - ball.spawnSec;
+      expect(flight, greaterThan(0.85),
+          reason: '속도가 매번 다르면 언제 잡히는지 눈이 배우지 못한다');
+      expect(flight, lessThan(1.0));
+    });
+  });
+
+
   group('★ 글러브가 화면 안에 있다 (회귀)', () {
     gameTest('글러브가 캔버스 안에 들어온다', (game) async {
       game.update(0);

@@ -47,7 +47,7 @@ class ReconnectPolicy {
 /// RAW 패킷 스트림 → 신호 엔진이 먹는 (timeMs, adc) 표본 스트림.
 ///
 /// 펌웨어는 100ms마다 100표본을 한 묶음으로 보낸다. 패킷 헤더의
-/// `firstSampleMs` 는 BLE 끊김 중에도 계속 증가하므로, 유실 구간이 있으면
+/// `firstSampleIndex` 는 BLE 끊김 중에도 계속 증가하므로, 유실 구간이 있으면
 /// 표본 시각에 그대로 구멍이 남는다 — 신호 엔진이 그 구멍을 봐야 한다.
 /// 여기서 시각을 새로 만들어 메우면 위상 고정이 조용히 어긋난다.
 ///
@@ -60,7 +60,7 @@ Stream<(int, int)> rawSamples(Stream<List<int>> packets) {
     if (p == null) return const <(int, int)>[]; // 잘린 패킷 하나는 버리고 세션은 계속
     return Iterable<(int, int)>.generate(
       p.samples.length,
-      (i) => (p.firstSampleMs + i, p.samples[i]),
+      (i) => (p.firstSampleIndex + i, p.samples[i]),
     );
   });
 }

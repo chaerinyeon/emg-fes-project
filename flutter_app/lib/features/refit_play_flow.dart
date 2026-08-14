@@ -47,6 +47,23 @@ class _RefitPlayFlowState extends State<RefitPlayFlow> {
     // 서버가 꺼져 있으면 아무 일도 하지 않는다. 관찰은 선택이고, 훈련이
     // 관찰 때문에 달라져서는 안 된다.
     gMonitor.attachSession(widget.orchestrator);
+
+    // 「측정 시작」을 사람이 한 번 더 누르게 두지 않는다.
+    //
+    // 그 버튼에는 **결정이 없었다.** 준비 화면에서 이미 시작을 눌렀는데 게임
+    // 화면에서 또 누르라고 하면, 확인이 아니라 관문이 하나 더 있는 것으로
+    // 읽힌다. 이 화면이 떴다는 것 자체가 "시작한다"는 뜻이다.
+    //
+    // 시작 지점을 [PlayScreen] 이 아니라 여기 둔 이유: 화면은 상태를 그리는
+    // 뷰여야 한다. 뷰가 마운트되면서 세션을 움직이면 그 화면을 위젯 테스트에
+    // 올릴 때마다 진짜 세션이 돌아간다.
+    //
+    // 대신 잃는 것: 환자가 자세를 잡는 동안의 움직임이 기준값 창에 섞일 수
+    // 있다. 무자극 구간이라 중앙값·MAD 가 어느 정도 견디지만, 크게 뒤척이면
+    // 임계가 밀린다 — 그때는 치료사 보기의 「자극 검출 다시 맞추기」로 되돌린다.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) widget.orchestrator.startMeasurement();
+    });
   }
 
   @override
@@ -74,7 +91,13 @@ class _RefitPlayFlowState extends State<RefitPlayFlow> {
         IntensityWizardScreen(orchestrator: o),
       // 동기화는 대기 화면이 아니라 튜토리얼 라운드로 보여야 한다.
       // PlayScreen 이 syncing 상태를 알아서 다르게 그린다.
-      SessionState.syncing || SessionState.playing =>
+      //
+      // readyToMeasure 도 같은 화면이다 — 별도 대기 화면을 만들면 전환이
+      // 한 번 더 생기고, 환자는 "측정 시작"을 누른 뒤 게임이 어디서 나오는지
+      // 다시 찾아야 한다. 게임을 먼저 보여 주고 그 위에 카드만 덮는다.
+      SessionState.readyToMeasure ||
+      SessionState.syncing ||
+      SessionState.playing =>
         PlayScreen(orchestrator: o, monitorUrl: gMonitor.url),
       SessionState.ending =>
         const _Waiting(message: '마무리하는 중이에요'),

@@ -5,7 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_app/ble/device_connection.dart';
 
 /// 펌웨어 sendRawBatch 포맷 1건을 만든다.
-/// `[uint32 firstSampleMs][uint16 count][int16 raw × count]` little-endian.
+/// `[uint32 firstSampleIndex][uint16 count][int16 raw × count]` little-endian.
 List<int> packet(int firstMs, List<int> samples) {
   final b = ByteData(6 + 2 * samples.length);
   b.setUint32(0, firstMs, Endian.little);
@@ -52,7 +52,7 @@ void main() {
     });
 
     test('유실 구간은 시각에 구멍으로 남는다', () async {
-      // BLE 끊김 중에도 firstSampleMs 는 계속 증가한다.
+      // BLE 끊김 중에도 firstSampleIndex 는 계속 증가한다.
       // 시각을 새로 만들어 메우면 위상 고정이 조용히 어긋난다.
       final out = await rawSamples(
         Stream.fromIterable([

@@ -66,16 +66,21 @@ class _TestSheetState extends State<_TestSheet> {
       _sensorResult = null;
     });
 
-    final link = SyntheticFesLink(autoTick: false);
-    final pipeline = SignalPipeline();
+    // 링크와 파이프라인이 **같은 fs** 를 봐야 한다. 어긋나면 실기기에서 났던
+    // 것과 똑같이 M-wave 창이 밀리고, 그래도 화면에는 그럴듯한 값이 뜬다.
+    final link = SyntheticFesLink(autoTick: false, fs: kDeviceSampleRateHz);
+    final pipeline = SignalPipeline(fs: kDeviceSampleRateHz);
     final sub = rawSamples(link.rawPackets).listen((s) {
       pipeline.addSample(s.$1, s.$2);
     });
     await link.connect();
     // 시계를 손으로 민다 — 실시간 20초를 기다리게 하지 않는다.
-    for (var t = 0; t < 20000; t += 100) {
+    // 패킷 하나가 100표본이므로 20초 = 20 * fs / 100 패킷.
+    final packets = 20 * kDeviceSampleRateHz ~/ 100;
+    for (var t = 0; t < packets; t++) {
       link.emitNextPacket();
-      if (t % 2000 == 0) await Future<void>.delayed(Duration.zero);
+      // 이벤트 루프를 가끔 양보해 UI 가 얼지 않게 한다.
+      if (t % 20 == 0) await Future<void>.delayed(Duration.zero);
     }
     await Future<void>.delayed(const Duration(milliseconds: 50));
     await sub.cancel();

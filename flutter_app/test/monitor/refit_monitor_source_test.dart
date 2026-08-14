@@ -23,7 +23,7 @@ class RecordingSink implements MonitorSink {
   @override
   void link(String state) => links.add(state);
   @override
-  void raw(int firstSampleMs, List<int> samples) => raws.add(firstSampleMs);
+  void raw(int firstSampleIndex, List<int> samples) => raws.add(firstSampleIndex);
 }
 
 /// 조립부를 손으로 밀기 위한 최소 세트.

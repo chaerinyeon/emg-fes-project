@@ -186,7 +186,7 @@ void main() {
   });
 
   group('운동 탭 — 게이트는 버튼 비활성화가 아니라 상태머신이다', () {
-    testWidgets('연결 전에는 확인·측정·시작이 모두 잠겨 있다', (tester) async {
+    testWidgets('연결 전에는 단계별 버튼이 잠기고, 시작만 열려 있다', (tester) async {
       // 사전 세팅은 카드 세 장짜리라 기본 테스트 화면(800×600)에서는 아래쪽이
       // 빌드되지 않는다. 세 버튼을 한 번에 보려고 화면을 키운다.
       tester.view.physicalSize = const Size(1000, 2400);
@@ -199,12 +199,20 @@ void main() {
       await tester.tap(find.text('운동'));
       await tester.pump();
 
-      for (final label in ['확인 시작', '이 세기로 측정', '운동 시작']) {
+      // 중간 단계는 순서를 지킨다 — 연결도 안 됐는데 자극을 쏠 수는 없다.
+      for (final label in ['확인 시작', '이 세기로 측정']) {
         final b = tester.widget<RefitButton>(
           find.widgetWithText(RefitButton, label),
         );
         expect(b.onPressed, isNull, reason: '"$label" 이 눌리면 안 된다');
       }
+
+      // 「운동 시작」만은 처음부터 눌린다. 누르면 남은 준비를 스스로 밟는다 —
+      // 잠가 두면 회색 버튼만 남고 어디가 막혔는지 화면이 말해 주지 않는다.
+      final start = tester.widget<RefitButton>(
+        find.widgetWithText(RefitButton, '운동 시작'),
+      );
+      expect(start.onPressed, isNotNull);
     });
 
     testWidgets('강도 화면이 events/burst 수치를 노출하지 않는다', (tester) async {
@@ -221,8 +229,12 @@ void main() {
         expect(t, isNot(contains('%')), reason: '"$t"');
         expect(t, isNot(contains('events')), reason: '"$t"');
       }
-      // 신호 상태는 숫자가 아니라 문장으로만 말한다.
-      expect(find.text('기기 다이얼을 이 단계에 맞춰 주세요.'), findsOneWidget);
+      // 신호 상태는 숫자가 아니라 문장으로만 말한다. 문단 둘이 같은 사실을
+      // 두 번 말하고 있어 한 줄로 합쳤다.
+      expect(
+        find.textContaining('기기 다이얼을 이 단계에 맞춰 주세요.'),
+        findsOneWidget,
+      );
     });
   });
 
@@ -556,9 +568,14 @@ void main() {
       await tester.tap(find.text('치료사 보기'));
       await tester.pumpAndSettle();
 
-      expect(find.text('평균 RMS'), findsOneWidget);
-      expect(find.text('평균 MDF'), findsOneWidget);
       expect(find.text('신뢰도 등급'), findsOneWidget);
+      expect(find.text('검출률'), findsOneWidget);
+
+      // RMS·MDF 는 화면에서 뺐다. 피로 판정에 쓰지 않는 값을 결과지에 같이
+      // 적으면 나중에 그 세션을 읽는 사람이 근거로 착각한다 — 기록에는
+      // 그대로 남아 있으므로 잃는 것은 없다.
+      expect(find.text('평균 RMS'), findsNothing);
+      expect(find.text('평균 MDF'), findsNothing);
     });
   });
 }

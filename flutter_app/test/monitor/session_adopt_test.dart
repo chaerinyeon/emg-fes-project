@@ -39,10 +39,10 @@ class _RecordingCmdChar extends BluetoothCharacteristic {
 }
 
 /// RAW 패킷 바이트 조립 헬퍼. 펌웨어 포맷과 동일 —
-/// [uint32 firstSampleMs][uint16 count][int16 raw × count], little-endian.
-List<int> _rawBytes(int firstSampleMs, List<int> samples) {
+/// [uint32 firstSampleIndex][uint16 count][int16 raw × count], little-endian.
+List<int> _rawBytes(int firstSampleIndex, List<int> samples) {
   final bd = ByteData(6 + 2 * samples.length);
-  bd.setUint32(0, firstSampleMs, Endian.little);
+  bd.setUint32(0, firstSampleIndex, Endian.little);
   bd.setUint16(4, samples.length, Endian.little);
   for (var i = 0; i < samples.length; i++) {
     bd.setInt16(6 + 2 * i, samples[i], Endian.little);
@@ -260,7 +260,7 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 20));
 
       expect(got, hasLength(1));
-      expect(got.single.firstSampleMs, 1000);
+      expect(got.single.firstSampleIndex, 1000);
       expect(got.single.samples, [10, -20, 30]);
     });
 
@@ -305,7 +305,7 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 20));
 
       expect(got, hasLength(1));
-      expect(got.single.firstSampleMs, 5);
+      expect(got.single.firstSampleIndex, 5);
       // 손상 패킷이 섞여도 데이터 파이프라인(JSON)은 영향받지 않는다.
       dataCtrl.add(utf8.encode(jsonEncode({
         'ts': 6000, 'env': 1.0, 'rms': 1.0, 'mdf': 1.0,

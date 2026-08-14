@@ -4,12 +4,12 @@ import 'package:flutter_app/core/raw_packet.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// [RawPacket.parse] 입력용 바이트 조립 헬퍼.
-/// 펌웨어 포맷: [uint32 firstSampleMs][uint16 count][int16 raw × count],
+/// 펌웨어 포맷: [uint32 firstSampleIndex][uint16 count][int16 raw × count],
 /// 전부 little-endian.
-List<int> _pack(int firstSampleMs, List<int> samples, {int? countOverride}) {
+List<int> _pack(int firstSampleIndex, List<int> samples, {int? countOverride}) {
   final count = countOverride ?? samples.length;
   final bd = ByteData(6 + 2 * samples.length);
-  bd.setUint32(0, firstSampleMs, Endian.little);
+  bd.setUint32(0, firstSampleIndex, Endian.little);
   bd.setUint16(4, count, Endian.little);
   for (var i = 0; i < samples.length; i++) {
     bd.setInt16(6 + 2 * i, samples[i], Endian.little);
@@ -23,7 +23,7 @@ void main() {
     final pkt = RawPacket.parse(bytes);
 
     expect(pkt, isNotNull);
-    expect(pkt!.firstSampleMs, 1000);
+    expect(pkt!.firstSampleIndex, 1000);
     expect(pkt.samples, [10, -20, 30]);
   });
 
@@ -45,12 +45,12 @@ void main() {
     expect(pkt!.samples, [-32768, 32767, -1]);
   });
 
-  test('firstSampleMs 는 uint32 전 범위를 담는다', () {
+  test('firstSampleIndex 는 uint32 전 범위를 담는다', () {
     // BLE 끊김 없이 오래 도는 세션에서도 인덱스가 넘치지 않아야 한다.
     final bytes = _pack(4000000000, [1]);
     final pkt = RawPacket.parse(bytes);
 
-    expect(pkt!.firstSampleMs, 4000000000);
+    expect(pkt!.firstSampleIndex, 4000000000);
   });
 
   test('6바이트 미만(헤더도 못 채움)은 폐기한다', () {
