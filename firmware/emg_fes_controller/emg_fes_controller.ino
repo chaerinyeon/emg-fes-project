@@ -1,1381 +1,726 @@
 /*
-  EMG-FES Closed-Loop Controller (BLE 버전)
+  RE:FIT EMG-FES Controller — Phase 1 (얇은 실시간·안전 MCU)
+  =========================================================================
+  아키텍처: "얇은 실시간·안전 MCU + 똑똑한 폰 두뇌"
+    · MCU  : ADC 샘플링 · 자극 검출 · DC보정 · M-wave 에폭 추출 · 릴레이 구동
+             + 자율 안전층(watchdog·하드리밋·fail-safe·INCREASE 게이팅). 판정 안 함.
+    · 폰   : 에폭 수신 → 면적·running-max 정규화·인과 판정 → 판정+목표세기 하달.
+  통신: BLE 바이너리 프로토콜 v0.2 (little-endian, CRC8). docs/RE-FIT_BLE_Protocol_v0.2.md 계약.
 
-  분석 방법: RAW + MDF 결합 (방식 3 - 이중 조건)
-  - RMS slope > +20% AND MDF slope < -3% → 피로 판정
-  - 5회 연속 만족 시 마사지기 OFF
+  === Phase 1 변경 (옛 "방식3: RMS+MDF+SPC 판정" 대비) ===
+  [삭제] FFT/MDF · RMS · 수축상태머신 · SPC관리도 · 펌웨어 피로판정 · slope · 연속 RAW 스트리밍 · JSON
+         (완전마비에 RMS/MDF 무효, 판정은 폰으로 이관 → MCU는 안전+구동만)
+  [유지] 타이머 ISR+샘플링태스크 · DC캘리브 · M-wave 에폭 캡처 · 적응형 문턱 · 이중버퍼 · NimBLE
+  [추가] 에폭/STATUS/EVENT 송신 · JUDGMENT/HEARTBEAT 수신 · 안전층 · 비블로킹 릴레이 액추에이터
+  [수정] triggerStimulation 블로킹 delay() 제거(→ 비블로킹 큐: 그 ~1.2s raw 공백 해소)
+         onDisconnect 블로킹 제거 · MW창 +2~+15ms(검증 정합) · ms↔표본 전부 SAMPLE_RATE 유도
 
-  하드웨어:
-  - MyoWare 2.0 Wireless Shield (ESP32-WROOM 내장)
-  - MyoWare 2.0 Muscle Sensor + 전극
-  - PC817 + IRLZ44N → 오므론 HV-F022-V (마사지기/FES)
-  - 전원: USB-C 보조배터리 또는 LiPo 배터리
+  === v0.2 (폐루프 결함 수정) ===
+  [수정] 세션 시작 경로 신설 — SC_REQUEST_START 수용. v0.1 은 startSession() 호출부가
+         아예 없어 systemRunning 이 영원히 false → 에폭이 단 하나도 나가지 않았다.
+  [수정] START 는 "로그 전용"(샘플링·에폭 송신)만 시작한다. 자극 투입은 SC_STIM_ENABLE 로만.
+         마사지기는 사람이 직접 켜고 끄는 상태라, START 가 전원을 켠 것으로 가정하면
+         stimOn 추정이 실물과 어긋나 INCREASE 게이트의 safeState 가 거짓 통과한다.
+  [수정] 스파이크 진폭을 M-wave 창 이전(0~+2ms)에서만 측정. v0.1 은 캡처 전 구간에서
+         peak 를 갱신해 M-wave 표본이 분모에 섞였다 → 면적÷스파이크 정규화가 무력화.
+  [수정] 에폭에 실제 millis() 와 sample_index 를 동시 기입. v0.1 의 t_ms 는 샘플카운터에서
+         합성한 값이라 STATUS(millis 기준)와 정렬 불가였고 샘플링 지연을 탐지할 수 없었다.
+  [수정] BLE 콜백에서 릴레이 구동·notify 금지 — 세션 명령도 pending 플래그 → loop 실행.
+         v0.1 은 handleDownlink 가 NimBLE 호스트 태스크에서 stopSession() 을 직접 불러
+         actQueue 와 upSeq/upChar 를 loop 와 동시에 만졌다.
+  [수정] ready 버퍼 기록 시 샘플링 태스크도 timerMux 를 잡는다(v0.1 은 읽기측만 잡아 무효).
+  [수정] JUDGMENT 최소 길이 21 → 19 바이트. 실제 파싱하는 페이로드는 12바이트다.
+  [수정] watchdog/deadman 은 stimOn 일 때만 격상. 끌 자극이 없으면 막을 위험도 없다.
+  [추가] 포화 플래그(flags bit1 창 · bit2 스파이크). 실측에서 스파이크가 ADC 레일에 붙어
+         (dcOffset 1904 기준 상한 2191 인데 spike=2186 이 반복) R 의 분모가 상수가 됐다.
+         표시가 없으면 폰이 그 에폭을 그대로 추세에 먹인다. 예약 비트를 채운 것이라
+         프로토콜 버전은 그대로다(구 리더는 무시).
 
-  통신: BLE GATT (Nordic UART Service 호환 UUID)
-    - Service:  6E400001-B5A3-F393-E0A9-E50E24DCCA9E
-    - DATA  (Notify, ESP32→Phone): 6E400003-...
-    - CMD   (Write,  Phone→ESP32): 6E400002-...
-
-  필요 라이브러리 (Arduino IDE Library Manager):
-    - NimBLE-Arduino  (by h2zero, v2.x)
-    - ArduinoJson     (v6.x)
-    - arduinoFFT      (v2.x)
+  하드웨어: MyoWare 2.0 Wireless Shield(ESP32) · PC817+IRLZ44N → Omron HV-F022-V
+  라이브러리: NimBLE-Arduino v2.x  (ArduinoJson·arduinoFFT 불필요 — 제거됨)
 */
 
 #include <NimBLEDevice.h>
-#include <ArduinoJson.hpp>
-#include <arduinoFFT.h>
 #include <math.h>
 
-// ===== BLE UUID (Nordic UART Service 호환) ====
+// ===================== 프로토콜 v0.2 =====================
+// [수정] 0x01 → 0x02 : EPOCH 레이아웃(sample_index 추가·t_ms 의미 변경)과 JUDGMENT 최소
+//   길이가 둘 다 바뀌었다. 버전을 올려야 구버전 펌웨어/툴과 조용히 섞이지 않는다.
+#define PROTOCOL_VERSION      0x02
+// msg_type (uplink 0x0X / downlink 0x1X)
+#define MSG_EPOCH             0x01
+#define MSG_STATUS            0x02
+#define MSG_EVENT             0x03
+#define MSG_JUDGMENT          0x11
+#define MSG_HEARTBEAT         0x12
+#define MSG_SESSION_CONTROL   0x14
+// EVENT id
+#define EV_SESSION_START      1
+#define EV_REST_END           2
+#define EV_SESSION_STOP       3
+#define EV_FAULT              4
+#define EV_CALIB_DONE         5
+// JUDGMENT action
+#define ACT_HOLD              0
+#define ACT_DECREASE          1
+#define ACT_INCREASE          2
+#define ACT_STOP              3
+// reliability
+#define REL_HIGH              0
+#define REL_MED               1
+#define REL_LOW               2
+// SESSION_CONTROL cmd
+//   START/STOP 은 "기록"의 시작·정지, STIM_ENABLE/DISABLE 은 "자극"의 투입·차단으로 분리한다.
+//   로그 전용 검증(자극 없이 에폭만 수집)이 별도 빌드 없이 가능해야 하기 때문.
+#define SC_REQUEST_START      1
+#define SC_REQUEST_STOP       2
+#define SC_STIM_ENABLE        3
+#define SC_STIM_DISABLE       4
 
+// ===================== BLE UUID (Nordic UART 호환) =====================
+#define SERVICE_UUID   "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+#define CHAR_UP_UUID   "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"  // MCU→Phone (notify): EPOCH·STATUS·EVENT
+#define CHAR_DOWN_UUID "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"  // Phone→MCU (write) : JUDGMENT·HEARTBEAT·SC
+#define BLE_DEVICE_NAME "REFIT-FES-01"
 
-#define SERVICE_UUID     "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
-#define CHAR_DATA_UUID   "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
-#define CHAR_CMD_UUID    "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
-#define CHAR_RAW_UUID    "6E400004-B5A3-F393-E0A9-E50E24DCCA9E"  // RAW 4kHz 파형 (binary notify)
-#define BLE_DEVICE_NAME  "EMG-FES-01"
+// ===================== 핀 =====================
+const int PIN_EMG_RAW        = 36;   // MyoWare SIG (RAW EMG)
+const int PIN_STATUS_LED     = 13;
+const int PIN_MASSAGER_ON_OFF= 32;
+const int PIN_MASSAGER_MODE  = 33;
+const int PIN_MASSAGER_UP    = 25;
+const int PIN_MASSAGER_DOWN  = 26;
 
-// ===== 핀 설정 =====
-const int PIN_EMG_RAW = 36;     // A4 - MyoWare SIG (RAW EMG)
-// 주: MyoWare 2.0은 SIG 한 채널만 출력. ENV는 RAW로부터 SW에서 계산.
-const int PIN_STATUS_LED = 13;
+// ===================== 샘플링 =====================
+// [결정] 1kHz 채택: M-wave는 저주파(97%<250Hz)라 1kHz면 진폭 정합 3% 이내(다운샘플 실험).
+//   에폭만 전송하므로(연속 raw 아님) BLE 부하 문제 없음. 4kHz로 올리려면 이 값만 4000으로.
+//   (4kHz는 스파이크창 표본이 ~4개라 R-정규화(면적÷스파이크) 해상도만 유리)
+const int SAMPLE_RATE = 1000;                 // Hz
+const uint32_t US_PER_SAMPLE = 1000000UL / SAMPLE_RATE;
 
-const int PIN_MASSAGER_ON_OFF = 32;
-const int PIN_MASSAGER_MODE   = 33;
-const int PIN_MASSAGER_UP     = 25;
-const int PIN_MASSAGER_DOWN   = 26;
-
-// ===== 신호처리 파라미터 =====
-const int SAMPLE_RATE = 4000;              // 4kHz 샘플링 (0.25ms/표본)
-const int FFT_SIZE = 2048;                 // FFT 윈도우 (2048표본=512ms 분량 @4kHz)
-// RMS 윈도우 = 자극 버스트 주기의 정수배여야 한다.
-// 실측 버스트 주기 1621.9ms (버스트 593ms + 쉼 1029ms, duty 37%).
-// 1000ms 였을 때: 주기의 0.62배라 창이 버스트를 0.59~1.0 비율로 물어 duty-cycle 에 따라
-// RMS 가 출렁였다. 주기와 같은 1622ms 면 창 위상과 무관하게 항상 정확히 버스트 1개를
-// 포함한다 → RMS 가 위상 불변이 된다.
-// (기기는 잠금 수준으로 안정적: 033307 주기 σ=0.58ms, 세션 전체 드리프트 0.3ms → 재정렬 불필요)
-const int RMS_WINDOW = 6488;               // = 버스트 주기 1621.9ms (실측, @4kHz)
-const int HISTORY_SIZE = 60;               // 60초 분량 RMS/MDF 히스토리
-
-// 임계값 (방식 3: 이중 조건)
-float RMS_THRESHOLD = 20.0;                // RMS slope +20% 이상
-float MDF_THRESHOLD = -3.0;                // MDF slope -3% 이하 (노이즈 감안 완화)
-const int CONSECUTIVE_TRIGGER = 5;
-const int DC_OFFSET_FALLBACK = 1862;       // 동적 캘리브레이션 전 안전 기본값
-const int DC_CALIBRATION_MS = 3000;        // 세션 시작 직후 무자극 휴식 평균
+// DC 캘리브레이션
+const int DC_OFFSET_FALLBACK = 1862;
+const int DC_CALIBRATION_MS  = 3000;
 volatile int dcOffset = DC_OFFSET_FALLBACK;
 volatile int64_t dcCalibrationSum = 0;
 volatile uint32_t dcCalibrationCount = 0;
 volatile bool dcCalibrating = false;
 
-// 베이스라인
-const int BASELINE_SAMPLES = 10;
-const unsigned long BASELINE_DELAY_MS = 30000;  // 준비운동 구간 제외
-const float MUSCLE_LOW_RATIO  = 0.7;
-const float MUSCLE_HIGH_RATIO = 1.5;
-
-// 안전장치
-const unsigned long STIM_TIMEOUT_MS = 180000;   // 3분
-const unsigned long DATA_THROTTLE_MS = 100;     // 데이터 송신 최소 간격 (BLE 부하 보호)
-
-// ===== M-wave 검출 파라미터 =====
-// 자극 artifact 검출 임계 (DC 보정된 centered 값의 절대값).
-// 실측에서 normal EMG burst 최대보다 충분히 커야 함. 일반적으로 1000~2000 범위.
-const int MW_ARTIFACT_THRESHOLD = 1000;
-// 창 시작 = artifact 제외용 dead-zone.
-// 5ms 였을 때의 치명적 문제: 이 셋업의 M-wave 양의 정점은 3ms 에 있는데 창이 5ms 부터라
-// argmax 가 항상 창 첫 표본(=5)에 붙었다(실측 99.9%/96.3%). 과거 latency>=6 게이트에서
-// 전량 탈락 → MW_Valid ≈ 0%(042118 은 5,363행 중 1행).
-// 진폭 게이트는 100% 통과했으므로 오직 이 모순 때문에 M-wave 가 통째로 버려지고 있었다.
-//
-// 2ms 로 여는 근거: 자극 스파이크는 0~1ms 의 용량성 성분이고, 2~4ms 는 이미 M-wave 다.
-// (실측: 2~4ms 성분은 M-wave 5~15ms 와 ρ=+0.96, 바로 옆 0~1ms 스파이크와는 ρ=+0.32
-//  → 1ms 떨어진 이웃보다 10ms 떨어진 M-wave 와 붙어 움직인다 = 근육 신호)
-// STA 평균파형 실측: 0ms=-1042, 1ms=-585, 2ms=+362, 3ms=+546(정점), 4ms=+493, 5ms=+352
-const int MW_WINDOW_START_MS = 2;             // 자극 후 ms (0~1ms 스파이크만 제외)
-// 창 끝은 '다음 자극이 오기 전'이어야 한다. 실측 자극 간격은 최소 30ms(ISI 분포 30/31/32ms,
-// 평균 31.185ms = 32.078Hz)이므로 30이면 ISI=30ms인 자극(실측 9%)의 마지막 표본이 '다음 자극
-// 스파이크'가 되어 M-wave 를 오염시킨다. 28 이면 항상 다음 자극 앞에서 닫힌다.
-// (M-wave 는 5~15ms 라 28 로 줄여도 손실 없음)
-const int MW_WINDOW_END_MS = 28;              // 자극 후 ms
+// ===================== M-wave 에폭 파라미터 (ms→표본 전부 SAMPLE_RATE 유도) =====================
+const int MW_ARTIFACT_THRESHOLD = 1000;       // 적응형 문턱 상한
+const int MW_WINDOW_START_MS = 2;             // 0~1ms 스파이크 제외, +2ms부터 M-wave
+const int MW_WINDOW_END_MS   = 15;            // [수정] 28→15 : 검증 분석창(+2~+15ms) 정합
 const int MW_WINDOW_START_SAMPLES = MW_WINDOW_START_MS * SAMPLE_RATE / 1000;
-const int MW_WINDOW_END_SAMPLES = MW_WINDOW_END_MS * SAMPLE_RATE / 1000;
-const int MW_WINDOW_LEN = MW_WINDOW_END_SAMPLES - MW_WINDOW_START_SAMPLES + 1;
-// 불응기는 자극 주기(실측 31.185ms)보다 반드시 작아야 한다.
-// 40ms 였을 때: 40 > 31 이라 자극 하나 걸러 하나만 검출 → 실측 검출률 50.0%(042118),
-// blanking 도 그 절반에만 걸려 놓친 스파이크가 RMS 전력의 76% 를 차지했다.
-// 27ms 면 artifact 폭(~18ms)보다 길고 ISI 최소값 30ms 보다 짧아 모든 자극을 잡는다.
-const unsigned long MW_REFRACTORY_MS = 27;    // < 자극주기 31.185ms (실측)
+const int MW_WINDOW_END_SAMPLES   = MW_WINDOW_END_MS   * SAMPLE_RATE / 1000;
+const int MW_WINDOW_LEN = MW_WINDOW_END_SAMPLES - MW_WINDOW_START_SAMPLES + 1;  // 1kHz=14
+const unsigned long MW_REFRACTORY_MS = 27;    // < 자극주기 31.185ms
 const uint32_t MW_REFRACTORY_SAMPLES = MW_REFRACTORY_MS * SAMPLE_RATE / 1000;
+const float MW_AMP_MIN = 80.0f;               // p2p 유효성 게이트
 
-// M-wave 검출 유효성(신뢰도) 판정 파라미터.
-// latency는 진단값으로만 남기고 유효성·피로 판정에는 사용하지 않는다.
-const float MW_AMP_MIN = 80.0f;      // peak-to-peak 이보다 작으면 유발반응 아님(노이즈)
+// 포화(레일 클리핑) 검출. 12bit ADC 라 0 또는 4095 에 닿으면 그 표본은 잘린 값이다.
+//   dcOffset 으로 역산하지 않고 원 raw 를 보는 이유: 오프셋이 세션마다 달라도 레일은
+//   항상 0/4095 로 고정이라 판정이 흔들리지 않는다.
+// 왜 필요한가: 스파이크가 레일에 붙으면 그 값은 측정치가 아니라 "레일" 이라는 상수가 되고,
+//   R = 면적÷스파이크 의 분모가 고정돼 정규화가 아무 일도 하지 않는다. 분자인 면적도
+//   창이 잘리면 실제보다 작게 나온다. 폰이 이런 에폭을 추세에서 빼려면 표시가 있어야 한다.
+const int ADC_MAX = 4095;
+const int ADC_RAIL_MARGIN = 2;                // 레일로 볼 여유(카운트)
 
-// ===== 적응형 자극 트리거 임계값 =====
-// 고정 임계(MW_ARTIFACT_THRESHOLD)는 자극 스파이크가 작아지면(전극·세기 변화) 검출을
-// 통째로 놓쳐 M-wave가 절반씩 빈다. 대신 '최근 자극 스파이크 크기'를 추적해 그 일부로
-// 문턱을 자동 조절한다.  임계 = clamp( FLOOR, FRAC×최근스파이크EMA, MW_ARTIFACT_THRESHOLD )
-//   - FLOOR : 이 밑으로는 안 내려감(자발 EMG·노이즈 오검출 방지)
-//   - 상한  : 고정값(1000)을 넘지 않음(스파이크가 커도 기존만큼은 민감)
-const float MW_ADAPT_FRAC = 0.4f;    // 스파이크 EMA 의 이 비율을 문턱으로
-const float MW_ADAPT_FLOOR = 400.0f; // 문턱 하한
-const float MW_ADAPT_ALPHA = 0.2f;   // EMA 갱신율 (0=고정, 1=즉시)
-// 초기 EMA: 초기 문턱이 기존 고정값과 같도록 (FRAC×EMA0 = MW_ARTIFACT_THRESHOLD)
-const float MW_ADAPT_EMA0 = (float)MW_ARTIFACT_THRESHOLD / MW_ADAPT_FRAC;
+// 적응형 자극 트리거 문턱 = clamp(FLOOR, FRAC×스파이크EMA, 상한)
+const float MW_ADAPT_FRAC  = 0.4f;
+const float MW_ADAPT_FLOOR = 400.0f;
+const float MW_ADAPT_ALPHA = 0.2f;
+const float MW_ADAPT_EMA0  = (float)MW_ARTIFACT_THRESHOLD / MW_ADAPT_FRAC;
 
-// ===== FES 자극 blanking =====
-// 자극 검출 직후 이 시간(ms)만큼 표본을 RMS/MDF/ENV 계산에서 제외(직전 깨끗한 값으로 hold).
-//
-// 5ms 였을 때의 문제: 스파이크(0~1ms)만 걷어내고 M-wave(5~15ms)는 그대로 통과시켰다.
-// M-wave 는 자발 EMG 보다 10배 이상 커서 RMS 를 지배한다 → 펌웨어 RMS 가 자발 EMG 가 아니라
-// '유발반응의 대리지표'가 됐다. 유발반응은 피로에서 내려가는데 SPC 규칙은 RMS>UCL(올라가야
-// 발동)이라, 진짜 피로일수록 발동하지 않는 구조였다(042118 실측 RMS −11.8%, 후보 0개).
-//
-// 16ms = 스파이크(0~1) + 증폭기 회복 + M-wave(5~15) 를 모두 제외.
-// 남는 16~30ms 구간이 자발 EMG 만 있는 깨끗한 창이다(실측: 무부하 21.6 → 유부하 30.9, +43%).
-// 실측 자극률 12.35/s 이므로 blanking 표본 비율은 16ms×12.35 ≈ 19.8% — 80% 는 보존된다.
-// (기존 주석의 "25Hz 자극 = 펄스 간격 40ms" 는 틀렸다. 실측은 32.078Hz = 31.185ms 간격)
-const int STIM_BLANK_MS = 16;
-const uint32_t STIM_BLANK_SAMPLES = STIM_BLANK_MS * SAMPLE_RATE / 1000;
+// ===================== 안전 파라미터 (전부 MCU 소유, BLE로 변경 불가) =====================
+const uint8_t  MAX_LEVEL         = 10;        // [확정필요] HV-F022-V 세기 단계 수
+const uint8_t  MAX_STEP_PER_JUDGMENT = 1;     // INCREASE 는 한 판정당 최대 1단계
+const unsigned long T_WATCHDOG_MS = 2000;     // 유효 다운링크 없음 → SAFE_HOLD
+const unsigned long T_DEADMAN_MS  = 8000;     // 계속 없음 → STIM_OFF
+const unsigned long T_STALE_MS    = 3000;     // 판정 신선도(도착 기준)
+const uint32_t STALE_STIM_LAG     = 40;       // stim_index 지연 이 이상이면 stale
+const unsigned long STIM_TIMEOUT_MS = 180000; // 하드 최대 자극 시간(3분)
+const unsigned long STATUS_PERIOD_MS = 200;   // STATUS 하트비트 5Hz
 
-// ===== BLE 핸들 =====
-NimBLECharacteristic* dataChar = nullptr;
-NimBLECharacteristic* cmdChar  = nullptr;
-NimBLECharacteristic* rawChar  = nullptr;   // RAW 4kHz 파형 스트리밍 (binary)
+// ===================== BLE 핸들 =====================
+NimBLECharacteristic* upChar   = nullptr;
+NimBLECharacteristic* downChar = nullptr;
 volatile bool deviceConnected = false;
+volatile bool needRestartAdv  = false;        // onDisconnect에서 플래그만(블로킹 금지)
+volatile bool needFailSafe    = false;        // onDisconnect → loop에서 안전조치
 
-// ===== ADC 버퍼 / 10Hz 메트릭 생성 =====
-// 4kHz로 샘플링하되, CSV/BLE 메트릭은 ENV와 같은 100ms 간격(10Hz)으로 만든다.
-// RMS는 최근 1622ms, MDF는 최근 FFT_SIZE(2048표본=512ms) 윈도우를 유지한다.
-volatile int rawBuffer[RMS_WINDOW];
-volatile int writeIdx = 0;                 // 다음 기록 위치 (RMS_WINDOW로 wrap)
-volatile int windowCount = 0;              // 현재 RMS 윈도우에 들어있는 표본 수, 최대 1000
-volatile int64_t windowSum = 0;            // 최근 1초 centered 값 합
-volatile int64_t windowSumSq = 0;          // 최근 1초 centered 값 제곱합
-volatile bool bufferFilled = false;        // 1초치(1000표본)가 한 번이라도 채워졌는지
-
-const int COMPUTE_INTERVAL = SAMPLE_RATE / 10;  // 400표본 @4kHz = 100ms → 10Hz
-volatile int samplesSinceCompute = 0;      // 마지막 10Hz 계산 이후 누적 표본 수
-volatile bool metricReady = false;         // 100표본마다 true → loop에서 10Hz 계산
-int metricCycle = 0;                        // 10Hz 사이클 카운터 (10회=1초 → 느린 로직)
-
-// 100ms 블록 대표값: CSV에서 EMG/ENV/RMS/MDF를 모두 같은 10Hz 시간축으로 보기 위한 값
-volatile int blockCount = 0;
-volatile int64_t blockRawSum = 0;
-volatile int64_t blockCenteredSum = 0;
-volatile int64_t blockAbsSum = 0;
-volatile int blockPeakAbs = 0;
-volatile int blockMinCentered = 32767;
-volatile int blockMaxCentered = -32768;
-volatile float latestRaw10Hz = 0;           // 100ms 평균 ADC 원값
-volatile float latestEmg10Hz = 0;           // 100ms 평균 |centered|, CSV용 EMG 대표값
-volatile float latestCenteredMean10Hz = 0;  // 100ms centered 평균, DC 흔들림 진단용
-volatile int latestPeakAbs10Hz = 0;         // 100ms peak |centered|
-volatile int latestMinCentered10Hz = 0;
-volatile int latestMaxCentered10Hz = 0;
-
-// 실시간 envelope (|raw - DC| 의 1차 IIR LPF, 4kHz로 갱신)
-// alpha=0.0075 → 기존 1kHz alpha=0.03과 같은 약 5Hz 응답
-volatile float envLPF = 0;
-const float ENV_LPF_ALPHA = 0.0075f;
-
-// FES blanking 용: 마지막으로 blanking 되지 않은(깨끗한) centered 값. hold 대체에 사용.
-int lastCleanCentered = 0;
-
-// ===== RAW 4kHz 파형 스트리밍 (바이너리, 전용 캐릭터리스틱) =====
-// 매 샘플의 raw ADC를 100개(=25ms)씩 묶어 MTU-safe 바이너리 패킷으로 보낸다.
-// 패킷 포맷 (little-endian):
-//   [uint32 firstSampleIndex][uint16 count][int16 raw × count]
-// firstSampleIndex = 세션 시작 후 첫 표본 인덱스. 폰에서 4kHz 시간축을 복원한다.
-const int RAW_BATCH_SAMPLES = 100;                 // 25ms @4kHz, 206B로 MTU 247 이내
-volatile int16_t rawBatchFill[RAW_BATCH_SAMPLES];  // 샘플링 태스크가 채우는 중인 블록
-volatile int rawBatchFillCount = 0;
-volatile uint32_t rawSampleCounter = 0;            // 세션 시작 후 누적 샘플 수
-const int RAW_QUEUE_DEPTH = 8;                     // FFT 중 최대 200ms 송신 지연 흡수
-volatile int16_t rawQueue[RAW_QUEUE_DEPTH][RAW_BATCH_SAMPLES];
-volatile uint32_t rawQueueFirstIdx[RAW_QUEUE_DEPTH];
-volatile int rawQueueHead = 0;
-volatile int rawQueueTail = 0;
-volatile int rawQueueCount = 0;
-
-// ===== FFT 버퍼 =====
-double vReal[FFT_SIZE];
-double vImag[FFT_SIZE];
-ArduinoFFT<double> FFT = ArduinoFFT<double>(vReal, vImag, FFT_SIZE, SAMPLE_RATE);
-
-// ===== 히스토리 (선형회귀용) =====
-float rmsHistory[HISTORY_SIZE];
-float mdfHistory[HISTORY_SIZE];
-int historyIdx = 0;
-int historyCount = 0;
-
-// ===== 시스템 상태 =====
+// ===================== MCU 상태머신 =====================
+enum McuState { ST_IDLE=0, ST_CALIBRATING=1, ST_RUNNING=2, ST_SAFE_HOLD=3, ST_STIM_OFF=4, ST_FAULT=5 };
+volatile McuState mcuState = ST_IDLE;
 bool systemRunning = false;
-bool isStimulating = false;
-bool completeParalysisProtocol = false;
+uint16_t sessionId = 0;
 unsigned long sessionStartedAtMs = 0;
-int consecutiveCount = 0;
 unsigned long stimStartTime = 0;
-unsigned long lastNotifyMs = 0;
-unsigned long fatigueDetectedAtMs = 0;
-const unsigned long FATIGUE_LATCH_MS = 10000;   // fd=true를 10초간 유지
-bool sendFullNext = true;   // 다음 송신을 "full"로 (1초마다 slope/state 등 포함)
-bool sendRmsMdfNext = false; // 다음 송신에 rms/mdf 포함 (10Hz 갱신 시 set)
 
-// ===== 수축 상태머신 =====
-enum ContractionState { CS_REST = 0, CS_ONSET = 1, CS_SUSTAINED = 2 };
-ContractionState contractState = CS_REST;
-unsigned long contractStartMs = 0;
-float contractPeakRMS = 0;
-float prevRMS = 0;
+// 시퀀스/세션
+uint16_t upSeq = 0;                            // uplink 시퀀스
+uint16_t lastCmdSeqAck = 0;                    // 마지막 수락한 downlink seq
 
-const float CONTRACT_ACTIVE_RATIO = 1.2;       // baseline×1.2 초과 → 활성
-const float DRMS_ONSET = 8.0;                  // 초당 RMS 증가량 임계 (onset)
-const float DRMS_OFFSET = -8.0;                // 종료 임계
-const unsigned long ONSET_TO_SUSTAINED_MS = 2000;
-const unsigned long BURST_MAX_MS = 2000;
-const unsigned long SUSTAINED_MIN_MS = 5000;
+// watchdog
+volatile unsigned long lastDownlinkMs = 0;
 
-// 마지막 완료된 수축 정보 (UI 표시용)
-char lastContractType = '-';   // 'b'=burst, 't'=transient, 's'=sustained
-unsigned long lastContractDurMs = 0;
-float lastContractPeak = 0;
+// ===================== 릴레이(세기) 상태 + 비블로킹 액추에이터 =====================
+bool     stimOn = false;
+uint8_t  currentLevel = 0;                     // 개루프 추정(장치 레벨 직접 읽기 불가 — 한계)
+uint8_t  healthFlags = 0;                      // bit0 watchdog · bit1 hardlimit · bit2 batt · bit3 sensor
 
-// 카운터 (세션 누적, calibrate 시 리셋)
-uint16_t burstCount = 0;
-uint16_t transientCount = 0;
-uint16_t sustainedCount = 0;
+// 버튼 프레스 큐(비블로킹): 각 원소 = (pin, 누름ms). ON_OFF 짧게=on, 길게=off, UP/DOWN=세기.
+struct BtnAction { int pin; uint16_t pressMs; };
+const int ACT_QUEUE_N = 24;
+BtnAction actQueue[ACT_QUEUE_N];
+int actHead=0, actTail=0, actCount=0;
+enum ActState { A_IDLE, A_PRESSING, A_GAP };
+ActState actState = A_IDLE;
+unsigned long actMarkMs = 0;
+uint16_t actPressMs = 0;
+int actPin = -1;
+const uint16_t BTN_PRESS_MS  = 150;           // 짧은 누름
+const uint16_t BTN_LONG_MS   = 2000;          // 긴 누름(전원 off)
+const uint16_t BTN_GAP_MS    = 200;           // 누름 사이 간격
 
-// ===== M-wave 상태 (자극 artifact triggered) =====
-volatile uint32_t mwArtifactAtSample = 0;
-volatile bool mwArtifactSeen = false;
-volatile bool mwCapturing = false;
-volatile int mwSampleCount = 0;
-volatile float mwArtifactEMA = MW_ADAPT_EMA0;   // 최근 자극 스파이크 peak 의 EMA(적응형 문턱용)
-volatile int mwArtifactPeak = 0;                // 현재 캡처 중 자극 스파이크 peak |centered|
-volatile int mwSamples[MW_WINDOW_LEN + 4];     // 캡처 중인 버퍼 (ISR 전용)
-// 완료된 캡처는 별도 버퍼로 옮긴다(이중 버퍼).
-// MW_REFRACTORY_MS 를 25 로 낮추면 자극이 31ms 마다 잡히므로, 캡처가 닫힌 직후(창끝 28ms)
-// 곧바로 다음 캡처가 열리며 mwSampleCount 를 0 으로 리셋한다. 단일 버퍼면 loop() 가 읽기
-// 전에 지워져 M-wave 가 조용히 유실된다(n=0 → n>=5 실패). 닫는 순간 스냅샷을 떠서 분리한다.
-volatile int mwSamplesRdy[MW_WINDOW_LEN + 4];  // 완료된 캡처 (loop() 가 읽음)
-volatile int mwSampleCountRdy = 0;
-volatile bool mwReady = false;                 // 캡처 완료 → loop()에서 메트릭 계산
-float currentMwAmp = 0;                        // peak-to-peak (ADC counts)
-float currentMwArea = 0;                       // Σ|sample| (정류 면적)
-float currentMwLatency = 0;                    // artifact 후 peak까지 ms
-bool currentMwValid = false;                   // 검출 신뢰도 판정 통과 여부 (SPC·baseline은 이것만 사용)
-bool mwDirty = false;                          // 새 M-wave가 있어 다음 송신 포함
-uint32_t mwCount = 0;                          // 세션 누적 M-wave 검출 수
-
-// ===== 최신 계산값 =====
-float currentRaw10Hz = 0;        // 100ms 평균 ADC 원값
-float currentEmg10Hz = 0;        // 100ms 평균 |centered|
-float currentCenteredMean10Hz = 0;
-int   currentPeakAbs10Hz = 0;
-int   currentMinCentered10Hz = 0;
-int   currentMaxCentered10Hz = 0;
-float currentRMS = 0;            // 최근 1초 sliding RMS, 10Hz 갱신
-float currentMDF = 0;            // 최근 512ms MDF, 10Hz 갱신
-bool  metricsValid = false;      // RMS 1초 윈도우가 채워진 뒤 true
-float currentRMSSlope = 0;
-float currentMDFSlope = 0;
-bool  currentFatigueDetected = false;
-
-float baselineRMS = 0;
-bool  baselineReady = false;
-float baselineRmsSum = 0;
-int baselineRmsSampleCount = 0;
-float rmsRatio = 1.0;
-String muscleState = "idle";
-String sessionMarker = "";
-
-// ===== 관리도(SPC ControlChart) — 앱 Dart FatigueEngine 과 동일 =====
-// 운동 초반(아직 안 지친 상태) 표본으로 mean·σ 를 잡고 UCL=mean+kσ, LCL=mean-kσ.
-// RMS·MDF 는 8표본(=8초), M-wave 는 6표본(=버스트 6회) 으로 baseline 확정.
-struct CChart {
-  float samples[16];
-  int   n = 0;
-  int   baselineSamples = 8;
-  float sigmaMult = 2.0f;
-  bool  established = false;
-  float mean = 0, sd = 0;
-};
-CChart rmsChart, mdfChart, mwAmpChart, mwAreaChart, mwLatChart;
-
-void ccInit(CChart& c, int bs, float sm) {
-  c.baselineSamples = bs; c.sigmaMult = sm;
-  c.n = 0; c.established = false; c.mean = 0; c.sd = 0;
+void actEnqueue(int pin, uint16_t pressMs) {
+  if (actCount >= ACT_QUEUE_N) return;         // 넘치면 버림(안전: 과도한 세기변경 방지)
+  actQueue[actTail] = {pin, pressMs};
+  actTail = (actTail+1) % ACT_QUEUE_N; actCount++;
 }
-void ccReset(CChart& c) { c.n = 0; c.established = false; c.mean = 0; c.sd = 0; }
-void ccIngest(CChart& c, float v) {
-  if (c.established) return;
-  if (c.n < 16) c.samples[c.n++] = v;
-  if (c.n >= c.baselineSamples) {
-    float s = 0; for (int i = 0; i < c.n; i++) s += c.samples[i];
-    c.mean = s / c.n;
-    float var = 0;
-    for (int i = 0; i < c.n; i++) { float d = c.samples[i] - c.mean; var += d * d; }
-    c.sd = sqrtf(var / c.n);
-    c.established = true;
+void actClear() {                              // 진행 중 시퀀스 취소(즉시 STOP 등)
+  actHead=actTail=actCount=0; actState=A_IDLE;
+  digitalWrite(PIN_MASSAGER_ON_OFF, LOW); digitalWrite(PIN_MASSAGER_UP, LOW);
+  digitalWrite(PIN_MASSAGER_DOWN, LOW); digitalWrite(PIN_MASSAGER_MODE, LOW);
+}
+// loop()에서 매 틱 호출 — delay() 없이 버튼 시퀀스 진행
+void actuatorService() {
+  unsigned long now = millis();
+  switch (actState) {
+    case A_IDLE:
+      if (actCount > 0) {
+        BtnAction a = actQueue[actHead];
+        actHead=(actHead+1)%ACT_QUEUE_N; actCount--;
+        actPin=a.pin; actPressMs=a.pressMs;
+        digitalWrite(actPin, HIGH); actMarkMs=now; actState=A_PRESSING;
+      }
+      break;
+    case A_PRESSING:
+      if (now - actMarkMs >= actPressMs) {
+        digitalWrite(actPin, LOW); actMarkMs=now; actState=A_GAP;
+      }
+      break;
+    case A_GAP:
+      if (now - actMarkMs >= BTN_GAP_MS) actState=A_IDLE;
+      break;
   }
 }
-bool ccAbove(CChart& c, float v) { return c.established && v > c.mean + c.sigmaMult * c.sd; }
-bool ccBelow(CChart& c, float v) { return c.established && v < c.mean - c.sigmaMult * c.sd; }
 
-void resetFatigueCharts() {
-  ccReset(rmsChart); ccReset(mdfChart);
-  ccReset(mwAmpChart); ccReset(mwAreaChart); ccReset(mwLatChart);
-}
+// 세기/전원 제어 헬퍼 (전부 큐잉 = 비블로킹)
+void relayPowerOn()  { actEnqueue(PIN_MASSAGER_ON_OFF, BTN_PRESS_MS); stimOn=true; stimStartTime=millis(); }
+void relayPowerOff() { actClear(); actEnqueue(PIN_MASSAGER_ON_OFF, BTN_LONG_MS); stimOn=false; currentLevel=0; }
+void relayStepUp(uint8_t n)   { for (uint8_t i=0;i<n && currentLevel<MAX_LEVEL;i++){ actEnqueue(PIN_MASSAGER_UP,BTN_PRESS_MS); currentLevel++; } }
+void relayStepDown(uint8_t n) { for (uint8_t i=0;i<n && currentLevel>0;i++){ actEnqueue(PIN_MASSAGER_DOWN,BTN_PRESS_MS); currentLevel--; } }
 
-// ===== 타이머 =====
+// ===================== M-wave 캡처 (샘플링 태스크 ↔ loop 이중버퍼) =====================
+volatile uint32_t mwArtifactAtSample = 0;
+volatile bool  mwArtifactSeen = false;
+volatile bool  mwCapturing = false;
+volatile int   mwSampleCount = 0;
+volatile float mwArtifactEMA = MW_ADAPT_EMA0;
+volatile int   mwArtifactPeak = 0;                 // 자극 스파이크 peak |centered| = 스파이크 진폭
+volatile int   mwSamples[MW_WINDOW_LEN + 4];
+volatile int   mwSamplesRdy[MW_WINDOW_LEN + 4];
+volatile int   mwSampleCountRdy = 0;
+volatile int   mwSpikeRdy = 0;                     // 완료 캡처의 스파이크 진폭 스냅샷
+volatile bool  mwSpikeSat = false;                 // 스파이크 구간(0~+2ms)이 레일에 닿았나
+volatile bool  mwWinSat   = false;                 // M-wave 창(+2~+15ms)이 레일에 닿았나
+volatile bool  mwSpikeSatRdy = false;
+volatile bool  mwWinSatRdy   = false;
+volatile uint32_t mwArtifactAtMs = 0;              // 자극 onset 의 실제 millis() (합성 아님)
+volatile uint32_t mwStimIndexRdy = 0;              // 완료 캡처의 자극 번호
+volatile uint32_t mwStimTimeMsRdy = 0;             // 완료 캡처의 자극 onset — 실제 millis()
+volatile uint32_t mwStimSampleRdy = 0;             // 완료 캡처의 자극 onset 샘플 인덱스
+volatile bool  mwReady = false;
+volatile uint32_t stimCounter = 0;                 // 세션 누적 자극 번호(stim_index)
+volatile uint32_t rawSampleCounter = 0;
+
+// ===================== 타이머/태스크 =====================
 hw_timer_t* sampleTimer = nullptr;
 portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
 TaskHandle_t samplingTaskHandle = nullptr;
 
 // 함수 선언
-void triggerStimulation(bool on);
-void handleCommand(ArduinoJson::JsonDocument& doc);
-void updateContractionState();
 void samplingTask(void* param);
-float calculateRMS(int64_t sum, int64_t sumSq, int n);
-float calculateMDF(int localWriteIdx);
-void sendRawBatch();
+void setupBLE();
+void sendEpoch(int* samples, int n, int spike, float p2p, uint8_t flags,
+               uint32_t stimIdx, uint32_t tMs, uint32_t sampleIdx);
+void sendStatus();
+void sendEvent(uint8_t evId, uint8_t detail);
+void handleDownlink(const uint8_t* data, size_t len);
+void safetySupervisor();
+void serviceSessionCmd();
+void startSession();
+void stopSession(uint8_t evReason);
+
+// CRC8 (poly 0x07)
+uint8_t crc8(const uint8_t* p, size_t n) {
+  uint8_t c = 0;
+  for (size_t i=0;i<n;i++){ c ^= p[i]; for (int b=0;b<8;b++) c = (c&0x80)?(c<<1)^0x07:(c<<1); }
+  return c;
+}
+// little-endian 패킹 헬퍼
+static inline void put_u16(uint8_t* b, uint16_t v){ b[0]=v; b[1]=v>>8; }
+static inline void put_u32(uint8_t* b, uint32_t v){ b[0]=v; b[1]=v>>8; b[2]=v>>16; b[3]=v>>24; }
+static inline uint16_t get_u16(const uint8_t* b){ return b[0] | (b[1]<<8); }
+static inline uint32_t get_u32(const uint8_t* b){ return (uint32_t)b[0] | ((uint32_t)b[1]<<8) | ((uint32_t)b[2]<<16) | ((uint32_t)b[3]<<24); }
 
 // ============================================================
-// 0.25ms 타이머 ISR — analogRead는 IRAM-safe가 아니므로
-// ISR에서는 샘플링 태스크만 깨우고 실제 ADC는 태스크에서 수행.
+// 0.25/1ms 타이머 ISR — analogRead는 IRAM-safe 아님 → 태스크만 깨움
 // ============================================================
 void IRAM_ATTR onSampleTimer() {
-  BaseType_t higherPriorityTaskWoken = pdFALSE;
-  vTaskNotifyGiveFromISR(samplingTaskHandle, &higherPriorityTaskWoken);
-  if (higherPriorityTaskWoken == pdTRUE) {
-    portYIELD_FROM_ISR();
-  }
+  BaseType_t hpw = pdFALSE;
+  vTaskNotifyGiveFromISR(samplingTaskHandle, &hpw);
+  if (hpw == pdTRUE) portYIELD_FROM_ISR();
 }
 
 // ============================================================
-// ADC 샘플링 태스크 — 코어 1 고정, 고우선순위
-// ISR notify를 받아 RAW 채널만 read.
-// (MyoWare 2.0은 SIG 핀으로 RAW or ENV 둘 중 하나만 출력 →
-//  RAW만 받아서 RMS/MDF 모두 소프트웨어로 산출)
+// ADC 샘플링 태스크 (코어1 고정) — 자극 검출 + M-wave 에폭 캡처 + 스파이크 진폭
+//   [삭제됨] RMS 윈도우 · 10Hz 블록 · blanking(RMS용) · FFT 버퍼 : 더는 필요 없음
 // ============================================================
 void samplingTask(void* /*param*/) {
   for (;;) {
-    // pdFALSE는 대기 중인 tick을 하나씩 소비한다. 4kHz에서 잠깐 스케줄링이 밀려도
-    // 누적 notify를 한 번에 지워 RAW 표본을 조용히 잃지 않게 한다.
-    ulTaskNotifyTake(pdFALSE, portMAX_DELAY);
+    ulTaskNotifyTake(pdFALSE, portMAX_DELAY);   // 누적 notify 하나씩 소비(표본 유실 방지)
 
     int raw = analogRead(PIN_EMG_RAW);
     if (dcCalibrating) {
-      dcCalibrationSum += raw;
-      dcCalibrationCount++;
+      dcCalibrationSum += raw; dcCalibrationCount++;
       if (dcCalibrationCount >= (uint32_t)(DC_CALIBRATION_MS * SAMPLE_RATE / 1000)) {
-        dcOffset = (int)((dcCalibrationSum + dcCalibrationCount / 2) /
-                         dcCalibrationCount);
+        dcOffset = (int)((dcCalibrationSum + dcCalibrationCount/2) / dcCalibrationCount);
         dcCalibrating = false;
       }
     }
     int centered = raw - dcOffset;
     int absVal = centered < 0 ? -centered : centered;
     const uint32_t sampleIndex = rawSampleCounter;
+    // 이 표본이 ADC 레일에 닿았나 — 닿았으면 값이 잘린 것이라 진폭·면적이 실제보다 작다.
+    const bool atRail = (raw <= ADC_RAIL_MARGIN) || (raw >= ADC_MAX - ADC_RAIL_MARGIN);
 
-    // ===== M-wave: 자극 artifact 감지 + 윈도우 캡처 (원신호 기준) =====
-    // FES는 외부에서 수동 제어 → ESP는 자극 켜짐을 모르므로, 세션 동작 중
-    // (systemRunning)이면 항상 artifact를 탐지한다. refractory 경과 후 큰
-    // 스파이크가 들어오면 artifact로 간주, 5~30ms 동안 centered 샘플 수집.
-    // M-wave 측정은 '진짜' 원신호로 해야 하므로 blanking 이전에 수행한다.
-    {
-      // 적응형 문턱: 최근 스파이크 EMA×FRAC, 단 [FLOOR, 고정값] 으로 clamp.
-      float mwThresh = MW_ADAPT_FRAC * mwArtifactEMA;
-      if (mwThresh < MW_ADAPT_FLOOR) mwThresh = MW_ADAPT_FLOOR;
-      if (mwThresh > (float)MW_ARTIFACT_THRESHOLD) mwThresh = (float)MW_ARTIFACT_THRESHOLD;
+    // ---- 자극 artifact 검출 (적응형 문턱) + 에폭 캡처 ----
+    float mwThresh = MW_ADAPT_FRAC * mwArtifactEMA;
+    if (mwThresh < MW_ADAPT_FLOOR) mwThresh = MW_ADAPT_FLOOR;
+    if (mwThresh > (float)MW_ARTIFACT_THRESHOLD) mwThresh = (float)MW_ARTIFACT_THRESHOLD;
 
-      if (systemRunning && !mwCapturing &&
-          (float)absVal > mwThresh &&
-          (!mwArtifactSeen ||
-           sampleIndex - mwArtifactAtSample > MW_REFRACTORY_SAMPLES)) {
-        mwArtifactAtSample = sampleIndex;
-        mwArtifactSeen = true;
-        mwCapturing = true;
-        mwSampleCount = 0;
-        mwArtifactPeak = absVal;              // 스파이크 peak 추적 시작
+    // [수정] DC 캘리브 중에는 검출하지 않는다. 그 3초는 dcOffset 이 실측값이 아니라
+    //   폴백(1862)이라 centered 가 치우쳐 있고, 그렇게 뜬 에폭은 기준선이 다른 데이터가 된다.
+    //   v0.1 은 에폭이 아예 안 나갔으므로 드러나지 않던 문제다.
+    if (systemRunning && !dcCalibrating && !mwCapturing && (float)absVal > mwThresh &&
+        (!mwArtifactSeen || sampleIndex - mwArtifactAtSample > MW_REFRACTORY_SAMPLES)) {
+      mwArtifactAtSample = sampleIndex; mwArtifactSeen = true;
+      mwArtifactAtMs = millis();                 // [추가] onset 의 실제 벽시계 — 합성하지 않는다
+      mwCapturing = true; mwSampleCount = 0; mwArtifactPeak = absVal;
+      mwSpikeSat = atRail; mwWinSat = false;     // 검출 표본 자체도 스파이크 구간이다
+      stimCounter++;
+    }
+    if (mwCapturing) {
+      uint32_t since = sampleIndex - mwArtifactAtSample;
+      // [수정] 스파이크 peak 는 M-wave 창이 열리기 전(0 ~ +MW_WINDOW_START_MS)에서만 갱신한다.
+      //   v0.1 은 캡처 전 구간(0~+15ms)에서 갱신해 M-wave 표본이 peak 경쟁에 들어갔다.
+      //   M-wave 가 커지면 분모도 같이 커져 면적÷스파이크가 평평해진다 — 정규화가 잡으려던
+      //   신호를 정규화가 지운다. 1kHz 에서 이 창은 0~1ms 로, 검증된 자극 대조군 구간과 같다.
+      if (since < (uint32_t)MW_WINDOW_START_SAMPLES) {
+        if (absVal > mwArtifactPeak) mwArtifactPeak = absVal;
+        if (atRail) mwSpikeSat = true;           // 분모가 상수가 된다 → R 무력화
       }
-      if (mwCapturing) {
-        uint32_t since = sampleIndex - mwArtifactAtSample;
-        if (absVal > mwArtifactPeak) mwArtifactPeak = absVal;   // dead-zone 포함 스파이크 peak
-        if (since >= (uint32_t)MW_WINDOW_START_SAMPLES &&
-            since <= (uint32_t)MW_WINDOW_END_SAMPLES) {
-          if (mwSampleCount < MW_WINDOW_LEN) {
-            mwSamples[mwSampleCount++] = centered;
-          }
-        } else if (since > (uint32_t)MW_WINDOW_END_SAMPLES) {
-          // 완료된 캡처를 ready 버퍼로 옮긴다. 다음 자극이 31ms 만에 와서 mwSamples 를
-          // 덮어써도 loop() 가 읽을 값은 보존된다.
-          for (int i = 0; i < mwSampleCount && i < MW_WINDOW_LEN + 4; i++) {
-            mwSamplesRdy[i] = mwSamples[i];
-          }
-          mwSampleCountRdy = mwSampleCount;
-          mwCapturing = false;
-          mwReady = true;
-          // 이번 자극 스파이크 peak 로 EMA 갱신 → 다음 문턱이 실제 크기를 따라감
-          mwArtifactEMA = MW_ADAPT_ALPHA * (float)mwArtifactPeak +
-                          (1.0f - MW_ADAPT_ALPHA) * mwArtifactEMA;
-        }
+      if (since >= (uint32_t)MW_WINDOW_START_SAMPLES && since <= (uint32_t)MW_WINDOW_END_SAMPLES) {
+        if (atRail) mwWinSat = true;             // 면적이 실제보다 작게 나온다
+        if (mwSampleCount < MW_WINDOW_LEN) mwSamples[mwSampleCount++] = centered;
+      } else if (since > (uint32_t)MW_WINDOW_END_SAMPLES) {
+        // 완료 캡처 → ready 버퍼로 스냅샷(다음 자극이 덮어써도 loop가 읽을 값 보존)
+        // [수정] 쓰기측도 같은 락을 잡는다. v0.1 은 loop 만 잡아서 스핀락이 아무것도 배타하지
+        //   못했다(스핀락은 양쪽이 잡아야 성립). 복사량은 최대 14 int 라 홀드 시간은 µs 급.
+        portENTER_CRITICAL(&timerMux);
+        for (int i=0;i<mwSampleCount && i<MW_WINDOW_LEN+4;i++) mwSamplesRdy[i] = mwSamples[i];
+        mwSampleCountRdy = mwSampleCount;
+        mwSpikeRdy       = mwArtifactPeak;
+        mwStimIndexRdy   = stimCounter;
+        mwStimTimeMsRdy  = mwArtifactAtMs;       // [수정] 실제 millis() — 샘플카운터 합성값 아님
+        mwStimSampleRdy  = mwArtifactAtSample;   // [추가] 샘플 인덱스 동시 기입 → 폰이 드리프트 측정
+        mwSpikeSatRdy    = mwSpikeSat;
+        mwWinSatRdy      = mwWinSat;
+        mwReady = true;
+        portEXIT_CRITICAL(&timerMux);
+        mwCapturing = false;
+        mwArtifactEMA = MW_ADAPT_ALPHA*(float)mwArtifactPeak + (1.0f-MW_ADAPT_ALPHA)*mwArtifactEMA;
       }
     }
-
-    // ===== FES 자극 blanking =====
-    // 자극 검출 직후 STIM_BLANK_MS 동안의 표본은 거대한 자극 스파이크라
-    // RMS/MDF/SMR/ENV 를 오염시킨다. 그 구간은 '직전 깨끗한 값'으로 대체(hold)해
-    // 계산 버퍼에 넣는다. → RMS/MDF 가 자극에 오염되지 않는다.
-    // (raw 4kHz 로그와 M-wave 검출은 위에서 진짜 원신호로 이미 처리함)
-    bool stimBlank = systemRunning && mwArtifactSeen &&
-             (sampleIndex - mwArtifactAtSample) < STIM_BLANK_SAMPLES;
-    int procCentered;
-    if (stimBlank) {
-      procCentered = lastCleanCentered;       // hold (자극 구간 대체)
-    } else {
-      procCentered = centered;
-      lastCleanCentered = centered;           // 깨끗한 값 갱신
-    }
-    int procAbs = procCentered < 0 ? -procCentered : procCentered;
-
-    // 실시간 envelope (정류 + IIR LPF) — blanking 적용값으로 갱신
-    envLPF = ENV_LPF_ALPHA * (float)procAbs + (1.0f - ENV_LPF_ALPHA) * envLPF;
-
-    // 슬라이딩 윈도우 + 100ms 블록 통계
-    portENTER_CRITICAL(&timerMux);
-
-    // 1초 RMS 윈도우: 오래된 표본을 빼고 새 표본을 더해 running sum 유지 (blanking 적용)
-    int old = rawBuffer[writeIdx];
-    rawBuffer[writeIdx] = procCentered;       // FFT(MDF/SMR)도 이 버퍼를 쓰므로 blanking 반영
-    if (windowCount < RMS_WINDOW) {
-      windowCount++;
-      windowSum += procCentered;
-      windowSumSq += (int64_t)procCentered * procCentered;
-    } else {
-      windowSum += (int64_t)procCentered - old;
-      windowSumSq += (int64_t)procCentered * procCentered - (int64_t)old * old;
-    }
-
-    writeIdx++;
-    if (writeIdx >= RMS_WINDOW) writeIdx = 0;
-    bufferFilled = (windowCount >= RMS_WINDOW);
-
-    // 100ms 블록 대표값. raw 평균/RAW 4kHz 로그는 '진짜' 원신호,
-    // EMG/peak/centered 통계는 blanking 적용값으로 누적.
-    blockRawSum += raw;                        // 진짜 raw 평균 (진단용)
-    blockCenteredSum += procCentered;
-    blockAbsSum += procAbs;
-    if (procAbs > blockPeakAbs) blockPeakAbs = procAbs;
-    if (procCentered < blockMinCentered) blockMinCentered = procCentered;
-    if (procCentered > blockMaxCentered) blockMaxCentered = procCentered;
-    rawBatchFill[rawBatchFillCount++] = (int16_t)raw;
-    blockCount++;
     rawSampleCounter++;
+  }
+}
 
-    // 100표본(25ms) RAW 블록 완성 → MTU-safe 송신 버퍼로 스냅샷.
-    if (rawBatchFillCount >= RAW_BATCH_SAMPLES) {
-      if (systemRunning && rawQueueCount < RAW_QUEUE_DEPTH) {
-        for (int i = 0; i < RAW_BATCH_SAMPLES; i++) {
-          rawQueue[rawQueueTail][i] = rawBatchFill[i];
-        }
-        rawQueueFirstIdx[rawQueueTail] = rawSampleCounter - RAW_BATCH_SAMPLES;
-        rawQueueTail = (rawQueueTail + 1) % RAW_QUEUE_DEPTH;
-        rawQueueCount++;
-      }
-      rawBatchFillCount = 0;
+// ============================================================
+// BLE 콜백 (비블로킹: delay() 절대 금지)
+// ============================================================
+class ServerCallbacks : public NimBLEServerCallbacks {
+  void onConnect(NimBLEServer* s, NimBLEConnInfo& c) override {
+    deviceConnected = true;
+    s->setDataLen(c.getConnHandle(), 251);
+    lastDownlinkMs = millis();               // 연결 순간 watchdog 기준 초기화
+  }
+  void onDisconnect(NimBLEServer* s, NimBLEConnInfo& c, int reason) override {
+    deviceConnected = false;
+    needFailSafe = true;                     // [수정] delay() 호출 금지 → loop에서 안전조치
+    needRestartAdv = true;
+  }
+};
+
+class DownCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic* ch, NimBLEConnInfo& c) override {
+    std::string v = ch->getValue();
+    handleDownlink((const uint8_t*)v.data(), v.size());   // 파싱만, 구동은 loop
+  }
+};
+
+// ============================================================
+// 다운링크 처리 (JUDGMENT/HEARTBEAT/SESSION_CONTROL)
+//   여기서는 검증 + 최신 판정 저장 + watchdog 리셋만. 실제 구동은 safetySupervisor().
+// ============================================================
+struct Judgment { uint16_t seq; uint32_t tRefMs; uint32_t stimIdxRef;
+                  uint8_t stage; uint8_t action; uint8_t targetLevel; uint8_t reliability;
+                  unsigned long rxMs; };
+// volatile 구조체 통째 복사는 컴파일 안 됨 → 평범한 구조체 + 별도 flag(critical section 보호).
+Judgment lastJudge = {0,0,0,0,0,0,0,0};
+volatile bool judgePending = false;
+// 세션 명령은 여기서 실행하지 않는다 — onWrite 는 NimBLE 호스트 태스크라 릴레이 큐/notify 를
+// loop 와 동시에 만지게 된다. 플래그만 세우고 구동은 serviceSessionCmd() 가 loop 에서 한다.
+volatile uint8_t pendingSessionCmd = 0;        // 0 = 없음, 그 외 SC_* 값
+
+void handleDownlink(const uint8_t* d, size_t n) {
+  if (n < 7) return;                          // 최소: 헤더6 + crc1
+  if (d[0] != PROTOCOL_VERSION) return;        // 버전 불일치 → 폐기(무명령, watchdog 관장)
+  if (crc8(d, n-1) != d[n-1]) return;          // CRC 실패 → 폐기
+  uint8_t  type = d[1];
+  uint16_t seq  = get_u16(d+2);
+  uint16_t sess = get_u16(d+4);
+  if (sess != sessionId && sess != 0) return;  // 세션 불일치 → 폐기
+
+  lastDownlinkMs = millis();                    // 유효 다운링크 = watchdog 리셋
+
+  if (type == MSG_HEARTBEAT) { lastCmdSeqAck = seq; return; }
+
+  if (type == MSG_SESSION_CONTROL && n >= 8) {
+    uint8_t cmd = d[6];
+    if (cmd == SC_REQUEST_START || cmd == SC_REQUEST_STOP ||
+        cmd == SC_STIM_ENABLE   || cmd == SC_STIM_DISABLE) {
+      portENTER_CRITICAL(&timerMux);
+      // 슬롯이 하나뿐이라 뒤 명령이 앞 명령을 덮는다. 정지 계열이 대기 중이면 덮지 않는다 —
+      // loop 가 아직 처리하지 못한 STOP 을 STIM_ENABLE 이 지워버리면 안 된다(안전 비대칭).
+      bool stopPending = (pendingSessionCmd == SC_REQUEST_STOP ||
+                          pendingSessionCmd == SC_STIM_DISABLE);
+      bool isStop      = (cmd == SC_REQUEST_STOP || cmd == SC_STIM_DISABLE);
+      if (!stopPending || isStop) pendingSessionCmd = cmd;   // 구동은 loop 에서(위 주석 참조)
+      portEXIT_CRITICAL(&timerMux);
     }
+    lastCmdSeqAck = seq; return;
+  }
 
-    samplesSinceCompute++;
-    if (samplesSinceCompute >= COMPUTE_INTERVAL) {
-      int n = blockCount > 0 ? blockCount : 1;
-      latestRaw10Hz = (float)blockRawSum / n;
-      latestEmg10Hz = (float)blockAbsSum / n;
-      latestCenteredMean10Hz = (float)blockCenteredSum / n;
-      latestPeakAbs10Hz = blockPeakAbs;
-      latestMinCentered10Hz = blockMinCentered;
-      latestMaxCentered10Hz = blockMaxCentered;
-
-      // 다음 100ms 블록 시작
-      blockRawSum = 0;
-      blockCenteredSum = 0;
-      blockAbsSum = 0;
-      blockPeakAbs = 0;
-      blockMinCentered = 32767;
-      blockMaxCentered = -32768;
-      blockCount = 0;
-
-      samplesSinceCompute = 0;
-      metricReady = true;          // 100ms마다 RMS/MDF 재계산 신호
-    }
-
+  // [수정] 21 → 19. 실제로 파싱하는 페이로드는 d[6..17] = 12바이트다. v0.1 의 21 요구는
+  //   정체불명의 패딩 2바이트를 강요해, 계약대로 19B 를 보내는 쪽이 조용히 전량 폐기됐다.
+  if (type == MSG_JUDGMENT && n >= 6+12+1) {
+    portENTER_CRITICAL(&timerMux);
+    lastJudge.seq        = seq;
+    lastJudge.tRefMs     = get_u32(d+6);
+    lastJudge.stimIdxRef = get_u32(d+10);
+    lastJudge.stage      = d[14];
+    lastJudge.action     = d[15];
+    lastJudge.targetLevel= d[16];
+    lastJudge.reliability= d[17];
+    lastJudge.rxMs       = millis();
+    judgePending         = true;
     portEXIT_CRITICAL(&timerMux);
   }
 }
 
 // ============================================================
-// BLE 콜백 (NimBLE 2.x API)
+// 안전 감독자 (loop에서 호출) — 안전 비대칭 + watchdog + 하드리밋
+//   DECREASE/STOP 즉시 · INCREASE 는 게이트 통과 시만.
 // ============================================================
-class ServerCallbacks : public NimBLEServerCallbacks {
-  void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
-    deviceConnected = true;
-    Serial.printf("✅ BLE 연결: %s\n", connInfo.getAddress().toString().c_str());
-    // iPhone과 큰 MTU 협상 시도
-    pServer->setDataLen(connInfo.getConnHandle(), 251);
-  }
-  void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) override {
-    deviceConnected = false;
-    Serial.printf("❌ BLE 끊김 (reason=%d) → 재광고\n", reason);
-    // 안전: 끊기면 FES 즉시 중단
-    if (isStimulating) triggerStimulation(false);
-    // 자동 재광고
-    NimBLEDevice::getAdvertising()->start();
-  }
-};
+void safetySupervisor() {
+  unsigned long now = millis();
 
-class CmdCallbacks : public NimBLECharacteristicCallbacks {
-  void onWrite(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
-    std::string value = pCharacteristic->getValue();
-    if (value.empty()) return;
-
-    ArduinoJson::JsonDocument doc;
-    ArduinoJson::DeserializationError err = ArduinoJson::deserializeJson(doc, value.c_str());
-    if (err) {
-      Serial.printf("⚠️ JSON parse 실패: %s\n", err.c_str());
+  // --- watchdog / deadman ---
+  // [수정] stimOn 일 때만 격상한다. 자극이 꺼진 로그 전용 세션에는 끊어야 할 자극이 없고,
+  //   BLE 딸꾹질만으로 세션을 STIM_OFF(복귀 불가)로 보내면 수집 중인 데이터만 잃는다.
+  unsigned long sinceDown = now - lastDownlinkMs;
+  bool downlinkFresh = (sinceDown <= T_WATCHDOG_MS);
+  if (systemRunning && stimOn) {
+    if (sinceDown > T_DEADMAN_MS) {
+      if (mcuState != ST_STIM_OFF) { relayPowerOff(); mcuState = ST_STIM_OFF;
+        healthFlags |= 0x01; sendEvent(EV_FAULT, 1); }
       return;
+    } else if (!downlinkFresh) {
+      if (mcuState == ST_RUNNING) { mcuState = ST_SAFE_HOLD; healthFlags |= 0x01; }
+      // SAFE_HOLD: INCREASE 금지, 현 세기 유지(또는 정책상 감소). 여기선 유지.
+    } else {
+      healthFlags &= ~0x01;
+      if (mcuState == ST_SAFE_HOLD) mcuState = ST_RUNNING;   // 다운링크 재개 → 복귀
     }
-    handleCommand(doc);
+  } else if (systemRunning && downlinkFresh) {
+    healthFlags &= ~0x01;
+    if (mcuState == ST_SAFE_HOLD) mcuState = ST_RUNNING;
   }
-};
+
+  // --- 하드 최대 자극 시간 ---
+  if (stimOn && (now - stimStartTime > STIM_TIMEOUT_MS)) {
+    relayPowerOff(); mcuState = ST_STIM_OFF; healthFlags |= 0x02; sendEvent(EV_FAULT, 2);
+    return;
+  }
+
+  // --- 판정 적용 ---
+  if (!judgePending) return;
+  portENTER_CRITICAL(&timerMux);
+  Judgment j = lastJudge; judgePending = false;
+  portEXIT_CRITICAL(&timerMux);
+  lastCmdSeqAck = j.seq;
+
+  uint8_t target = j.targetLevel; if (target > MAX_LEVEL) target = MAX_LEVEL;   // clamp
+
+  // STOP: 항상 즉시
+  if (j.action == ACT_STOP) { stopSession(EV_SESSION_STOP); return; }
+  // DECREASE 또는 목표<현재: 항상 즉시(fail-safe 방향)
+  if (j.action == ACT_DECREASE || target < currentLevel) {
+    if (target < currentLevel) relayStepDown(currentLevel - target);
+    else if (currentLevel > 0) relayStepDown(1);
+    return;
+  }
+  // HOLD
+  if (j.action == ACT_HOLD || target == currentLevel) return;
+  // INCREASE: 게이트 통과 시만
+  if (j.action == ACT_INCREASE || target > currentLevel) {
+    bool stale = (now - j.rxMs > T_STALE_MS) ||
+                 (stimCounter > j.stimIdxRef + STALE_STIM_LAG);
+    bool safeState = (mcuState == ST_RUNNING) && stimOn;
+    bool relOk = (j.reliability != REL_LOW);
+    if (stale || !safeState || !relOk) return;               // 증가 거부(안전)
+    uint8_t step = target - currentLevel;
+    if (step > MAX_STEP_PER_JUDGMENT) step = MAX_STEP_PER_JUDGMENT;   // 변화율 제한
+    if (currentLevel + step > MAX_LEVEL) step = MAX_LEVEL - currentLevel;
+    relayStepUp(step);
+  }
+}
+
+// ============================================================
+// 업링크: EPOCH / STATUS / EVENT (바이너리 v0.1)
+// ============================================================
+void writeHeader(uint8_t* b, uint8_t type) {
+  b[0]=PROTOCOL_VERSION; b[1]=type; put_u16(b+2, upSeq++); put_u16(b+4, sessionId);
+}
+void sendEpoch(int* samples, int n, int spike, float p2p, uint8_t flags,
+               uint32_t stimIdx, uint32_t tMs, uint32_t sampleIdx) {
+  if (!deviceConnected || upChar == nullptr) return;
+  if (n > MW_WINDOW_LEN) n = MW_WINDOW_LEN;
+  // 헤더6 + stimIdx4 + tMs4 + sampleIdx4 + spike2 + p2p2 + flags1 + n1 + samples(2n) + crc1
+  //   = 24 + 2n + 1. 1kHz(n=14) 에서 53B — MTU 247 이내.
+  // t_ms 와 sample_idx 를 함께 보내는 이유: 폰이 sample_idx/fs 와 (t_ms − 세션t0) 를 비교해
+  //   샘플링 지연을 직접 측정할 수 있다. 한쪽만 있으면 시간축이 밀려도 탐지할 방법이 없다.
+  uint8_t buf[6+4+4+4+2+2+1+1 + 2*(MW_WINDOW_LEN) + 1];
+  writeHeader(buf, MSG_EPOCH);
+  put_u32(buf+6, stimIdx); put_u32(buf+10, tMs); put_u32(buf+14, sampleIdx);
+  int16_t sp = (int16_t)spike; put_u16(buf+18, (uint16_t)sp);
+  int16_t pp = (int16_t)p2p;   put_u16(buf+20, (uint16_t)pp);
+  buf[22]=flags; buf[23]=(uint8_t)n;
+  int off=24;
+  for (int i=0;i<n;i++){ int16_t v=(int16_t)samples[i]; put_u16(buf+off,(uint16_t)v); off+=2; }
+  buf[off]=crc8(buf, off); off++;
+  upChar->setValue(buf, off); upChar->notify();
+}
+void sendStatus() {
+  if (!deviceConnected || upChar == nullptr) return;
+  uint8_t buf[6+4+1+1+1+1+2+2+1+1+1 + 1];
+  writeHeader(buf, MSG_STATUS);
+  put_u32(buf+6, millis());
+  buf[10]=(uint8_t)mcuState;
+  buf[11]=currentLevel;
+  buf[12]=(stimOn?0x01:0x00);
+  buf[13]=healthFlags;
+  put_u16(buf+14, lastCmdSeqAck);
+  put_u16(buf+16, (uint16_t)SAMPLE_RATE);
+  buf[18]=(int8_t)MW_WINDOW_START_MS;
+  buf[19]=(int8_t)MW_WINDOW_END_MS;
+  buf[20]=MAX_LEVEL;
+  buf[21]=crc8(buf,21);
+  upChar->setValue(buf,22); upChar->notify();
+}
+void sendEvent(uint8_t evId, uint8_t detail) {
+  if (!deviceConnected || upChar == nullptr) return;
+  uint8_t buf[6+4+1+1+1];
+  writeHeader(buf, MSG_EVENT);
+  put_u32(buf+6, millis()); buf[10]=evId; buf[11]=detail; buf[12]=crc8(buf,12);
+  upChar->setValue(buf,13); upChar->notify();
+}
+
+// ============================================================
+// 세션 시작/정지
+// ============================================================
+// START = 기록의 시작이지 자극의 시작이 아니다. 자극 투입은 SC_STIM_ENABLE 로만.
+//   마사지기 전원·세기는 현재 사람이 직접 조작한다. 여기서 relayPowerOn() 을 부르면
+//   실물은 그대로인데 stimOn 만 true 가 되어, INCREASE 게이트의 safeState 가 거짓으로
+//   통과하고 STIM_TIMEOUT_MS 마다 헛된 EV_FAULT 가 뜬다.
+void startSession() {
+  actClear();
+  sessionId++;                                 // 새 세션 → 폰이 running-max/baseline 리셋
+  systemRunning = true; mcuState = ST_CALIBRATING;
+  sessionStartedAtMs = millis(); lastDownlinkMs = millis();
+  dcOffset = DC_OFFSET_FALLBACK; dcCalibrationSum=0; dcCalibrationCount=0; dcCalibrating=true;
+  healthFlags = 0;
+  portENTER_CRITICAL(&timerMux);
+  rawSampleCounter=0; stimCounter=0;
+  mwCapturing=false; mwSampleCount=0; mwSampleCountRdy=0; mwReady=false;
+  mwArtifactSeen=false; mwArtifactAtSample=0; mwArtifactEMA=MW_ADAPT_EMA0; mwArtifactPeak=0;
+  mwArtifactAtMs=0; mwStimSampleRdy=0; mwStimTimeMsRdy=0; mwStimIndexRdy=0;
+  mwSpikeSat=false; mwWinSat=false; mwSpikeSatRdy=false; mwWinSatRdy=false;
+  judgePending=false;
+  portEXIT_CRITICAL(&timerMux);
+  currentLevel = 0;
+  stimOn = false;                              // 로그 전용으로 출발
+  // ST_CALIBRATING 을 유지한다 — DC 캘리브가 끝나야 loop 이 ST_RUNNING 으로 올리고
+  // EV_CALIB_DONE 을 보낸다. v0.1 은 여기서 곧장 ST_RUNNING 이라 두 값이 다 죽어 있었다.
+  sendEvent(EV_SESSION_START, 0);              // 이 패킷의 t_ms 가 폰의 세션 t0
+}
+void stopSession(uint8_t evReason) {
+  systemRunning = false; mcuState = ST_IDLE;
+  // 켜지도 않은 전원에 2초 롱프레스를 넣지 않는다 — 배선이 끝나면 그게 오히려 켜버린다.
+  if (stimOn) relayPowerOff(); else actClear();
+  sendEvent(evReason, 0);
+}
+
+// 다운링크 세션 명령 실행 — loop 에서만 호출된다(BLE 콜백에서 릴레이·notify 금지).
+void serviceSessionCmd() {
+  if (!pendingSessionCmd) return;
+  portENTER_CRITICAL(&timerMux);          // 읽기+소거를 원자적으로 — 그 사이 도착분 유실 방지
+  uint8_t cmd = pendingSessionCmd;
+  pendingSessionCmd = 0;
+  portEXIT_CRITICAL(&timerMux);
+  switch (cmd) {
+    case SC_REQUEST_START:
+      if (!systemRunning) startSession();          // 이미 돌고 있으면 무시(멱등)
+      break;
+    case SC_REQUEST_STOP:
+      stopSession(EV_SESSION_STOP);
+      break;
+    case SC_STIM_ENABLE:
+      // 자극 투입은 세션이 정상 진행 중일 때만. 항상 레벨 0에서 출발한다.
+      if (systemRunning && mcuState == ST_RUNNING && !stimOn) { currentLevel = 0; relayPowerOn(); }
+      break;
+    case SC_STIM_DISABLE:
+      if (stimOn) relayPowerOff();
+      break;
+  }
+}
 
 // ============================================================
 // SETUP
 // ============================================================
 void setup() {
-  Serial.begin(115200);
-  delay(1000);
-  Serial.println("\n=== EMG-FES Controller (BLE) ===");
+  Serial.begin(115200); delay(200);
+  Serial.println("\n=== RE:FIT FES Controller (Phase1 thin-MCU) ===");
 
-  // GPIO 초기화
   pinMode(PIN_STATUS_LED, OUTPUT);
-  pinMode(PIN_MASSAGER_ON_OFF, OUTPUT);
-  pinMode(PIN_MASSAGER_MODE, OUTPUT);
-  pinMode(PIN_MASSAGER_UP, OUTPUT);
-  pinMode(PIN_MASSAGER_DOWN, OUTPUT);
-  digitalWrite(PIN_MASSAGER_ON_OFF, LOW);
-  digitalWrite(PIN_MASSAGER_MODE, LOW);
-  digitalWrite(PIN_MASSAGER_UP, LOW);
-  digitalWrite(PIN_MASSAGER_DOWN, LOW);
-
-  // 관리도 초기화 — RMS/MDF 8표본, M-wave 6표본, ±2σ
-  ccInit(rmsChart, 8, 2.0f);
-  ccInit(mdfChart, 8, 2.0f);
-  ccInit(mwAmpChart, 6, 2.0f);
-  ccInit(mwAreaChart, 6, 2.0f);
-  ccInit(mwLatChart, 6, 2.0f);
+  pinMode(PIN_MASSAGER_ON_OFF, OUTPUT); pinMode(PIN_MASSAGER_MODE, OUTPUT);
+  pinMode(PIN_MASSAGER_UP, OUTPUT);     pinMode(PIN_MASSAGER_DOWN, OUTPUT);
+  digitalWrite(PIN_MASSAGER_ON_OFF, LOW); digitalWrite(PIN_MASSAGER_MODE, LOW);
+  digitalWrite(PIN_MASSAGER_UP, LOW);     digitalWrite(PIN_MASSAGER_DOWN, LOW);
 
   analogReadResolution(12);
-
-  // BLE 초기화
   setupBLE();
 
-  // ADC 샘플링 태스크 (코어 1, BLE는 코어 0에서 도므로 분리)
-  xTaskCreatePinnedToCore(
-    samplingTask,
-    "emg_sampling",
-    4096,
-    nullptr,
-    configMAX_PRIORITIES - 1,
-    &samplingTaskHandle,
-    1
-  );
+  xTaskCreatePinnedToCore(samplingTask, "emg_sampling", 4096, nullptr,
+                          configMAX_PRIORITIES-1, &samplingTaskHandle, 1);
 
-  // 4kHz ADC 타이머 (ESP32 Arduino core 2.x/3.x 호환)
 #if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
-  sampleTimer = timerBegin(1000000);                      // 1MHz tick (1us 해상도)
+  sampleTimer = timerBegin(1000000);
   timerAttachInterrupt(sampleTimer, &onSampleTimer);
-  timerAlarm(sampleTimer, 250, true, 0);                  // 250us=4kHz, autoreload
+  timerAlarm(sampleTimer, US_PER_SAMPLE, true, 0);       // SAMPLE_RATE 유도
 #else
-  sampleTimer = timerBegin(0, 80, true);                  // 80MHz / 80 = 1MHz
+  sampleTimer = timerBegin(0, 80, true);
   timerAttachInterrupt(sampleTimer, &onSampleTimer, true);
-  timerAlarmWrite(sampleTimer, 250, true);                // 250us=4kHz, autoreload
+  timerAlarmWrite(sampleTimer, US_PER_SAMPLE, true);
   timerAlarmEnable(sampleTimer);
 #endif
 
   digitalWrite(PIN_STATUS_LED, HIGH);
-  Serial.println("=== 준비 완료 (BLE 광고 중) ===\n");
+  Serial.printf("=== 준비 완료 (BLE 광고, fs=%dHz, MW창 +%d~+%dms=%d표본) ===\n",
+                SAMPLE_RATE, MW_WINDOW_START_MS, MW_WINDOW_END_MS, MW_WINDOW_LEN);
 }
 
-// ============================================================
-// BLE 셋업
-// ============================================================
 void setupBLE() {
   NimBLEDevice::init(BLE_DEVICE_NAME);
-  NimBLEDevice::setPower(ESP_PWR_LVL_P9);    // 최대 송신 출력 (+9dBm)
-  NimBLEDevice::setMTU(247);                 // iPhone 자동 협상 가능 (실효 244B/패킷)
-
-  NimBLEServer* pServer = NimBLEDevice::createServer();
-  pServer->setCallbacks(new ServerCallbacks());
-
-  NimBLEService* pService = pServer->createService(SERVICE_UUID);
-
-  // DATA characteristic (ESP32 → Phone, notify)
-  dataChar = pService->createCharacteristic(
-    CHAR_DATA_UUID,
-    NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
-  );
-
-  // RAW characteristic (ESP32 → Phone, notify) — 4kHz 파형 바이너리 스트림
-  rawChar = pService->createCharacteristic(
-    CHAR_RAW_UUID,
-    NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
-  );
-
-  // CMD characteristic (Phone → ESP32, write)
-  cmdChar = pService->createCharacteristic(
-    CHAR_CMD_UUID,
-    NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
-  );
-  cmdChar->setCallbacks(new CmdCallbacks());
-
-  pService->start();
-
-  // Advertising
-  NimBLEAdvertising* pAdv = NimBLEDevice::getAdvertising();
-  pAdv->addServiceUUID(SERVICE_UUID);
-  pAdv->setName(BLE_DEVICE_NAME);
-  pAdv->enableScanResponse(true);
-  pAdv->start();
-
-  Serial.printf("✅ BLE 시작: name=%s\n", BLE_DEVICE_NAME);
-  Serial.printf("   Service: %s\n", SERVICE_UUID);
-  Serial.printf("   Data   : %s (notify)\n", CHAR_DATA_UUID);
-  Serial.printf("   Cmd    : %s (write)\n", CHAR_CMD_UUID);
+  NimBLEDevice::setPower(ESP_PWR_LVL_P9);
+  NimBLEDevice::setMTU(247);
+  NimBLEServer* s = NimBLEDevice::createServer();
+  s->setCallbacks(new ServerCallbacks());
+  NimBLEService* svc = s->createService(SERVICE_UUID);
+  upChar = svc->createCharacteristic(CHAR_UP_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
+  downChar = svc->createCharacteristic(CHAR_DOWN_UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
+  downChar->setCallbacks(new DownCallbacks());
+  svc->start();
+  NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
+  adv->addServiceUUID(SERVICE_UUID); adv->setName(BLE_DEVICE_NAME);
+  adv->enableScanResponse(true); adv->start();
+  Serial.printf("✅ BLE: %s  (UP notify %s / DOWN write %s)\n", BLE_DEVICE_NAME, CHAR_UP_UUID, CHAR_DOWN_UUID);
 }
 
 // ============================================================
-// LOOP
+// LOOP — 비블로킹. 에폭 방출 · STATUS 하트비트 · 안전감독 · 액추에이터.
 // ============================================================
+unsigned long lastStatusMs = 0;
 void loop() {
-  // 연결 상태 LED (연결 시 ON, 미연결 시 1Hz 블링크)
-  digitalWrite(PIN_STATUS_LED, deviceConnected ? HIGH : ((millis() / 500) % 2));
+  digitalWrite(PIN_STATUS_LED, deviceConnected ? HIGH : ((millis()/500)%2));
 
-  if (metricReady) {
-    // samplingTask가 만든 100ms 대표값과 RMS running sum을 한 번에 스냅샷
-    int localWriteIdx;
-    int localWindowCount;
-    int64_t localWindowSum;
-    int64_t localWindowSumSq;
+  // onDisconnect 후처리(블로킹 없이)
+  if (needFailSafe) { needFailSafe=false; if (stimOn) relayPowerOff(); mcuState = systemRunning?ST_SAFE_HOLD:ST_IDLE; }
+  if (needRestartAdv) { needRestartAdv=false; NimBLEDevice::getAdvertising()->start(); }
 
-    portENTER_CRITICAL(&timerMux);
-    metricReady = false;
-    localWriteIdx = writeIdx;
-    localWindowCount = windowCount;
-    localWindowSum = windowSum;
-    localWindowSumSq = windowSumSq;
-    currentRaw10Hz = latestRaw10Hz;
-    currentEmg10Hz = latestEmg10Hz;
-    currentCenteredMean10Hz = latestCenteredMean10Hz;
-    currentPeakAbs10Hz = latestPeakAbs10Hz;
-    currentMinCentered10Hz = latestMinCentered10Hz;
-    currentMaxCentered10Hz = latestMaxCentered10Hz;
-    portEXIT_CRITICAL(&timerMux);
-
-    // ===== 10Hz: ENV와 같은 시간축으로 RMS/MDF 재계산 =====
-    // RMS는 최근 1초 sliding window, MDF는 최근 512ms FFT window.
-    bool rmsReady = (localWindowCount >= RMS_WINDOW);
-    bool mdfReady = (localWindowCount >= FFT_SIZE);
-
-    if (rmsReady) {
-      currentRMS = calculateRMS(localWindowSum, localWindowSumSq, localWindowCount);
-    }
-    if (mdfReady) {
-      currentMDF = calculateMDF(localWriteIdx);
-    }
-    // calculateMDF 는 실패 시 NaN 을 돌려준다. NaN 이 그대로 흘러가면 ccIngest 가 관리도의
-    // mean/sd 를 NaN 으로 만들어 그 세션 내내 복구되지 않는다(판정이 조용히 죽음).
-    // 여기서 막는다 — MDF 가 유한할 때만 히스토리·관리도·판정을 돌린다.
-    // (MDF 실패는 대역 전력이 0 인 경우뿐이라 그때는 RMS 도 무의미하다)
-    metricsValid = rmsReady && mdfReady && isfinite(currentMDF);
-    sendRmsMdfNext = true;          // 다음 100ms BLE 행에 rms/mdf를 반드시 포함
-
-    // ===== 1Hz: 느린 로직 (히스토리·관리도·판정·상태머신) =====
-    // 피로 판정과 baseline은 초 단위 표본 기준으로 유지한다.
-    if (metricsValid) {
-      metricCycle++;
-      if (metricCycle >= 10) {
-        metricCycle = 0;
-
-        // 히스토리 추가
-        rmsHistory[historyIdx] = currentRMS;
-        mdfHistory[historyIdx] = currentMDF;
-        historyIdx = (historyIdx + 1) % HISTORY_SIZE;
-        if (historyCount < HISTORY_SIZE) historyCount++;
-
-        // slope 는 표시용으로만 계산 (30초치 모이면 갱신) — 판정엔 미사용
-        if (historyCount >= 30) {
-          currentRMSSlope = calculateSlopePercent(rmsHistory, historyCount, true);
-          currentMDFSlope = calculateSlopePercent(mdfHistory, historyCount, true);
-        }
-
-        const bool baselineWindowOpen = systemRunning &&
-            (millis() - sessionStartedAtMs >= BASELINE_DELAY_MS);
-
-        // ---- 관리도 baseline 학습 (준비운동 30초 이후 표본만) ----
-        if (baselineWindowOpen && !completeParalysisProtocol) {
-          ccIngest(rmsChart, currentRMS);
-          ccIngest(mdfChart, currentMDF);
-        }
-
-        // 완전마비 프로토콜에서는 유발파형에 오염되는 RMS/MDF를 판정에 쓰지 않는다.
-        bool rmsHigh = systemRunning && !completeParalysisProtocol &&
-                       ccAbove(rmsChart, currentRMS);
-        bool mdfLow  = systemRunning && !completeParalysisProtocol &&
-                       ccBelow(mdfChart, currentMDF);
-        bool rmsMdfGroup = rmsHigh && mdfLow;
-        bool mwGroup = currentMwValid &&
-                       mwAmpChart.established && mwAreaChart.established &&
-                       ccBelow(mwAmpChart, currentMwAmp) &&
-                       ccBelow(mwAreaChart, currentMwArea);
-        bool fatigueCondition = rmsMdfGroup || mwGroup;
-
-        if (systemRunning && fatigueCondition) {
-          consecutiveCount++;
-          if (consecutiveCount >= CONSECUTIVE_TRIGGER && !currentFatigueDetected) {
-            Serial.printf("⚠️ 근피로 감지! [%s] RMS %.0f(UCL %.0f) MDF %.0f(LCL %.0f)\n",
-                          rmsMdfGroup ? "RMS·MDF" : "M-wave",
-                          currentRMS, rmsChart.mean + rmsChart.sigmaMult * rmsChart.sd,
-                          currentMDF, mdfChart.mean - mdfChart.sigmaMult * mdfChart.sd);
-            currentFatigueDetected = true;
-            fatigueDetectedAtMs = millis();
-            sendFullNext = true;
-            // 자동 정지 없음 — 피로는 '기록'만 하고 자극은 끄지 않는다.
-            // 정지는 오직 사용자의 stop 명령으로만.
-            //
-            // 왜: 이 판정(rmsMdfGroup || mwGroup)은 실측에서 신뢰할 수 없다.
-            //  - rmsMdfGroup: 펌웨어 RMS 는 자발 EMG 가 아니라 유발반응의 대리지표라
-            //    피로에서 '내려간다'. 규칙은 RMS>UCL(올라가야 발동)이라 방향이 반대다.
-            //    실측 4세션 정답률 1/4, 진짜 피로 세션(042118)에서 후보 0개.
-            //  - mwGroup: 정규화 안 된 생 M-wave 를 본다. 전극 드리프트만으로도 내려가
-            //    위양성이 난다(033307: 자극 -19.5% 따라 M-wave -19.1%, 근육은 멀쩡).
-            //    올바른 지표는 M-wave ÷ 자극스파이크(R)인데 펌웨어는 스파이크를 안 낸다.
-            //
-            // 자동 정지가 세션을 중간에 끊으면 그 데이터는 못 쓴다. 판정이 옳아질 때까지
-            // 끊지 않는다 — 자극기는 사용자가 손으로도 즉시 끌 수 있다.
-          }
-        } else {
-          consecutiveCount = 0;
-        }
-
-        if (currentFatigueDetected &&
-            (millis() - fatigueDetectedAtMs > FATIGUE_LATCH_MS)) {
-          currentFatigueDetected = false;
-        }
-
-        // 근활성 상태 표시용 RMS baseline도 30초 이후 새 표본만 수집한다.
-        if (baselineWindowOpen && !baselineReady) {
-          baselineRmsSum += currentRMS;
-          baselineRmsSampleCount++;
-          if (baselineRmsSampleCount >= BASELINE_SAMPLES) {
-            baselineRMS = baselineRmsSum / baselineRmsSampleCount;
-            baselineReady = true;
-            Serial.printf("✅ Baseline RMS: %.1f (t>=30s, %d samples)\n",
-                          baselineRMS, baselineRmsSampleCount);
-          }
-        }
-
-        // 상태 분류
-        if (!systemRunning) {
-          muscleState = "idle";
-          rmsRatio = 1.0;
-        } else if (!baselineReady) {
-          muscleState = "calibrating";
-          rmsRatio = 1.0;
-        } else {
-          rmsRatio = (baselineRMS > 0.01) ? (currentRMS / baselineRMS) : 1.0;
-          if (currentFatigueDetected)              muscleState = "fatigue";
-          else if (rmsRatio > MUSCLE_HIGH_RATIO)   muscleState = "high";
-          else if (rmsRatio < MUSCLE_LOW_RATIO)    muscleState = "low";
-          else                                     muscleState = "normal";
-        }
-
-        updateContractionState();
-        sendFullNext = true;
-      }
-    }
-  }
-
-  // ===== M-wave 메트릭 계산 (sampling task가 mwReady=true 신호) =====
+  // ---- M-wave 에폭 완료 → 패킷 방출 ----
   if (mwReady) {
     portENTER_CRITICAL(&timerMux);
     mwReady = false;
-    int n = mwSampleCountRdy;                  // 진행 중인 캡처가 아니라 '완료된' 캡처
-    int snapshot[MW_WINDOW_LEN + 4];
-    for (int i = 0; i < n && i < MW_WINDOW_LEN + 4; i++) {
-      snapshot[i] = mwSamplesRdy[i];
-    }
+    int n = mwSampleCountRdy; int spike = mwSpikeRdy;
+    uint32_t stimIdx = mwStimIndexRdy; uint32_t tMs = mwStimTimeMsRdy;
+    uint32_t sampleIdx = mwStimSampleRdy;
+    bool satSpike = mwSpikeSatRdy, satWin = mwWinSatRdy;
+    int snap[MW_WINDOW_LEN + 4];
+    for (int i=0;i<n && i<MW_WINDOW_LEN+4;i++) snap[i]=mwSamplesRdy[i];
     portEXIT_CRITICAL(&timerMux);
 
-    if (n >= 5) {
-      int mn = snapshot[0], mx = snapshot[0], peakIdx = 0;
-      long absSum = 0;
-      for (int i = 0; i < n; i++) {
-        int v = snapshot[i];
-        if (v < mn) mn = v;
-        if (v > mx) { mx = v; peakIdx = i; }
-        absSum += (v < 0 ? -v : v);
-      }
-      currentMwAmp = (float)(mx - mn);
-      // 면적은 ADC·ms 단위를 유지하고 latency는 0.25ms 해상도로 환산한다.
-      currentMwArea = (float)absSum * 1000.0f / SAMPLE_RATE;
-      currentMwLatency = (float)(MW_WINDOW_START_SAMPLES + peakIdx) *
-             1000.0f / SAMPLE_RATE;
-      // latency는 진단/CSV에만 남기고 유효성은 진폭 노이즈 게이트로만 판정한다.
-      currentMwValid = currentMwAmp >= MW_AMP_MIN;
-      mwDirty = true;
-      mwCount++;
-      // 관리도 baseline 학습 — 준비운동 30초 이후의 유효 M-wave만.
-      if (systemRunning && currentMwValid &&
-          (millis() - sessionStartedAtMs >= BASELINE_DELAY_MS)) {
-        ccIngest(mwAmpChart, currentMwAmp);
-        ccIngest(mwAreaChart, currentMwArea);
-        ccIngest(mwLatChart, currentMwLatency);
-      }
+    if (n >= 3) {
+      int mn=snap[0], mx=snap[0];
+      for (int i=0;i<n;i++){ if(snap[i]<mn)mn=snap[i]; if(snap[i]>mx)mx=snap[i]; }
+      float p2p = (float)(mx - mn);
+      uint8_t flags = 0;
+      if (p2p >= MW_AMP_MIN) flags |= 0x01;               // bit0 valid
+      if (satWin)   flags |= 0x02;                        // bit1 창 포화 → 면적 과소평가
+      if (satSpike) flags |= 0x04;                        // bit2 스파이크 포화 → R 분모 상수화
+      // (bit3 baseline_ok 는 후속 확장)
+      sendEpoch(snap, n, spike, p2p, flags, stimIdx, tMs, sampleIdx);
     }
   }
 
-  // BLE 송신은 100ms마다. raw/emg/env/rms/mdf 모두 같은 10Hz 행으로 송신.
-  sendDataUpdate();
+  // ---- STATUS 하트비트 (5Hz) ----
+  if (millis() - lastStatusMs >= STATUS_PERIOD_MS) { lastStatusMs = millis(); sendStatus(); }
 
-  // RAW 4kHz 파형 바이너리 패킷 송신 (25ms마다 100표본씩, 전용 캐릭터리스틱).
-  sendRawBatch();
-
-  // FES 타임아웃 안전장치
-  if (isStimulating && (millis() - stimStartTime > STIM_TIMEOUT_MS)) {
-    Serial.println("⏰ 자극 시간 초과 → OFF");
-    triggerStimulation(false);
+  // ---- DC 캘리브 완료 → RUNNING 승격 ----
+  if (systemRunning && mcuState == ST_CALIBRATING && !dcCalibrating) {
+    mcuState = ST_RUNNING;
+    sendEvent(EV_CALIB_DONE, (uint8_t)(dcOffset >> 4));   // detail: 측정된 오프셋 상위비트
   }
 
-  delay(1);   // BLE 스택 처리 양보
-}
+  // ---- 세션 명령 + 안전 감독 + 릴레이 액추에이터 (구동은 전부 여기, BLE 콜백 아님) ----
+  serviceSessionCmd();
+  safetySupervisor();
+  actuatorService();
 
-// ============================================================
-// 명령 처리 (BLE write로 수신)
-// ============================================================
-void handleCommand(ArduinoJson::JsonDocument& doc) {
-  String cmd = doc["cmd"].as<String>();
-  Serial.printf("📥 cmd: %s\n", cmd.c_str());
+  // (물리 버튼으로 세션 시작하려면 여기서 버튼 폴링 → startSession(). 앱 시작은 SESSION_CONTROL.)
 
-  if (cmd == "start") {
-    // DC 평균에 종료 펄스나 남은 자극이 섞이지 않도록 먼저 확실히 끈다.
-    triggerStimulation(false);
-    systemRunning = true;
-    completeParalysisProtocol = doc["category"].as<String>() == "C";
-    sessionStartedAtMs = millis();
-    dcOffset = DC_OFFSET_FALLBACK;
-    dcCalibrationSum = 0;
-    dcCalibrationCount = 0;
-    dcCalibrating = true;
-    consecutiveCount = 0;
-    metricCycle = 0;           // 1Hz 느린 로직 사이클을 세션 시작에 정렬
-    historyIdx = 0;
-    historyCount = 0;
-    currentFatigueDetected = false;
-    fatigueDetectedAtMs = 0;
-    currentRMSSlope = 0;
-    currentMDFSlope = 0;
-    baselineReady = false;
-    baselineRMS = 0;
-    baselineRmsSum = 0;
-    baselineRmsSampleCount = 0;
-    rmsRatio = 1.0;
-    envLPF = 0;
-    lastCleanCentered = 0;      // FES blanking hold 값 리셋
-    metricsValid = false;
-    currentRMS = 0;
-    currentMDF = 0;
-    // 10Hz 블록/윈도우 리셋
-    portENTER_CRITICAL(&timerMux);
-    writeIdx = 0;
-    windowCount = 0;
-    windowSum = 0;
-    windowSumSq = 0;
-    bufferFilled = false;
-    samplesSinceCompute = 0;
-    metricReady = false;
-    blockCount = 0;
-    blockRawSum = blockCenteredSum = blockAbsSum = 0;
-    blockPeakAbs = 0;
-    blockMinCentered = 32767;
-    blockMaxCentered = -32768;
-    for (int i = 0; i < RMS_WINDOW; i++) rawBuffer[i] = 0;
-    // RAW 4kHz 스트리밍 상태 리셋 — 인덱스를 세션 시작에 0으로 정렬
-    rawSampleCounter = 0;
-    rawBatchFillCount = 0;
-    rawQueueHead = 0;
-    rawQueueTail = 0;
-    rawQueueCount = 0;
-    portEXIT_CRITICAL(&timerMux);
-    // M-wave 카운터/상태 리셋
-    mwCount = 0;
-    mwCapturing = false;
-    mwSampleCount = 0;
-    mwSampleCountRdy = 0;
-    mwReady = false;
-    mwDirty = false;
-    mwArtifactAtSample = 0;
-    mwArtifactSeen = false;
-    mwArtifactEMA = MW_ADAPT_EMA0;   // 적응형 문턱 초기화 (초기 문턱=기존 고정값)
-    mwArtifactPeak = 0;
-    currentMwAmp = 0;
-    currentMwArea = 0;
-    currentMwLatency = 0;
-    currentMwValid = false;
-    resetFatigueCharts();          // 관리도 baseline 재학습
-    muscleState = "calibrating";
-    // 수축 상태머신 리셋
-    contractState = CS_REST;
-    contractStartMs = 0;
-    contractPeakRMS = 0;
-    prevRMS = 0;
-    burstCount = transientCount = sustainedCount = 0;
-    lastContractType = '-';
-    lastContractDurMs = 0;
-    lastContractPeak = 0;
-    sessionMarker = "session_start";
-    sendFullNext = true;   // 다음 송신은 리셋된 상태값 전부 포함
-    Serial.printf("→ 시작 (DC %d초 캘리브레이션, baseline 30초 이후, protocol=%s)\n",
-            DC_CALIBRATION_MS / 1000,
-            completeParalysisProtocol ? "complete/M-wave" : "voluntary/mixed");
-  }
-  else if (cmd == "stop") {
-    systemRunning = false;
-    sessionMarker = "session_stop";
-    Serial.println("→ 정지");
-    triggerStimulation(false);
-  }
-  else if (cmd == "emergency") {
-    systemRunning = false;
-    sessionMarker = "emergency";
-    Serial.println("🛑 비상정지");
-    triggerStimulation(false);
-  }
-  else if (cmd == "marker") {
-    sessionMarker = doc["label"].as<String>();
-    Serial.printf("📍 마커: %s\n", sessionMarker.c_str());
-  }
-  else if (cmd == "calibrate") {
-    historyIdx = 0;
-    historyCount = 0;
-    consecutiveCount = 0;
-    baselineReady = false;
-    baselineRMS = 0;
-    baselineRmsSum = 0;
-    baselineRmsSampleCount = 0;
-    sessionStartedAtMs = millis();
-    dcOffset = DC_OFFSET_FALLBACK;
-    dcCalibrationSum = 0;
-    dcCalibrationCount = 0;
-    dcCalibrating = true;
-    rmsRatio = 1.0;
-    resetFatigueCharts();          // 관리도 baseline 재학습
-    muscleState = systemRunning ? "calibrating" : "idle";
-    // 수축 상태머신도 리셋
-    contractState = CS_REST;
-    contractStartMs = 0;
-    contractPeakRMS = 0;
-    prevRMS = 0;
-    burstCount = transientCount = sustainedCount = 0;
-    lastContractType = '-';
-    lastContractDurMs = 0;
-    lastContractPeak = 0;
-    sendFullNext = true;
-    Serial.println("→ 캘리브레이션 (베이스라인 + 수축 카운터 리셋)");
-  }
-  else if (cmd == "set_thresholds") {
-    RMS_THRESHOLD = doc["rms"].as<float>();
-    MDF_THRESHOLD = doc["mdf"].as<float>();
-    Serial.printf("→ 임계값: RMS +%.1f%%, MDF %.1f%%\n", RMS_THRESHOLD, MDF_THRESHOLD);
-  }
-  else if (cmd == "trigger_stim") {
-    bool on = doc["on"].as<bool>();
-    triggerStimulation(on);
-  }
-  else {
-    Serial.printf("⚠️ 알 수 없는 명령: %s\n", cmd.c_str());
-  }
-}
-
-// ============================================================
-// 마사지기 제어 (PC817 + IRLZ44N → HV-F022-V)
-// ============================================================
-void triggerStimulation(bool on) {
-  if (on && !isStimulating) {
-    digitalWrite(PIN_MASSAGER_ON_OFF, HIGH);
-    delay(150);
-    digitalWrite(PIN_MASSAGER_ON_OFF, LOW);
-    isStimulating = true;
-    stimStartTime = millis();
-    Serial.println("🔌 마사지기 ON");
-  }
-  else if (!on && isStimulating) {
-    digitalWrite(PIN_MASSAGER_ON_OFF, HIGH);
-    delay(2000);   // long-press로 전원 OFF
-    digitalWrite(PIN_MASSAGER_ON_OFF, LOW);
-    isStimulating = false;
-    Serial.println("🔌 마사지기 OFF (2s long-press)");
-  }
-}
-
-// ============================================================
-// RMS 계산 (RAW 1초치, 평균 자동 제거)
-// DC_OFFSET이 정확하지 않아도 흡수되도록 윈도우 평균을 빼고 RMS.
-// ============================================================
-float calculateRMS(int64_t sum, int64_t sumSq, int n) {
-
-  if (n <= 0) return 0;
-
-  // 창 평균을 빼서 RMS를 계산(= 표본 표준편차). 고정 DC_OFFSET이 실제와 어긋나거나
-  // 전극 드리프트가 있어도 창별 DC를 자동 흡수한다(MDF의 창평균 제거와 동일 취지).
-  double mean = (double)sum / n;
-  double meanSq = (double)sumSq / n;
-  double variance = meanSq - mean * mean;
-  if (variance < 0) variance = 0;      // 부동소수 오차로 음수 되는 것 방지
-
-  double rms = sqrt(variance);
-
-  static int diagCnt = 0;
-
-  if (++diagCnt >= 10) {
-    diagCnt = 0;
-
-    Serial.printf(
-      "[DIAG] raw100=%.0f emg100=%.1f cMean100=%.1f cMin=%d cMax=%d peak100=%d | RMS=%.1f MDF=%.1f ENV=%.1f\n",
-      currentRaw10Hz,
-      currentEmg10Hz,
-      currentCenteredMean10Hz,
-      currentMinCentered10Hz,
-      currentMaxCentered10Hz,
-      currentPeakAbs10Hz,
-      rms,
-      currentMDF,
-      envLPF
-    );
-  }
-
-  return (float)rms;
-}
-
-// ============================================================
-// MDF 계산 (RAW 핀 FFT)
-// ============================================================
-// MDF 계산에서 제외할 대역:
-//  (1) 60Hz 전원 노이즈 + 하모닉(120/180Hz)
-//  (2) FES 자극 배음 — 32.078Hz 의 정수배 (64·96·128·…·449Hz)
-//
-// (2)가 없으면 MDF 는 근육이 아니라 자극을 잰다. 실측(042118 60초 FFT): 20~450Hz 대역
-// 전력의 81.1% 가 자극 배음이다. blanking 으로도 안 없어진다 — M-wave 가 31ms 마다 반복되는
-// 것 자체가 32.078Hz 주기성이고, hold 방식 blanking 은 오히려 31ms 주기 계단 함수를 새로 만든다.
-//
-// F0 = 32.078: ISI '평균' 31.185ms 에서 나온 값. '중앙값' 31ms 로 1000/31=32.258 을 쓰면
-// 오차 0.182×k 라 k=14 에서 2.55Hz 어긋나 ±2Hz 노치가 놓친다(노치 효과 81.1%→68.9%).
-static const float MDF_NOTCH_HZ[] = {60.0f, 120.0f, 180.0f};
-static const float MDF_NOTCH_BW = 2.0f;   // ±2Hz bin 제거
-static const float STIM_F0_HZ = 32.078f;  // 실측 자극 기본주파수 (= 1000/31.185ms)
-static const int   STIM_HARMONIC_MAX = 14;// 450Hz 까지 (32.078×14 = 449.1)
-static inline bool mdfNotched(float freqHz) {
-  for (int k = 0; k < 3; k++) {
-    if (freqHz >= MDF_NOTCH_HZ[k] - MDF_NOTCH_BW &&
-        freqHz <= MDF_NOTCH_HZ[k] + MDF_NOTCH_BW) return true;
-  }
-  for (int k = 1; k <= STIM_HARMONIC_MAX; k++) {
-    float f = STIM_F0_HZ * k;
-    if (f > 450.0f) break;
-    if (freqHz >= f - MDF_NOTCH_BW && freqHz <= f + MDF_NOTCH_BW) return true;
-  }
-  return false;
-}
-
-float calculateMDF(int localWriteIdx) {
-  // 원형 버퍼에서 "가장 최근 FFT_SIZE개"를 시간순으로 읽는다.
-  int start = (localWriteIdx - FFT_SIZE + RMS_WINDOW) % RMS_WINDOW;
-
-  // FFT 윈도우 평균 제거: DC 흔들림이 MDF를 낮은 주파수로 끌고 가는 문제 완화
-  double mean = 0;
-  for (int i = 0; i < FFT_SIZE; i++) {
-    int idx = (start + i) % RMS_WINDOW;
-    mean += rawBuffer[idx];
-  }
-  mean /= FFT_SIZE;
-
-  for (int i = 0; i < FFT_SIZE; i++) {
-    int idx = (start + i) % RMS_WINDOW;
-    vReal[i] = (double)rawBuffer[idx] - mean;
-    vImag[i] = 0;
-  }
-
-  FFT.windowing(FFTWindow::Hamming, FFTDirection::Forward);
-  FFT.compute(FFTDirection::Forward);
-  FFT.complexToMagnitude();
-
-  const float BIN_HZ = (float)SAMPLE_RATE / FFT_SIZE;
-  const float MDF_MIN_HZ = 20.0f;
-  const float MDF_MAX_HZ = 450.0f;
-  int firstBin = max(1, (int)ceil(MDF_MIN_HZ / BIN_HZ));
-  int lastBin  = min((FFT_SIZE / 2) - 1, (int)floor(MDF_MAX_HZ / BIN_HZ));
-
-  double totalPower = 0;
-  for (int i = firstBin; i <= lastBin; i++) {
-    if (mdfNotched((float)i * BIN_HZ)) continue;   // 전원 노이즈 + 자극 배음 제외
-    double power = vReal[i] * vReal[i];
-    totalPower += power;
-  }
-  // 실패는 0 이 아니라 NaN 으로 돌려준다. 0 은 'MDF = 0Hz' 라는 유효값처럼 보여서
-  // 다운스트림(SPC baseline·CSV·학습)에 조용히 섞인다.
-  if (totalPower <= 0.000001) return NAN;
-
-  double halfPower = totalPower / 2.0;
-  double cumPower = 0;
-  for (int i = firstBin; i <= lastBin; i++) {
-    if (mdfNotched((float)i * BIN_HZ)) continue;   // notch 와 동일하게 건너뜀
-    double power = vReal[i] * vReal[i];
-    double prevCum = cumPower;
-    cumPower += power;
-    if (cumPower >= halfPower) {
-      // bin 중심을 그대로 쓰면 MDF 가 BIN_HZ(=1.953Hz) 격자에 양자화된다.
-      // 그러면 baseline 10개가 몇 개 값으로 뭉쳐 σ 가 붕괴하고(실측 σ=1.45Hz=0.74bin),
-      // 2σ 관리한계가 평균에서 1.5bin 아래에 붙어 잡음에도 발동한다(위양성).
-      // 이 bin 안에서 누적전력이 halfPower 를 지나는 지점을 선형보간해 격자를 없앤다.
-      double frac = (power > 0.0) ? (halfPower - prevCum) / power : 0.0;
-      if (frac < 0.0) frac = 0.0;
-      if (frac > 1.0) frac = 1.0;
-      // bin i 는 [i-0.5, i+0.5] 를 대표하므로 그 구간 안에서 보간
-      return (float)((double)i - 0.5 + frac) * BIN_HZ;
-    }
-  }
-  return NAN;
-}
-
-// ============================================================
-// 선형회귀 slope (% 단위)
-// ============================================================
-float calculateSlopePercent(float* history, int count, bool circular) {
-  float sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
-  for (int i = 0; i < count; i++) {
-    int idx = circular ? ((historyIdx - count + i + HISTORY_SIZE) % HISTORY_SIZE) : i;
-    float x = i;
-    float y = history[idx];
-    sumX += x;
-    sumY += y;
-    sumXY += x * y;
-    sumX2 += x * x;
-  }
-  float meanY = sumY / count;
-  if (meanY < 0.01) return 0;
-  float slope = (count * sumXY - sumX * sumY) / (count * sumX2 - sumX * sumX);
-  return (slope * count) / meanY * 100.0;
-}
-
-// ============================================================
-// BLE Notify로 데이터 송신 (기본 10Hz, 그중 1Hz는 full)
-// ----------------------------------------------------------
-// 매 100ms마다 한 줄씩 보낸다.
-// raw/emg/env/rms/mdf/valid 는 모든 행에 들어가므로 CSV가 10Hz로 정렬된다.
-// full 메시지는 여기에 1Hz 상태값(slope/baseline/state machine 등)만 추가된다.
-// ============================================================
-void sendDataUpdate() {
-  if (!deviceConnected || dataChar == nullptr) return;
-
-  unsigned long now = millis();
-  if (now - lastNotifyMs < DATA_THROTTLE_MS) return;
-  lastNotifyMs = now;
-
-  bool full = sendFullNext;
-  sendFullNext = false;
-  sendRmsMdfNext = false;
-  bool hasMarker = sessionMarker.length() > 0;
-
-  ArduinoJson::JsonDocument doc;
-
-  // ===== 항상 보내는 필드 (10Hz) =====
-  doc["ts"]   = now;
-  doc["raw"]  = currentRaw10Hz;          // 100ms 평균 ADC 원값
-  doc["emg"]  = currentEmg10Hz;          // 100ms 평균 |centered|
-  doc["env"]  = envLPF;                  // envelope LPF, 10Hz 송신
-  doc["rms"]  = currentRMS;              // 최근 1초 sliding RMS, 10Hz 계산
-  doc["mdf"]  = currentMDF;              // 최근 512ms MDF, 10Hz 계산
-  doc["v"]    = metricsValid;            // 초기 1초 전에는 false
-  doc["run"]  = systemRunning;
-  // FES 외부 수동 제어 → 세션 동작 중을 '자극 중'으로 보고 (앱 엔진·CSV 일관성).
-  doc["stim"] = systemRunning;
-  doc["fd"]   = currentFatigueDetected;
-  if (hasMarker) {
-    doc["mk"] = sessionMarker;
-    sessionMarker = "";          // 마커는 1회만 전송
-  }
-
-  // ===== M-wave 메트릭 (새 검출이 있을 때만) =====
-  if (mwDirty) {
-    doc["mwa"] = currentMwAmp;
-    doc["mwc"] = currentMwArea;
-    doc["mwl"] = currentMwLatency;
-    doc["mwv"] = currentMwValid;    // 검출 신뢰도 플래그 (CSV MW_Valid 컬럼)
-    doc["mwn"] = mwCount;
-    mwDirty = false;
-  }
-
-  // rms/mdf는 위에서 모든 10Hz 행에 항상 포함한다.
-
-  // ===== full 메시지에만 (1Hz) =====
-  if (full) {
-    doc["rs"]   = currentRMSSlope;
-    doc["ms"]   = currentMDFSlope;
-    doc["hc"]   = historyCount;
-    doc["cc"]   = consecutiveCount;
-    doc["b"]    = baselineRMS;
-    doc["rr"]   = rmsRatio;
-    doc["st"]   = muscleState;
-    doc["cm"]   = currentCenteredMean10Hz;
-    doc["pk"]   = currentPeakAbs10Hz;
-    doc["dco"]  = dcOffset;
-    doc["dcc"]  = !dcCalibrating;
-    doc["proto"] = completeParalysisProtocol ? "complete" : "mixed";
-
-    // 수축 상태머신
-    doc["cs"]   = (int)contractState;
-    doc["cd"]   = (contractState != CS_REST)
-                    ? (uint32_t)(now - contractStartMs) : 0;
-    doc["lt"]   = String((char)lastContractType);
-    doc["ld"]   = lastContractDurMs;
-    doc["lp"]   = lastContractPeak;
-    doc["bc"]   = burstCount;
-    doc["sc"]   = sustainedCount;
-    doc["tc"]   = transientCount;
-
-    // 임계값은 매 10초마다만
-    if ((now / 1000) % 10 == 0) {
-      doc["rt"] = RMS_THRESHOLD;
-      doc["mt"] = MDF_THRESHOLD;
-      doc["ct"] = CONSECUTIVE_TRIGGER;
-    }
-  }
-
-  String json;
-  ArduinoJson::serializeJson(doc, json);
-
-  dataChar->setValue((uint8_t*)json.c_str(), json.length());
-  dataChar->notify();
-}
-
-// ============================================================
-// RAW 4kHz 파형 바이너리 송신
-// ----------------------------------------------------------
-// 완성된 100표본 블록을 [uint32 firstSampleIndex][uint16 count][int16 raw×count]
-// 형식(little-endian)으로 rawChar에 notify. 한 패킷 = 6 + 200 = 206바이트.
-// (MTU 247 협상 기준. 폰에서 count/길이를 검증하므로 잘린 패킷은 폐기됨)
-// ============================================================
-void sendRawBatch() {
-  if (!deviceConnected || rawChar == nullptr) return;
-  if (rawQueueCount <= 0) return;
-
-  uint32_t firstIdx;
-  int16_t local[RAW_BATCH_SAMPLES];
-
-  portENTER_CRITICAL(&timerMux);
-  if (rawQueueCount <= 0) { portEXIT_CRITICAL(&timerMux); return; }
-  firstIdx = rawQueueFirstIdx[rawQueueHead];
-  for (int i = 0; i < RAW_BATCH_SAMPLES; i++) local[i] = rawQueue[rawQueueHead][i];
-  rawQueueHead = (rawQueueHead + 1) % RAW_QUEUE_DEPTH;
-  rawQueueCount--;
-  portEXIT_CRITICAL(&timerMux);
-
-  uint8_t buf[6 + 2 * RAW_BATCH_SAMPLES];
-  buf[0] = firstIdx & 0xFF;
-  buf[1] = (firstIdx >> 8) & 0xFF;
-  buf[2] = (firstIdx >> 16) & 0xFF;
-  buf[3] = (firstIdx >> 24) & 0xFF;
-  buf[4] = RAW_BATCH_SAMPLES & 0xFF;
-  buf[5] = (RAW_BATCH_SAMPLES >> 8) & 0xFF;
-  for (int i = 0; i < RAW_BATCH_SAMPLES; i++) {
-    int16_t v = local[i];
-    buf[6 + 2 * i]     = v & 0xFF;
-    buf[6 + 2 * i + 1] = (v >> 8) & 0xFF;
-  }
-
-  rawChar->setValue(buf, 6 + 2 * RAW_BATCH_SAMPLES);
-  rawChar->notify();
-}
-
-// ============================================================
-// 수축 상태머신 — 매 1초 RMS 계산 직후 호출
-// ----------------------------------------------------------
-// 상태: REST → ONSET → SUSTAINED → (종료 시 라벨링 후) REST
-//
-// 활성 조건:  currentRMS > baselineRMS × CONTRACT_ACTIVE_RATIO
-// onset 조건: 활성 + ΔRMS > +DRMS_ONSET
-// 종료 조건: 비활성 OR ΔRMS < DRMS_OFFSET
-//
-// 종료 시 지속시간으로 라벨 부여:
-//   < 2s        → 'b' burst    (일시적 떨림, 분석 제외 권장)
-//   2~5s        → 't' transient (애매)
-//   ≥ 5s        → 's' sustained (분석에 유효)
-// ============================================================
-void updateContractionState() {
-  if (!systemRunning || !baselineReady) {
-    contractState = CS_REST;
-    prevRMS = currentRMS;
-    return;
-  }
-
-  unsigned long now = millis();
-  float drms = currentRMS - prevRMS;
-  bool active = (currentRMS > baselineRMS * CONTRACT_ACTIVE_RATIO);
-
-  switch (contractState) {
-    case CS_REST:
-      if (active && drms > DRMS_ONSET) {
-        contractState = CS_ONSET;
-        contractStartMs = now;
-        contractPeakRMS = currentRMS;
-      }
-      break;
-
-    case CS_ONSET:
-    case CS_SUSTAINED:
-      if (currentRMS > contractPeakRMS) contractPeakRMS = currentRMS;
-
-      if (!active || drms < DRMS_OFFSET) {
-        // 종료 → 라벨링
-        unsigned long dur = now - contractStartMs;
-        lastContractDurMs = dur;
-        lastContractPeak  = contractPeakRMS;
-
-        if (dur < BURST_MAX_MS) {
-          lastContractType = 'b';
-          burstCount++;
-        } else if (dur >= SUSTAINED_MIN_MS) {
-          lastContractType = 's';
-          sustainedCount++;
-        } else {
-          lastContractType = 't';
-          transientCount++;
-        }
-
-        Serial.printf("💪 contract end: %c, dur=%lums, peak=%.0f\n",
-                      lastContractType, lastContractDurMs, lastContractPeak);
-
-        contractState = CS_REST;
-        contractPeakRMS = 0;
-      } else if (contractState == CS_ONSET &&
-                 (now - contractStartMs > ONSET_TO_SUSTAINED_MS)) {
-        contractState = CS_SUSTAINED;
-      }
-      break;
-  }
-
-  prevRMS = currentRMS;
+  vTaskDelay(1);   // BLE/IDLE 양보 (delay() 대신 — 다른 태스크 굶기지 않음)
 }
