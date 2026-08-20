@@ -4,6 +4,7 @@ import '../core/subject_category.dart';
 import '../services/profile_service.dart';
 import '../widgets/profile/profile_edit_dialog.dart';
 import 'home_page.dart';
+import 'refit_monitor_screen.dart';
 
 class ProfileSelectScreen extends StatefulWidget {
   const ProfileSelectScreen({super.key});
@@ -15,11 +16,19 @@ class ProfileSelectScreen extends StatefulWidget {
 class _ProfileSelectScreenState extends State<ProfileSelectScreen> {
   SubjectCategory? _filter; // null = 전체
 
+  // 펌웨어가 두 세대 공존한다. v0.2(REFIT-FES-01·바이너리)는 M-wave 에폭만 보내고,
+  // 구펌웨어(EMG-FES-01·JSON)는 ENV/RMS/MDF 를 보낸다. 두 화면은 데이터 모델이
+  // 달라 합칠 수 없으므로 진입 시 고른다. 기본은 v0.2.
+  bool _legacyMode = false;
+
   Future<void> _enter(String profileId) async {
     await gProfileService.setActive(profileId);
     if (!mounted) return;
     Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (_) => const HomePage()),
+      MaterialPageRoute(
+        builder: (_) =>
+            _legacyMode ? const HomePage() : const RefitMonitorScreen(),
+      ),
     );
   }
 
@@ -110,6 +119,8 @@ class _ProfileSelectScreenState extends State<ProfileSelectScreen> {
                 style: TextStyle(color: Colors.black38, fontSize: 12),
               ),
               const SizedBox(height: 16),
+              _buildFirmwareRow(),
+              const SizedBox(height: 10),
               _buildFilterRow(all.length, counts),
               const SizedBox(height: 12),
               Expanded(
@@ -148,6 +159,35 @@ class _ProfileSelectScreenState extends State<ProfileSelectScreen> {
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildFirmwareRow() {
+    return Row(
+      children: [
+        const Text(
+          '펌웨어',
+          style: TextStyle(color: Colors.black38, fontSize: 11),
+        ),
+        const SizedBox(width: 8),
+        _filterChip(
+          label: 'v0.2 M-wave',
+          count: 0,
+          selected: !_legacyMode,
+          color: Colors.green.shade800,
+          onTap: () => setState(() => _legacyMode = false),
+          showCount: false,
+        ),
+        const SizedBox(width: 6),
+        _filterChip(
+          label: '구버전 RMS/MDF',
+          count: 0,
+          selected: _legacyMode,
+          color: Colors.black54,
+          onTap: () => setState(() => _legacyMode = true),
+          showCount: false,
+        ),
+      ],
     );
   }
 
@@ -191,6 +231,7 @@ class _ProfileSelectScreenState extends State<ProfileSelectScreen> {
     required Color color,
     required VoidCallback onTap,
     bool dimmed = false,
+    bool showCount = true,
   }) {
     return Material(
       color: Colors.transparent,
@@ -206,7 +247,7 @@ class _ProfileSelectScreenState extends State<ProfileSelectScreen> {
             borderRadius: BorderRadius.circular(4),
           ),
           child: Text(
-            '$label  $count',
+            showCount ? '$label  $count' : label,
             style: TextStyle(
               color: selected ? color : Colors.black54,
               fontSize: 11,

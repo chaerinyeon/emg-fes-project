@@ -8,6 +8,12 @@ const String kRawCharUuid =
     '6e400004-b5a3-f393-e0a9-e50e24dcca9e'; // RAW 1kHz 파형 (binary notify)
 const String kDeviceName = 'EMG-FES-01';
 
+// v0.2 바이너리 펌웨어의 광고 이름. 서비스/캐릭터리스틱 UUID 는 구펌웨어와 **같으므로**
+// 스캔 필터만으로는 구분되지 않는다 — 이름으로 갈라야 엉뚱한 쪽에 붙지 않는다.
+// (UP notify = kDataCharUuid, DOWN write = kCmdCharUuid 를 그대로 재사용한다.
+//  v0.2 엔 kRawCharUuid 채널이 없다 — 연속 RAW 스트리밍은 제거됐다.)
+const String kRefitDeviceName = 'REFIT-FES-01';
+
 // ===== 색상 =====
 const Color cEnv = Color(0xFF1976D2); // 파랑
 const Color cRms = Color(0xFF2E7D32); // 초록
