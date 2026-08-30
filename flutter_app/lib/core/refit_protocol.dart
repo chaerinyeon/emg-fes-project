@@ -1,7 +1,7 @@
 // RE:FIT BLE 바이너리 프로토콜 v0.2 코덱.
 //
 // 계약 원문: docs/RE-FIT_BLE_Protocol_v0.2.md
-// 펌웨어:    firmware/emg_fes_controller/emg_fes_controller.ino
+// 펌웨어:    firmware/emg_fes_controller/emg_fes_controller.ino (v0.3.2)
 //
 // Flutter 의존성 없는 순수 Dart — BLE 전송 계층과 분리해 두면 CSV 재생·테스트에서
 // 그대로 재사용할 수 있다. 여기서는 바이트만 다루고 상태는 갖지 않는다(seq 제외).
@@ -41,6 +41,19 @@ const int kEvRestEnd = 2;
 const int kEvSessionStop = 3;
 const int kEvFault = 4;
 const int kEvCalibDone = 5;
+/// [펌웨어 v0.3.2] 명령 거부 통지. detail = (cmd<<4) | reason.
+///   reason 1=세션 미실행 · 2=상태 부적합(캘리브 중·IDLE·FAULT) · 3=이미 자극 중.
+/// lastCmdSeqAck 는 수신 확인일 뿐이라, 거부를 알 방법이 이 이벤트뿐이다.
+const int kEvCmdRejected = 6;
+
+/// STATUS.mcuState 값. 명령 게이트가 이 값을 본다 — SAFE_HOLD·STIM_OFF 에서
+/// JUDGMENT 를 보내면 안 된다(판정층 사양서 9장).
+const int kStateIdle = 0;
+const int kStateCalibrating = 1;
+const int kStateRunning = 2;
+const int kStateSafeHold = 3;
+const int kStateStimOff = 4;
+const int kStateFault = 5;
 
 const List<String> kMcuStateNames = [
   'IDLE',
@@ -60,6 +73,7 @@ String eventName(int id) => switch (id) {
   kEvSessionStop => 'SESSION_STOP',
   kEvFault => 'FAULT',
   kEvCalibDone => 'CALIB_DONE',
+  kEvCmdRejected => 'CMD_REJECTED',
   _ => 'EVENT_$id',
 };
 
@@ -121,7 +135,8 @@ class EpochMsg extends RefitMessage {
   /// 추세에 넣어도 되는 에폭인가. 포화된 것은 값이 잘려 있어 R 을 믿을 수 없다.
   bool get usableForTrend => valid && !saturated;
 
-  /// M-wave 면적 = Σ|표본|. 정규화 전 원시량.
+  /// M-wave 면적 = Σ|표본|. **이것이 1차 피로 지표다**(사양서 6장 3항).
+  /// 물리 단위 환산은 [areaMs].
   int get area {
     var a = 0;
     for (final v in samples) {
@@ -130,9 +145,15 @@ class EpochMsg extends RefitMessage {
     return a;
   }
 
-  /// 검증된 피로 지표 R = 면적 ÷ 자극 스파이크.
-  /// 전극 드리프트는 분자·분모를 함께 움직여 상쇄되고 근육 피로만 남는다.
-  /// 정규화 없는 생 M-wave 는 전극이 밀린 것만으로 위양성이 난다.
+  /// 사양서 단위의 면적 = Σ|centered| × 1000/fs (ADC·ms). fs=1000 이면 [area] 와 같다.
+  /// 판정 코어는 이 값을 쓴다 — fs 가 바뀌어도 궤적이 배수로 튀지 않는다.
+  double areaMs(int fs) => fs <= 0 ? area.toDouble() : area * 1000.0 / fs;
+
+  /// R = 면적 ÷ 자극 스파이크. **판정에는 쓰지 않는다**(사양서 6장 3항 · P3).
+  /// 1kHz 에서 스파이크 창(0~+2ms)에 표본이 2개뿐이라 분모에 해상도가 없고, 전극이
+  /// 자리를 잡는 세션 초반에는 분모만 크게 움직여 R 이 거꾸로 오른다
+  /// (2026-08-24 182355 실측: 앞 55s 스파이크 −51% · 면적 +21% → R 이 피로를 가린다).
+  /// 참고 열로만 남기고 추세 판단은 [area] 로 한다. spike 는 포화·유효성 판단 전용.
   double get r {
     final s = spike.abs();
     return s == 0 ? 0 : area / s;
@@ -277,25 +298,30 @@ Uint8List _seal(Uint8List body) {
   return out;
 }
 
-/// SESSION_CONTROL — 8바이트. [cmd] 는 kSc* 중 하나.
-Uint8List buildSessionControl(int cmd, {int seq = 0, int sessionId = 0}) {
-  final body = Uint8List(7);
+/// SESSION_CONTROL — 기본 8바이트, **STIM_ENABLE(3)만 9바이트**([7]=목표레벨).
+///
+/// 8바이트로 보내면 펌웨어가 목표레벨을 0 으로 읽어 전원만 켜고 currentLevel 이
+/// 0 에 머문다. 그러면 relayStepDown() 의 currentLevel>0 가드에 걸려 이후 DECREASE
+/// 가 전량 무시된다 — 폰이 피로를 정확히 잡아도 세기가 안 줄어든다(폐루프 사망).
+/// 그래서 STIM_ENABLE 은 레벨 지정이 없어도 항상 9바이트로 보낸다.
+Uint8List buildSessionControl(
+  int cmd, {
+  int? level,
+  int seq = 0,
+  int sessionId = 0,
+}) {
+  final withLevel = cmd == kScStimEnable;
+  final body = Uint8List(withLevel ? 8 : 7);
   body.setRange(0, 6, _header(kMsgSessionControl, seq, sessionId));
   body[6] = cmd;
+  if (withLevel) body[7] = (level ?? 0).clamp(0, 255);
   return _seal(body);
 }
 
-/// HEARTBEAT — 11바이트. 워치독 유지가 유일한 목적. 500ms 주기 권장.
-Uint8List buildHeartbeat({int seq = 0, int sessionId = 0, int? phoneMs}) {
-  final body = Uint8List(10);
-  body.setRange(0, 6, _header(kMsgHeartbeat, seq, sessionId));
-  ByteData.sublistView(body).setUint32(
-    6,
-    (phoneMs ?? DateTime.now().millisecondsSinceEpoch) & 0xFFFFFFFF,
-    Endian.little,
-  );
-  return _seal(body);
-}
+/// HEARTBEAT — 7바이트(헤더6+CRC1). 워치독 유지가 유일한 목적. 2초 이내 주기 필수.
+/// 펌웨어는 페이로드를 읽지 않으므로 phoneMs 를 싣지 않는다(계약 4.2 P3 · 7B 통일).
+Uint8List buildHeartbeat({int seq = 0, int sessionId = 0}) =>
+    _seal(_header(kMsgHeartbeat, seq, sessionId));
 
 /// JUDGMENT — 19바이트. [targetLevel] 은 **절대 목표 세기**(상대 증감 아님).
 /// 장치 세기를 읽을 수 없어 current_level 이 추정치이므로, 상대 증감은 오차가

@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import '../core/refit_protocol.dart';
 import '../services/profile_service.dart';
 import '../services/refit_ble_service.dart';
+import '../services/refit_session.dart';
 
 class RefitMonitorScreen extends StatefulWidget {
   const RefitMonitorScreen({super.key});
@@ -19,6 +20,10 @@ class RefitMonitorScreen extends StatefulWidget {
 
 class _RefitMonitorScreenState extends State<RefitMonitorScreen> {
   final _svc = RefitBleService();
+
+  /// 방식 A — 사용자가 고르는 목표 강도. 알고리즘은 절대 이 값을 올리지 않는다.
+  /// 자동 경로는 안전 방향(HOLD/DOWN/STOP)뿐이다(사양서 2·9장).
+  int _targetLevel = 1;
 
   @override
   void initState() {
@@ -72,10 +77,14 @@ class _RefitMonitorScreenState extends State<RefitMonitorScreen> {
   }
 
   Future<void> _stim(bool on) async {
-    final ok = on ? await _svc.enableStim() : await _svc.disableStim();
+    final ok = on
+        ? await _svc.enableStim(_targetLevel)
+        : await _svc.disableStim();
     _toast(
       ok
-          ? (on ? 'STIM_ENABLE 전송' : 'STIM_DISABLE 전송')
+          ? (on
+                ? 'STIM_ENABLE(9B) 전송 — 목표 $_targetLevel단, MCU가 0→$_targetLevel 램프'
+                : 'STIM_DISABLE 전송')
           : (_svc.lastError ?? '전송 실패'),
       ok ? Colors.green : Colors.red,
     );
@@ -227,15 +236,58 @@ class _RefitMonitorScreenState extends State<RefitMonitorScreen> {
                 ),
               ],
             ),
+            const SizedBox(height: 12),
+            _levelPicker(),
             const SizedBox(height: 8),
             const Text(
-              '기록 시작은 자극을 켜지 않는다. 마사지기 전원·세기는 사람이 직접 조작하며, '
+              '기록 시작은 자극을 켜지 않는다. 세기는 여기서 고른 값만 쓰이며 알고리즘은 '
+              '절대 올리지 않는다(방식 A) — 자동 경로는 유지·하강·정지뿐이다. '
               '앱의 「자극 투입」은 릴레이 배선이 끝난 뒤에만 실제로 동작한다.',
               style: TextStyle(color: Colors.black45, fontSize: 11),
             ),
           ],
         ),
       ),
+    );
+  }
+
+  // ---------- 목표 강도(방식 A) ----------
+  Widget _levelPicker() {
+    // MAX_LEVEL 은 STATUS 로 받은 런타임 값을 쓴다 — 펌웨어 상수가 아직 미확정이라
+    // 앱에 하드코딩하면 안 된다(HV-F022-V 실제 단계 수 실측 필요).
+    final max = _svc.status?.maxLevel ?? 0;
+    final n = max > 0 ? max : 10;
+    if (_targetLevel > n) _targetLevel = n;
+    final locked = _svc.stimOn; // 투입 후에는 사용자도 UP 하지 않는다(하강 래칫)
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Text('목표 강도', style: TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(width: 8),
+            Text(
+              max > 0 ? 'MAX $max (STATUS)' : 'MAX 미확인 — 임시 10',
+              style: TextStyle(
+                fontSize: 11,
+                color: max > 0 ? Colors.black45 : Colors.orange.shade800,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Wrap(
+          spacing: 6,
+          children: List.generate(n, (i) {
+            final lv = i + 1;
+            return ChoiceChip(
+              label: Text('$lv'),
+              selected: _targetLevel == lv,
+              onSelected: locked ? null : (_) => setState(() => _targetLevel = lv),
+            );
+          }),
+        ),
+      ],
     );
   }
 
@@ -280,11 +332,59 @@ class _RefitMonitorScreenState extends State<RefitMonitorScreen> {
                 color: Colors.red.shade700,
               ),
             if (_svc.csvPath != null) _stat('CSV', '저장 중', color: Colors.green),
+            _stat(
+              '단계',
+              switch (_svc.session.lastBurst?.stage) {
+                RefitStage.danger => '위험',
+                RefitStage.warning => '경고',
+                RefitStage.caution => '주의',
+                RefitStage.normal => '정상',
+                null => '—',
+              },
+              color: switch (_svc.session.lastBurst?.stage) {
+                RefitStage.danger => Colors.red.shade700,
+                RefitStage.warning => Colors.deepOrange,
+                RefitStage.caution => Colors.orange.shade800,
+                _ => null,
+              },
+            ),
+            _stat(
+              '기준',
+              switch (_svc.session.phase) {
+                0 => '전위 통과 중',
+                1 => '학습 중',
+                _ => 'CL ${_svc.session.cl0.toStringAsFixed(0)}'
+                    '±${_svc.session.sigma0.toStringAsFixed(0)}',
+              },
+              color: _svc.session.phase < 2 ? Colors.blue.shade700 : null,
+            ),
+            _stat(
+              'DOWN 여유',
+              _fmtMargin(_svc.session.lastBurst?.downMarginSigma),
+            ),
+            _stat(
+              'STOP 여유',
+              _fmtMargin(_svc.session.lastBurst?.stopMarginSigma),
+            ),
+            if (_svc.lastCommand != null)
+              _stat(
+                '최근 명령',
+                switch (_svc.lastCommand!.action) {
+                  RefitAction.decrease => 'DOWN→${_svc.lastCommand!.targetLevel}',
+                  RefitAction.stop => 'STOP',
+                  RefitAction.hold => 'HOLD',
+                },
+                color: Colors.red.shade700,
+              ),
           ],
         ),
       ),
     );
   }
+
+  /// 관리하한까지 남은 여유를 σ 단위로. 양수면 이미 하한 아래(피로 방향)다.
+  static String _fmtMargin(double? m) =>
+      (m == null || !m.isFinite) ? '—' : '${m.toStringAsFixed(1)}σ';
 
   Widget _stat(String label, String value, {Color? color}) {
     return Column(

@@ -36,6 +36,68 @@
          표시가 없으면 폰이 그 에폭을 그대로 추세에 먹인다. 예약 비트를 채운 것이라
          프로토콜 버전은 그대로다(구 리더는 무시).
 
+  === v0.3 (실데이터 진단 반영 — 자동 UP 제거, "방식 A") ===
+  근거: 수집 세션(1kHz, C_complete 포함) 4축 진단 결과.
+    · M-wave 궤적의 지배적 특징은 수십 초 규모의 '저주파 wandering'(감소↔증가 반복)이며,
+      과반 세션에서 면적이 자극 스파이크와 무관(|r|<0.3)했다 → 진동은 대부분 마사지기 변조나
+      정류 노이즈 같은 '고칠 수 있는 아티팩트'가 아니라 완전마비 M-wave 자체의 생리적 흔들림.
+    · 반등(최저점 대비 되올라감)이 기준값의 46~56%에 달해, 상승분을 '회복'으로 신뢰할 수 없다.
+      → 자동 UP 을 신호로 판단하는 것은 어떤 정규화·평활로도 안전하게 성립하지 않는다.
+  [결정] 자동 세기 상향(algorithm-driven INCREASE)을 기본 비활성화한다(ENABLE_AUTO_INCREASE=0).
+         피로 판정 채널(JUDGMENT)은 이제 HOLD/DECREASE/STOP 만 자동 수행한다. 세기 상향(dose)은
+         사용자/임상이 설정하는 값이며 M-wave 판정으로 올리지 않는다.
+  [효과] 자동 경로가 오직 안전 방향(DOWN/STOP)만 갖는다. 한 번 내려간 세기가 반등에 다시
+         자동으로 올라오지 않으므로 '하강 래칫'이 코드가 아니라 구조로 보장된다.
+  [보존] ENABLE_AUTO_INCREASE=1 로 두면 옛 게이트가 살아나되, 설계 2.3 정합으로 조였다:
+         신뢰도 '높음'만(REL_MED 불가) + INCREASE 간 쿨다운 강제. 향후 '방식 C'(천장 이내
+         bounded 복귀) 재도입 시 이 경로를 쓴다. 지금은 꺼져 있다.
+  주의: BLE 와이어 포맷은 불변이므로 PROTOCOL_VERSION 은 0x02 그대로다(v0.3 은 정책 변경).
+  한계: currentLevel 은 개루프 추정이라 사람이 세기를 직접 만지면 실물과 어긋난다. 폐루프 DOWN 이
+        정확히 동작하려면 세기 상향도 MCU 를 거쳐(수동이라도 UP 핀을 MCU 가 눌러) currentLevel 을
+        갱신해야 한다. 순수 수동 조작은 DOWN 명령을 무력화할 수 있다(사후 통합 시 확정).
+
+  === v0.3.1 (방식 A 통합 결함 수정 — 사용자 UP 경로 신설) ===
+  문제(v0.3): 폰이 사용자 목표강도를 MCU 에 올릴 경로가 없었다. JUDGMENT 의 INCREASE 는
+    ENABLE_AUTO_INCREASE=0 이라 전부 거부되고, SC_STIM_ENABLE 은 항상 레벨 0 에서 전원만 켰다.
+    → 사용자 강도가 자극에 반영되지 않고(레벨 0 고정), currentLevel 이 0 에 머물러 relayStepDown 의
+      currentLevel>0 가드에 걸려 폰의 DOWN 명령까지 무력화됐다(폐루프가 돌지 않음).
+  [수정] SC_STIM_ENABLE 에 '목표레벨' 바이트를 추가한다(9바이트: 헤더6+cmd1+level1+crc1).
+         자극 투입 시 0 → 목표레벨까지 '사용자 권한 램프'를 1회 수행한다. 이는 세션명령 경로라
+         알고리즘 자동 UP(JUDGMENT-INCREASE) 차단과 무관하며, 방식 A(사용자가 강도 설정)를 만족한다.
+  [효과] (a) 사용자 UP 이 MCU 를 거쳐 currentLevel 이 정확해지고, (b) 이후 폰의 DECREASE 가 실제로
+         동작한다. 자동 UP 차단(방식 A)은 그대로 유지된다.
+  [호환] 구버전 8바이트 STIM_ENABLE 이 오면 목표레벨 0 으로 간주(전원만 켬 = 종전 동작). 와이어
+         포맷은 하위호환 확장이라 PROTOCOL_VERSION 은 0x02 유지. 폰은 STIM_ENABLE 을 9바이트로 보낸다.
+  주의: 램프는 비블로킹 큐라 물리적으로 ~350ms/단계 걸린다. currentLevel 은 즉시 목표로 갱신되지만
+        실물 도달까지 시차가 있으므로, 폰은 STATUS.currentLevel 이 목표에 도달할 때까지(그리고 워밍업/
+        재기준 정착 동안) 판정을 유예해야 한다(폰측 처리 — 로직 흐름도 참조).
+
+  === v0.3.2 (STIM_OFF 흡수상태 해소 · 사문 이벤트 정리 · 거부 통지) ===
+  문제1(치명): ST_STIM_OFF 에서 ST_RUNNING 으로 돌아오는 전이가 코드에 아예 없었다. 복귀 경로는
+    SAFE_HOLD→RUNNING 하나뿐인데 SC_STIM_ENABLE 은 mcuState==ST_RUNNING 만 받았다.
+    → 데드맨(8s)이나 하드리밋(3분)으로 한 번 STIM_OFF 에 들어가면 자극을 다시 켜는 방법이
+      세션 재시작(START)뿐이고, START 는 sessionId 를 올려 폰의 running-max·σ·stage 래치를
+      전부 리셋한다. 실측 세션 31개 중 21개가 180s 를 넘으므로(중앙값 265.6s) 대부분의 세션에서
+      3분마다 피로 추세가 통째로 사라졌다 — 폐루프가 성립하지 않는다.
+  [수정] STIM_ENABLE 을 ST_STIM_OFF·ST_SAFE_HOLD 에서도 받는다(다운링크 신선 시). 사용자가
+    명시적으로 다시 누른 경우에만 자극을 재투입하고 세션·기록·sessionId 는 그대로 이어간다.
+    복귀 시 healthFlags 의 워치독·하드리밋 비트를 지운다. 기록은 STIM_OFF 에서도 계속 살아
+    있었으므로(에폭 방출은 mcuState 와 무관) 세션 연속성은 원래 있었고, 막힌 건 자극뿐이었다.
+  [주의] 하드리밋 복귀는 새 3분 창을 연다. 재투입 전 사용자 확인은 앱 책임이다. 하드리밋 값
+    (STIM_TIMEOUT_MS)과 재투입 최소 휴식은 재활 1회 자극 지속시간 확정 후 결정 — 이번엔 안 건드렸다.
+  문제2: EV_REST_END(2)가 정의만 있고 한 번도 송신되지 않는 사문(死文)이었다 — 폰이 오지 않을
+    이벤트를 기다리게 된다.
+  [수정] '자극 공백의 종료' 신호로 확정한다. 재투입 시에만 보낸다(detail 1=STIM_OFF 복귀 ·
+    2=정상 상태에서 사용자 재개). 폰은 이 시점에 running-max 를 재시드하고 판정을 정착창만큼
+    유예해야 한다 — 자극이 끊겼다 돌아오면 M-wave 도 함께 튀는데 그걸 피로로 읽으면 DOWN 이
+    헛나간다(설계 7장 '레벨변화 후 재기준'과 같은 근거). 최초 투입은 공백의 끝이 아니라 제외.
+  문제3: STIM_ENABLE 이 상태 불일치로 거부돼도 조용히 폐기됐다. 펌웨어는 실행 여부와 무관하게
+    lastCmdSeqAck 를 갱신하므로 폰이 ACK 를 '적용됨'으로 오해한다(계약 4.2 P3).
+  [수정] EV_CMD_REJECTED(6) 신설. detail=(cmd<<4)|reason. evId 값 추가일 뿐 EVENT 13바이트
+    포맷은 불변이라 PROTOCOL_VERSION 은 0x02 유지(구 리더는 EVENT_6 으로 흘린다).
+  [미해결] MAX_LEVEL=10 은 여전히 미확정이다(HV-F022-V 실제 단계 수 실측 필요). 앱은 이 값을
+    하드코딩하지 말고 STATUS.MAX_LEVEL 을 런타임에 읽어 강도 UI 범위로 써야 한다.
+
   하드웨어: MyoWare 2.0 Wireless Shield(ESP32) · PC817+IRLZ44N → Omron HV-F022-V
   라이브러리: NimBLE-Arduino v2.x  (ArduinoJson·arduinoFFT 불필요 — 제거됨)
 */
@@ -46,6 +108,7 @@
 // ===================== 프로토콜 v0.2 =====================
 // [수정] 0x01 → 0x02 : EPOCH 레이아웃(sample_index 추가·t_ms 의미 변경)과 JUDGMENT 최소
 //   길이가 둘 다 바뀌었다. 버전을 올려야 구버전 펌웨어/툴과 조용히 섞이지 않는다.
+//   v0.3 은 와이어 포맷 변경이 없으므로 이 값은 그대로 0x02.
 #define PROTOCOL_VERSION      0x02
 // msg_type (uplink 0x0X / downlink 0x1X)
 #define MSG_EPOCH             0x01
@@ -60,6 +123,9 @@
 #define EV_SESSION_STOP       3
 #define EV_FAULT              4
 #define EV_CALIB_DONE         5
+// [v0.3.2] 명령 거부 통지. detail = (cmd<<4) | reason.
+//   reason: 1=세션 미실행 · 2=상태 부적합(캘리브 중·IDLE·FAULT) · 3=이미 자극 중.
+#define EV_CMD_REJECTED       6
 // JUDGMENT action
 #define ACT_HOLD              0
 #define ACT_DECREASE          1
@@ -72,10 +138,21 @@
 // SESSION_CONTROL cmd
 //   START/STOP 은 "기록"의 시작·정지, STIM_ENABLE/DISABLE 은 "자극"의 투입·차단으로 분리한다.
 //   로그 전용 검증(자극 없이 에폭만 수집)이 별도 빌드 없이 가능해야 하기 때문.
+//   [v0.3.1] SC_STIM_ENABLE 은 뒤에 목표레벨 1바이트를 싣는다(9바이트). d[7]=목표레벨(0~MAX_LEVEL).
+//            투입 시 0→목표까지 사용자 권한 램프. 나머지 명령은 8바이트(레벨 없음).
 #define SC_REQUEST_START      1
 #define SC_REQUEST_STOP       2
 #define SC_STIM_ENABLE        3
 #define SC_STIM_DISABLE       4
+
+// ===================== [v0.3] 자동 세기 정책 =====================
+// 자동 UP(algorithm-driven INCREASE) 활성화 플래그. 기본 0 = "방식 A"(자동 UP 없음).
+//   실데이터 진단상 M-wave 저주파 wandering(반등 46~56%)이 지배적이라 상승분을 회복으로
+//   신뢰할 수 없다 → 자동 상향은 안전하게 성립하지 않는다. DOWN/STOP 만 자동 수행한다.
+//   1 로 바꾸면 '방식 C' 재도입용 게이트(REL_HIGH + 쿨다운)가 살아난다. 지금은 꺼둔다.
+#define ENABLE_AUTO_INCREASE  0
+// INCREASE 간 최소 간격(자동 UP 을 켰을 때만 의미). 폰이 5Hz 로 밀어도 이 간격 미만이면 거부.
+const unsigned long T_INCREASE_COOLDOWN_MS = 4000;
 
 // ===================== BLE UUID (Nordic UART 호환) =====================
 #define SERVICE_UUID   "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
@@ -93,8 +170,9 @@ const int PIN_MASSAGER_DOWN  = 26;
 
 // ===================== 샘플링 =====================
 // [결정] 1kHz 채택: M-wave는 저주파(97%<250Hz)라 1kHz면 진폭 정합 3% 이내(다운샘플 실험).
-//   에폭만 전송하므로(연속 raw 아님) BLE 부하 문제 없음. 4kHz로 올리려면 이 값만 4000으로.
-//   (4kHz는 스파이크창 표본이 ~4개라 R-정규화(면적÷스파이크) 해상도만 유리)
+//   에폭만 전송하므로(연속 raw 아님) BLE 부하 문제 없음.
+//   [v0.3] 4kHz 는 임시 테스트였고 채택하지 않는다(운영 fs = 1kHz 확정). 스파이크창이 2표본이라
+//   R-정규화 해상도가 낮은 한계는 폰 판정이 스파이크 필드를 참고자료로만 쓰는 것으로 흡수한다.
 const int SAMPLE_RATE = 1000;                 // Hz
 const uint32_t US_PER_SAMPLE = 1000000UL / SAMPLE_RATE;
 
@@ -163,9 +241,14 @@ uint16_t lastCmdSeqAck = 0;                    // 마지막 수락한 downlink s
 
 // watchdog
 volatile unsigned long lastDownlinkMs = 0;
+// [v0.3] 마지막 자동 INCREASE 시각(쿨다운용). ENABLE_AUTO_INCREASE=1 일 때만 사용.
+unsigned long lastIncreaseMs = 0;
 
 // ===================== 릴레이(세기) 상태 + 비블로킹 액추에이터 =====================
 bool     stimOn = false;
+// [v0.3.2] 이 세션에서 자극이 한 번이라도 켜졌었나. 재투입(=자극 공백의 끝)에만 EV_REST_END 를
+//   보내 최초 투입과 구분하기 위한 플래그.
+bool     stimEverOn = false;
 uint8_t  currentLevel = 0;                     // 개루프 추정(장치 레벨 직접 읽기 불가 — 한계)
 uint8_t  healthFlags = 0;                      // bit0 watchdog · bit1 hardlimit · bit2 batt · bit3 sensor
 
@@ -394,6 +477,7 @@ volatile bool judgePending = false;
 // 세션 명령은 여기서 실행하지 않는다 — onWrite 는 NimBLE 호스트 태스크라 릴레이 큐/notify 를
 // loop 와 동시에 만지게 된다. 플래그만 세우고 구동은 serviceSessionCmd() 가 loop 에서 한다.
 volatile uint8_t pendingSessionCmd = 0;        // 0 = 없음, 그 외 SC_* 값
+volatile uint8_t pendingStimLevel = 0;         // [v0.3.1] STIM_ENABLE 목표레벨(사용자 권한 램프)
 
 void handleDownlink(const uint8_t* d, size_t n) {
   if (n < 7) return;                          // 최소: 헤더6 + crc1
@@ -418,7 +502,12 @@ void handleDownlink(const uint8_t* d, size_t n) {
       bool stopPending = (pendingSessionCmd == SC_REQUEST_STOP ||
                           pendingSessionCmd == SC_STIM_DISABLE);
       bool isStop      = (cmd == SC_REQUEST_STOP || cmd == SC_STIM_DISABLE);
-      if (!stopPending || isStop) pendingSessionCmd = cmd;   // 구동은 loop 에서(위 주석 참조)
+      if (!stopPending || isStop) {
+        pendingSessionCmd = cmd;                              // 구동은 loop 에서(위 주석 참조)
+        // [v0.3.1] STIM_ENABLE 은 목표레벨을 함께 싣는다(9바이트: 헤더6+cmd1+level1+crc1).
+        //   구버전(8바이트)이면 d[7] 이 없으므로 레벨 0(전원만 켬 = 종전 동작).
+        if (cmd == SC_STIM_ENABLE) pendingStimLevel = (n >= 9) ? d[7] : 0;
+      }
       portEXIT_CRITICAL(&timerMux);
     }
     lastCmdSeqAck = seq; return;
@@ -443,7 +532,7 @@ void handleDownlink(const uint8_t* d, size_t n) {
 
 // ============================================================
 // 안전 감독자 (loop에서 호출) — 안전 비대칭 + watchdog + 하드리밋
-//   DECREASE/STOP 즉시 · INCREASE 는 게이트 통과 시만.
+//   DECREASE/STOP 즉시 · INCREASE 는 [v0.3] 기본 비활성(방식 A).
 // ============================================================
 void safetySupervisor() {
   unsigned long now = millis();
@@ -495,17 +584,27 @@ void safetySupervisor() {
   }
   // HOLD
   if (j.action == ACT_HOLD || target == currentLevel) return;
-  // INCREASE: 게이트 통과 시만
+  // INCREASE: [v0.3] 자동 상향은 기본 비활성(방식 A). 실데이터상 M-wave 저주파 wandering이
+  //   지배적이라(반등 46~56%) 상승분을 회복으로 신뢰할 수 없다. 세기 상향은 사용자/임상 설정값.
   if (j.action == ACT_INCREASE || target > currentLevel) {
+#if ENABLE_AUTO_INCREASE
+    // (방식 C 재도입용 경로 — 지금은 컴파일에서 빠진다.) 설계 2.3 정합으로 조인 게이트:
+    //   신선도 + 안전상태 + 신뢰도 '높음'만 + INCREASE 간 쿨다운.
     bool stale = (now - j.rxMs > T_STALE_MS) ||
                  (stimCounter > j.stimIdxRef + STALE_STIM_LAG);
     bool safeState = (mcuState == ST_RUNNING) && stimOn;
-    bool relOk = (j.reliability != REL_LOW);
-    if (stale || !safeState || !relOk) return;               // 증가 거부(안전)
+    bool relOk = (j.reliability == REL_HIGH);                 // [v0.3] REL_MED 불가(설계 정합)
+    bool cooldownOk = (now - lastIncreaseMs) >= T_INCREASE_COOLDOWN_MS;   // [v0.3] 쿨다운 강제
+    if (stale || !safeState || !relOk || !cooldownOk) return; // 증가 거부(안전)
     uint8_t step = target - currentLevel;
     if (step > MAX_STEP_PER_JUDGMENT) step = MAX_STEP_PER_JUDGMENT;   // 변화율 제한
     if (currentLevel + step > MAX_LEVEL) step = MAX_LEVEL - currentLevel;
     relayStepUp(step);
+    lastIncreaseMs = now;
+#else
+    // 방식 A: 자동 증가 거부. 세기 상향은 M-wave 판정으로 하지 않는다.
+    return;
+#endif
   }
 }
 
@@ -583,6 +682,8 @@ void startSession() {
   portEXIT_CRITICAL(&timerMux);
   currentLevel = 0;
   stimOn = false;                              // 로그 전용으로 출발
+  stimEverOn = false;                          // [v0.3.2] 재투입 판정 플래그
+  lastIncreaseMs = 0;                          // [v0.3] 쿨다운 기준 초기화
   // ST_CALIBRATING 을 유지한다 — DC 캘리브가 끝나야 loop 이 ST_RUNNING 으로 올리고
   // EV_CALIB_DONE 을 보낸다. v0.1 은 여기서 곧장 ST_RUNNING 이라 두 값이 다 죽어 있었다.
   sendEvent(EV_SESSION_START, 0);              // 이 패킷의 t_ms 가 폰의 세션 t0
@@ -599,6 +700,7 @@ void serviceSessionCmd() {
   if (!pendingSessionCmd) return;
   portENTER_CRITICAL(&timerMux);          // 읽기+소거를 원자적으로 — 그 사이 도착분 유실 방지
   uint8_t cmd = pendingSessionCmd;
+  uint8_t stimLvl = pendingStimLevel;     // [v0.3.1] 목표레벨도 함께 스냅샷
   pendingSessionCmd = 0;
   portEXIT_CRITICAL(&timerMux);
   switch (cmd) {
@@ -608,10 +710,43 @@ void serviceSessionCmd() {
     case SC_REQUEST_STOP:
       stopSession(EV_SESSION_STOP);
       break;
-    case SC_STIM_ENABLE:
-      // 자극 투입은 세션이 정상 진행 중일 때만. 항상 레벨 0에서 출발한다.
-      if (systemRunning && mcuState == ST_RUNNING && !stimOn) { currentLevel = 0; relayPowerOn(); }
+    case SC_STIM_ENABLE: {
+      // [v0.3.2] 자극 투입 허용 상태를 넓힌다. v0.3.1 은 ST_RUNNING 만 받았는데 ST_STIM_OFF 는
+      //   빠져나오는 전이가 없는 흡수상태라, 데드맨·하드리밋 후 자극을 다시 켜려면 세션을
+      //   재시작(START)해야 했고 그때 sessionId 가 올라 폰의 추세가 전부 리셋됐다(위 헤더 문제1).
+      //   SAFE_HOLD 도 함께 받는다: 다운링크가 돌아온 직후엔 supervisor 가 RUNNING 으로 되돌리기
+      //   전이라(loop 에서 serviceSessionCmd 가 먼저 돈다) 사용자의 첫 누름이 헛돌았다.
+      bool fresh = (millis() - lastDownlinkMs) <= T_WATCHDOG_MS;   // 이 명령 자체가 방금 갱신
+      bool resumable = (mcuState == ST_STIM_OFF || mcuState == ST_SAFE_HOLD) && fresh;
+      uint8_t reason = 0;
+      if (!systemRunning)                              reason = 1;   // 세션 미실행
+      else if (stimOn)                                 reason = 3;   // 이미 자극 중
+      else if (!(mcuState == ST_RUNNING || resumable)) reason = 2;   // 캘리브 중·IDLE·FAULT 등
+      if (reason) {
+        // [v0.3.2] 조용히 버리지 않는다 — lastCmdSeqAck 는 실행 여부와 무관하게 갱신되므로
+        //   통지가 없으면 폰이 ACK 를 '적용됨'으로 오해한다.
+        sendEvent(EV_CMD_REJECTED, (uint8_t)((SC_STIM_ENABLE << 4) | reason));
+        break;
+      }
+      if (resumable) {
+        // 재투입 = 사용자 확인. 결함 표시를 지우고 RUNNING 으로 되돌린다. 세션은 이어간다.
+        //   주의: 하드리밋 복귀는 새 STIM_TIMEOUT_MS 창을 연다(재투입 전 확인은 앱 책임).
+        mcuState = ST_RUNNING;
+        healthFlags &= ~0x03;                        // bit0 워치독 · bit1 하드리밋
+      }
+      currentLevel = 0; relayPowerOn();
+      // [v0.3.1] 사용자 권한 램프: 0 → 목표레벨. 이 경로는 세션명령(사용자 의사)이라
+      //   ENABLE_AUTO_INCREASE(알고리즘 자동 UP) 차단과 무관하다. relayStepUp 이 MAX_LEVEL
+      //   가드와 함께 currentLevel 을 목표로 갱신한다(→ 이후 DOWN 이 정상 동작).
+      uint8_t tgt = stimLvl; if (tgt > MAX_LEVEL) tgt = MAX_LEVEL;
+      if (tgt > 0) relayStepUp(tgt);
+      // [v0.3.2] 자극 공백의 종료를 알린다(사문이던 EV_REST_END 를 여기에 확정). 폰은 이 시점에
+      //   running-max 재시드 + 판정 정착 유예를 건다. 최초 투입은 공백의 끝이 아니므로 제외.
+      //   detail 1 = 안전상태(STIM_OFF·SAFE_HOLD)에서 복귀 · 2 = 정상 상태에서 사용자 재개.
+      if (stimEverOn) sendEvent(EV_REST_END, resumable ? 1 : 2);
+      stimEverOn = true;
       break;
+    }
     case SC_STIM_DISABLE:
       if (stimOn) relayPowerOff();
       break;
@@ -623,7 +758,7 @@ void serviceSessionCmd() {
 // ============================================================
 void setup() {
   Serial.begin(115200); delay(200);
-  Serial.println("\n=== RE:FIT FES Controller (Phase1 thin-MCU) ===");
+  Serial.println("\n=== RE:FIT FES Controller (Phase1 thin-MCU, v0.3.2) ===");
 
   pinMode(PIN_STATUS_LED, OUTPUT);
   pinMode(PIN_MASSAGER_ON_OFF, OUTPUT); pinMode(PIN_MASSAGER_MODE, OUTPUT);
@@ -649,8 +784,8 @@ void setup() {
 #endif
 
   digitalWrite(PIN_STATUS_LED, HIGH);
-  Serial.printf("=== 준비 완료 (BLE 광고, fs=%dHz, MW창 +%d~+%dms=%d표본) ===\n",
-                SAMPLE_RATE, MW_WINDOW_START_MS, MW_WINDOW_END_MS, MW_WINDOW_LEN);
+  Serial.printf("=== 준비 완료 (BLE 광고, fs=%dHz, MW창 +%d~+%dms=%d표본, autoUP=%d) ===\n",
+                SAMPLE_RATE, MW_WINDOW_START_MS, MW_WINDOW_END_MS, MW_WINDOW_LEN, ENABLE_AUTO_INCREASE);
 }
 
 void setupBLE() {

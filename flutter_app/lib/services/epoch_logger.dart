@@ -3,8 +3,13 @@
 // 한 행 = 자극 1회. 남기는 것:
 //   (a) 에포크 원표본과 면적      — 사후에 오프라인 분석기로 재검증하려면 원표본이 있어야 한다
 //   (b) 자극 스파이크 진폭        — R = 면적÷스파이크 정규화의 분모
-//   (c) 폰이 계산한 값(R·drift)   — 실시간 판정이 무엇을 보고 있었는지
-//   (d) MCU 가 보고한 상태·세기   — 명령이 실제로 반영됐는지 사후 대조
+//   (c) 기준·추세                 — CL0·σ0·phase·느린추세 S·CL_down·CL_stop
+//   (d) 두 트랙 상태               — down/stop 여유(σ 단위)·warn_active·danger_active
+//   (f) 폰이 내린 명령             — cmd_action·target_level·seq·reliability
+//   (e) MCU 가 보고한 상태·세기    — 명령이 실제로 반영됐는지 사후 대조
+//
+// (c)(d) 가 없으면 폐루프를 사후에 재검증할 수 없다. "왜 그때 DOWN 이 나갔나"를
+// 답하려면 판정 근거(ref·σ)와 명령이 같은 행에 있어야 한다(사양서 11장).
 //
 // drift_ms 를 남기는 이유: 샘플 인덱스로 만든 시간축과 벽시계가 어긋나면 그 세션의
 // 시간축은 실제보다 압축돼 있다. 이 열이 없으면 사후에 그걸 알아낼 방법이 없다.
@@ -26,6 +31,25 @@ class EpochLogRecorder {
   final List<int> _level = [];
   final List<String> _marker = [];
   final List<String> _samples = [];
+  // (c) 기준·추세 — 그 에폭 시점의 최신 버스트 스냅샷 (Hybrid C)
+  final List<double> _cl0 = [];
+  final List<double> _sigma0 = [];
+  final List<int> _phase = [];
+  final List<double> _slowS = [];
+  final List<double> _clDown = [];
+  final List<double> _clStop = [];
+  // (d) 두 트랙 상태
+  final List<double> _downMargin = [];
+  final List<double> _stopMargin = [];
+  final List<int> _warnAct = [];
+  final List<int> _dangerAct = [];
+  final List<int> _reliab = [];
+  // (d) 명령
+  final List<String> _cmdAction = [];
+  final List<int> _cmdTarget = [];
+  final List<int> _cmdSeq = [];
+  // (e) MCU 실제
+  final List<int> _stimOn = [];
 
   bool _recording = false;
   String? _filename;
@@ -55,11 +79,30 @@ class EpochLogRecorder {
       _satWin,
       _satSpike,
       _level,
+      _phase,
+      _warnAct,
+      _dangerAct,
+      _reliab,
+      _cmdTarget,
+      _cmdSeq,
+      _stimOn,
     ]) {
       l.clear();
     }
-    _drift.clear();
-    _r.clear();
+    for (final l in [
+      _drift,
+      _r,
+      _cl0,
+      _sigma0,
+      _slowS,
+      _clDown,
+      _clStop,
+      _downMargin,
+      _stopMargin,
+    ]) {
+      l.clear();
+    }
+    _cmdAction.clear();
     _state.clear();
     _marker.clear();
     _samples.clear();
@@ -94,6 +137,22 @@ class EpochLogRecorder {
     required int level,
     required List<int> samples,
     String marker = '',
+    // (c) 기준·추세 · (d) 트랙 상태 · (f) 명령 — 코어가 아직 안 돌면 기본값이 들어간다.
+    double cl0 = 0,
+    double sigma0 = 0,
+    int phase = 0,
+    double slowTrendS = 0,
+    double clDown = 0,
+    double clStop = 0,
+    double downMarginSigma = double.nan,
+    double stopMarginSigma = double.nan,
+    bool warnActive = false,
+    bool dangerActive = false,
+    int reliability = 0,
+    String cmdAction = 'HOLD',
+    int cmdTargetLevel = 0,
+    int cmdSeq = 0,
+    bool stimOn = false,
   }) {
     if (!_recording) return;
     _tRel.add(tRelMs);
@@ -112,13 +171,36 @@ class EpochLogRecorder {
     _marker.add(marker);
     // 표본은 세미콜론 결합 — n 이 바뀌어도(4kHz 전환 등) 열 개수가 흔들리지 않는다.
     _samples.add(samples.join(';'));
+    _cl0.add(cl0);
+    _sigma0.add(sigma0);
+    _phase.add(phase);
+    _slowS.add(slowTrendS);
+    _clDown.add(clDown);
+    _clStop.add(clStop);
+    _downMargin.add(downMarginSigma);
+    _stopMargin.add(stopMarginSigma);
+    _warnAct.add(warnActive ? 1 : 0);
+    _dangerAct.add(dangerActive ? 1 : 0);
+    _reliab.add(reliability);
+    _cmdAction.add(cmdAction);
+    _cmdTarget.add(cmdTargetLevel);
+    _cmdSeq.add(cmdSeq);
+    _stimOn.add(stimOn ? 1 : 0);
   }
 
   // Sat_Win / Sat_Spike: 그 에폭이 ADC 레일에 닿았는지. 1 이면 값이 잘려 있어
   // 면적·R 을 물리량으로 못 쓴다. 사후 분석에서 이 행을 걸러내는 데 쓴다.
   static const String _header =
       'Time_ms,Stim_Index,Sample_Index,Drift_ms,Spike,P2P,Area,R,Valid,'
-      'Sat_Win,Sat_Spike,MCU_State,Level,Marker,Samples\n';
+      'Sat_Win,Sat_Spike,MCU_State,Level,Stim_On,'
+      'CL0,Sigma0,Phase,Slow_Trend_S,CL_Down,CL_Stop,'
+      'Down_Margin_Sigma,Stop_Margin_Sigma,Warn_Active,Danger_Active,'
+      'Reliability,Cmd_Action,Cmd_Target_Level,Cmd_Seq,Marker,Samples\n';
+
+  /// NaN 은 빈 칸으로 — pandas 가 그대로 NaN 으로 읽는다. 'NaN' 문자열이 들어가면
+  /// 열 dtype 이 object 가 돼 사후 분석에서 조용히 계산이 깨진다.
+  static String _f(double v, int digits) =>
+      v.isFinite ? v.toStringAsFixed(digits) : '';
 
   String _rowsFrom(int from) {
     final sb = StringBuffer();
@@ -137,6 +219,21 @@ class EpochLogRecorder {
         '${_satSpike[i]},'
         '${_state[i]},'
         '${_level[i]},'
+        '${_stimOn[i]},'
+        '${_f(_cl0[i], 1)},'
+        '${_f(_sigma0[i], 1)},'
+        '${_phase[i]},'
+        '${_f(_slowS[i], 1)},'
+        '${_f(_clDown[i], 1)},'
+        '${_f(_clStop[i], 1)},'
+        '${_f(_downMargin[i], 2)},'
+        '${_f(_stopMargin[i], 2)},'
+        '${_warnAct[i]},'
+        '${_dangerAct[i]},'
+        '${_reliab[i]},'
+        '${_cmdAction[i]},'
+        '${_cmdTarget[i]},'
+        '${_cmdSeq[i]},'
         '${_marker[i]},'
         '${_samples[i]}',
       );

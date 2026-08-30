@@ -3,8 +3,9 @@
 // 구펌웨어용 home_page 경로(EMG-FES-01 · JSON)와 완전히 분리돼 있다. 서비스 UUID 는
 // 두 펌웨어가 같아서 스캔만으로는 구분되지 않는다 → 광고 이름으로 가른다.
 //
-// 판정(면적·running-max·인과 시그마)은 아직 넣지 않았다. 지금은 로그 전용:
-// 자극은 SC_STIM_ENABLE 을 명시적으로 보낼 때만 켜지고, 기본은 기록만 한다.
+// 판정은 RefitSession(services/refit_session.dart)이 한다. 이 파일은 전송 계층만:
+// 에폭·STATUS·EVENT 를 코어에 먹이고, 코어가 낸 명령을 JUDGMENT 로 조립해 write 한다.
+// 자극은 SC_STIM_ENABLE(9바이트, 목표레벨 포함)을 명시적으로 보낼 때만 켜진다.
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
@@ -13,6 +14,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import '../core/constants.dart';
 import '../core/refit_protocol.dart';
 import 'epoch_logger.dart';
+import 'refit_session.dart';
 
 enum RefitConn {
   idle,
@@ -54,6 +56,16 @@ class RefitBleService extends ChangeNotifier {
   /// 최근 R 값 추이 (차트용). 오래된 것부터.
   final List<double> rHistory = [];
   static const int _kRHistoryMax = 600;
+
+  /// 실시간 인과 판정 코어. 에폭·STATUS·EVENT 를 그대로 먹인다.
+  late final RefitSession session = RefitSession(
+    onCommand: _onCommand,
+    onBurstClosed: (_) => notifyListeners(),
+    onHeartbeatDue: _sendHeartbeat,
+  );
+
+  /// 마지막으로 보낸 판정(UI 표시용).
+  RefitCommand? lastCommand;
 
   final EpochLogRecorder recorder = EpochLogRecorder();
   String? csvPath;
@@ -241,11 +253,27 @@ class RefitBleService extends ChangeNotifier {
       case StatusMsg s:
         status = s;
         sessionId = s.sessionId;
+        // MCU 가 실제 기준이다 — 세기·자극상태를 코어에 동기화한다(사양서 10장).
+        session.onStatus(s);
         notifyListeners();
 
       case EventMsg e:
         lastEvent = '${e.name}${e.detail != 0 ? ' (${e.detail})' : ''}';
         sessionId = e.sessionId;
+        session.onEvent(e);
+        // [펌웨어 v0.3.2] 거부 통지 — lastCmdSeqAck 는 수신 확인일 뿐이라 이걸로만 안다.
+        if (e.eventId == kEvCmdRejected) {
+          final cmd = e.detail >> 4;
+          final reason = e.detail & 0x0F;
+          final why = reason == 1
+              ? '세션 미실행'
+              : reason == 2
+              ? '상태 부적합(캘리브 중·IDLE·FAULT)'
+              : reason == 3
+              ? '이미 자극 중'
+              : '사유 $reason';
+          lastError = '명령 거부(cmd $cmd): $why';
+        }
         if (e.eventId == kEvSessionStart) {
           // 이 t_ms 가 세션 t0 — 에포크의 두 시계를 여기에 맞춘다.
           _t0Ms = e.tMs;
@@ -273,6 +301,8 @@ class RefitBleService extends ChangeNotifier {
   void _onEpoch(EpochMsg ep) {
     lastEpoch = ep;
     epochCount++;
+    // 판정 먼저 — 그래야 아래 CSV 행에 그 시점의 최신 판정 스냅샷이 붙는다.
+    session.onEpoch(ep);
 
     // stim_index 결번 = 에포크 유실. 세면 유실률을 사후에 알 수 있다.
     if (_lastStimIndex != null && ep.stimIndex > _lastStimIndex! + 1) {
@@ -310,6 +340,26 @@ class RefitBleService extends ChangeNotifier {
       level: status?.level ?? 0,
       samples: ep.samples,
       marker: _pendingMarker,
+      // (c) 기준·추세 · (d) 트랙 상태 · (f) 명령 — 판정층 사양서 11장 스키마.
+      cl0: session.cl0,
+      sigma0: session.sigma0,
+      phase: session.phase,
+      slowTrendS: session.lastBurst?.slowS ?? 0,
+      clDown: session.clDown,
+      clStop: session.clStop,
+      downMarginSigma: session.lastBurst?.downMarginSigma ?? double.nan,
+      stopMarginSigma: session.lastBurst?.stopMarginSigma ?? double.nan,
+      warnActive: session.lastBurst?.warnActive ?? false,
+      dangerActive: session.lastBurst?.dangerActive ?? false,
+      reliability: session.reliability,
+      cmdAction: switch (session.lastAction) {
+        RefitAction.hold => 'HOLD',
+        RefitAction.decrease => 'DOWN',
+        RefitAction.stop => 'STOP',
+      },
+      cmdTargetLevel: session.lastTargetLevel,
+      cmdSeq: session.lastCmdSeq,
+      stimOn: status?.stimOn ?? false,
     );
     _pendingMarker = '';
     notifyListeners();
@@ -334,8 +384,8 @@ class RefitBleService extends ChangeNotifier {
     }
   }
 
-  Future<bool> _sendSessionControl(int cmd, String label) => _send(
-    buildSessionControl(cmd, seq: _seq++, sessionId: sessionId),
+  Future<bool> _sendSessionControl(int cmd, String label, {int? level}) => _send(
+    buildSessionControl(cmd, level: level, seq: _seq++, sessionId: sessionId),
     label,
   );
 
@@ -352,10 +402,47 @@ class RefitBleService extends ChangeNotifier {
 
   Future<bool> stopSession() => _sendSessionControl(kScRequestStop, 'STOP');
 
-  Future<bool> enableStim() => _sendSessionControl(kScStimEnable, 'STIM_ENABLE');
+  /// 자극 투입 — **방식 A**. 세기는 사용자가 고른 [targetLevel] 로만 정해진다.
+  /// 9바이트로 보내야 MCU 가 0→목표까지 램프하고 currentLevel 이 정확해진다.
+  /// 8바이트면 레벨 0 = 전원만 켬 → 이후 DECREASE 가 전량 무시된다(폐루프 사망).
+  ///
+  /// 주의: lastCmdSeqAck 가 올라와도 적용된 게 아니다(펌웨어는 실행 여부와 무관하게
+  /// ACK). 실제 투입은 STATUS.stimOn / currentLevel 이 목표에 닿는지로 확인한다.
+  Future<bool> enableStim(int targetLevel) {
+    final max = status?.maxLevel ?? 0;
+    final lvl = max > 0 ? targetLevel.clamp(0, max) : targetLevel.clamp(0, 255);
+    return _sendSessionControl(kScStimEnable, 'STIM_ENABLE', level: lvl);
+  }
 
   Future<bool> disableStim() =>
       _sendSessionControl(kScStimDisable, 'STIM_DISABLE');
+
+  void _sendHeartbeat() {
+    if (_downChar == null) return;
+    unawaited(_send(buildHeartbeat(seq: _seq++, sessionId: sessionId), 'HB'));
+  }
+
+  /// 판정 코어가 낸 명령을 JUDGMENT 19바이트로 조립해 하달한다.
+  /// UP 은 여기 없다 — 코어가 INCREASE 를 만들지 않는다(방식 A · 사양서 9장).
+  void _onCommand(RefitCommand c) {
+    lastCommand = c;
+    final pkt = buildJudgment(
+      action: switch (c.action) {
+        RefitAction.hold => kActHold,
+        RefitAction.decrease => kActDecrease,
+        RefitAction.stop => kActStop,
+      },
+      targetLevel: c.targetLevel,
+      stage: c.stage,
+      reliability: c.reliability,
+      tRefMs: c.tRefMs,
+      stimIndexRef: c.stimIndexRef,
+      seq: _seq++,
+      sessionId: sessionId,
+    );
+    unawaited(_send(pkt, 'JUDGMENT'));
+    notifyListeners();
+  }
 
   /// 다음 에포크 행에 붙일 마커.
   void markNext(String label) {
@@ -367,12 +454,9 @@ class RefitBleService extends ChangeNotifier {
     _hbTimer?.cancel();
     // 워치독은 자극이 켜져 있을 때만 격상하지만, 하트비트는 항상 보낸다 —
     // 자극을 켜는 순간부터 유효해야 하고, 끊기면 그때 늦다.
+    // 사양서 10장 tick(). 주기 판단은 코어가 하고 전송만 여기서 한다.
     _hbTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
-      if (_downChar != null) {
-        unawaited(
-          _send(buildHeartbeat(seq: _seq++, sessionId: sessionId), 'HB'),
-        );
-      }
+      session.tick(DateTime.now().millisecondsSinceEpoch);
     });
     _flushTimer?.cancel();
     _flushTimer = Timer.periodic(const Duration(seconds: 20), (_) {

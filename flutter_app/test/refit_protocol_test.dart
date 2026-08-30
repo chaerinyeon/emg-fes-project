@@ -174,6 +174,29 @@ void main() {
       expect(p, [0x02, 0x14, 0x00, 0x00, 0x00, 0x00, 0x01, 0x84]);
     });
 
+    test('STIM_ENABLE 은 9바이트이고 [7]에 목표레벨이 실린다 (P0)', () {
+      // 8바이트로 나가면 펌웨어가 목표레벨 0 으로 읽어 전원만 켜고 currentLevel 이
+      // 0 에 머문다 → relayStepDown 의 currentLevel>0 가드에 걸려 DOWN 이 전량 무시.
+      final p = buildSessionControl(kScStimEnable, level: 4);
+      expect(p.length, 9);
+      expect(p[6], kScStimEnable);
+      expect(p[7], 4);
+      expect(refitCrc8(p, p.length - 1), p.last);
+    });
+
+    test('레벨을 안 줘도 STIM_ENABLE 은 9바이트를 유지한다', () {
+      // 구버전 8바이트로 되돌아가면 조용히 폐루프가 죽으므로 길이는 항상 9다.
+      final p = buildSessionControl(kScStimEnable);
+      expect(p.length, 9);
+      expect(p[7], 0);
+    });
+
+    test('STIM_ENABLE 외의 명령에는 레벨 바이트가 붙지 않는다', () {
+      for (final cmd in [kScRequestStart, kScRequestStop, kScStimDisable]) {
+        expect(buildSessionControl(cmd, level: 9).length, 8);
+      }
+    });
+
     test('JUDGMENT 는 19바이트 (펌웨어 최소 19 — v0.1 은 21을 요구해 전량 폐기됐다)', () {
       final p = buildJudgment(action: kActDecrease, targetLevel: 2);
       expect(p.length, 19);
@@ -189,15 +212,21 @@ void main() {
       ]);
     });
 
-    test('HEARTBEAT 는 11바이트 (펌웨어 최소 7)', () {
-      expect(buildHeartbeat(phoneMs: 0).length, 11);
+    test('HEARTBEAT 는 7바이트 (헤더6+CRC1 — 계약 4.2 P3)', () {
+      // 펌웨어는 n>=7 이면 통과시키고 페이로드를 읽지 않는다. 문서와 어긋난 11바이트
+      // (phoneMs 포함)를 보내던 것을 계약대로 줄였다.
+      final p = buildHeartbeat(seq: 7, sessionId: 3);
+      expect(p.length, 7);
+      expect(p.sublist(0, 6), [0x02, 0x12, 0x07, 0x00, 0x03, 0x00]);
+      expect(refitCrc8(p, 6), p.last);
     });
 
     test('만든 패킷의 CRC 는 자기 자신과 맞는다', () {
       for (final p in [
-        buildSessionControl(kScStimEnable, seq: 5, sessionId: 3),
+        buildSessionControl(kScStimEnable, level: 6, seq: 5, sessionId: 3),
+        buildSessionControl(kScRequestStop, seq: 8, sessionId: 3),
         buildJudgment(action: kActIncrease, targetLevel: 7, seq: 6),
-        buildHeartbeat(seq: 7, sessionId: 3, phoneMs: 123456),
+        buildHeartbeat(seq: 7, sessionId: 3),
       ]) {
         expect(refitCrc8(p, p.length - 1), p.last);
       }
